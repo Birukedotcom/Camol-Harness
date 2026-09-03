@@ -3,7 +3,7 @@
   "run": {
     "id": "three-agent-demo",
     "objective": "Prove a three-agent plan, build, independent-review, and integration loop with persistent evidence.",
-    "max_agents": 3,
+    "max_concurrency": 3,
     "completion": [
       "all_tasks_succeeded",
       "all_required_evidence_present",

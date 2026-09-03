@@ -13,7 +13,7 @@ complete runnable example.
 {
   "id": "stable-run-id",
   "objective": "The result this run must produce",
-  "max_agents": 3,
+  "max_concurrency": 8,
   "completion": [
     "all_tasks_succeeded",
     "all_required_evidence_present",
@@ -30,9 +30,12 @@ complete runnable example.
 }
 ```
 
-The current v1 file format registers exactly three agent slots. This is available
-capacity, not a requirement to keep all three active. Concurrency can be zero to three
-according to ready work, dependencies, capability matching, policy, and budget.
+The executable format accepts any non-empty registered worker list.
+`max_concurrency` is a positive run-specific ceiling and cannot exceed the currently
+registered workers. The scheduler may use fewer according to ready work,
+dependencies, capability matching, policy, and budget. Legacy `max_agents` input is
+accepted as an alias and retained in its canonical plan for existing digest/replay
+compatibility; new runbooks use `max_concurrency`.
 
 Completion is a conjunction of named conditions, not a confidence score. The run
 stops green only when every selected condition is true.
@@ -73,7 +76,7 @@ All boxes must be distinct, relative paths inside the declared workspace. The pr
 adapter performs argv execution directly; it does not use an implicit shell.
 
 Agent IDs and `role` strings describe capabilities or current policy; they do not
-reserve permanent builder/verifier/watcher positions. Different slots may receive
+reserve permanent builder/verifier/watcher positions. Different workers may receive
 different tasks. Competing implementations of one logical objective are encoded as
 distinct task IDs so the exclusive lease invariant is preserved. A first-class
 candidate/comparison-group field is planned but is not implemented in the current
@@ -85,9 +88,10 @@ Supported placeholders are:
 {workspace} {box} {packet} {result} {run_id} {task_id} {agent_id}
 ```
 
-A real VM wrapper can use the same contract: copy the packet to the VM, run the agent
-inside its prepared worktree, and return the result file. Provider identity, agent
-identity, and readiness should remain separate structured probes.
+A real execution-target wrapper can use the same contract: deliver the packet to a
+local host, VM, container, pod, or remote worker, run the agent inside its prepared
+workspace, and return the result file. Target, transport, worker, runtime, workspace,
+box, agent, and readiness identities remain separate structured records.
 
 ## Tasks
 

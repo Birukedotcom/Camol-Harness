@@ -1,4 +1,4 @@
-"""Authoritative state transitions for a run over the v1 execution-slot pool."""
+"""Authoritative state transitions for a run over an N-worker pool."""
 
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -107,6 +107,12 @@ class Orchestrator:
 
     def lease_ready_tasks(self, run_id: str) -> List[Dict[str, Any]]:
         state = self._require_status(run_id, "running")
+        run_config = state["runbook"]["run"]
+        max_concurrency = run_config.get("max_concurrency", run_config.get("max_agents"))
+        active_count = sum(agent["status"] != "idle" for agent in state["agents"].values())
+        available_capacity = max(0, max_concurrency - active_count)
+        if available_capacity == 0:
+            return []
         idle_agents = [agent for agent in state["agents"].values() if agent["status"] == "idle"]
         assignments = []
         for task in self.ready_tasks(run_id):
@@ -126,7 +132,7 @@ class Orchestrator:
             )
             assignments.append(event["payload"])
             idle_agents = [candidate for candidate in idle_agents if candidate["id"] != agent["id"]]
-            if len(assignments) == state["runbook"]["run"]["max_agents"]:
+            if len(assignments) == available_capacity:
                 break
         return assignments
 

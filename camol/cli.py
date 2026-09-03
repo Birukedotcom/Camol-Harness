@@ -30,6 +30,9 @@ def command_validate(args: argparse.Namespace) -> int:
         {
             "valid": True,
             "run_id": runbook["run"]["id"],
+            "max_concurrency": runbook["run"].get(
+                "max_concurrency", runbook["run"].get("max_agents")
+            ),
             "agents": [agent["id"] for agent in runbook["agents"]],
             "tasks": [task["id"] for task in runbook["tasks"]],
         }

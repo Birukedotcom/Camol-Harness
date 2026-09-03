@@ -243,9 +243,12 @@ class HarnessRunner:
 
 
 def summary(state: Dict[str, Any]) -> Dict[str, Any]:
+    run_config = state["runbook"]["run"]
     return {
         "run_id": state["run_id"],
         "status": state["status"],
+        "max_concurrency": run_config.get("max_concurrency", run_config.get("max_agents")),
+        "registered_workers": len(state["agents"]),
         "plan_digest": state["plan_digest"],
         "approved_by": state["approved_by"],
         "total_tokens": state["total_tokens"],

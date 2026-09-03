@@ -22,10 +22,11 @@ authoritative only when a human approves the exact digest of its compiled plan.
 
 Camol is a terminal-native, local-first control plane for human-guided agent work. A
 human develops a plan with one orchestrator, freezes that plan, and lets the
-orchestrator distribute bounded work across a pool of execution boxes. V1 permits up
-to three concurrent box leases, but a run activates only the boxes justified by its
-plan. The harness continues until state gates are satisfied, a human decision is
-required, or an owner-defined pause condition is reached.
+orchestrator distribute bounded work across an N-box pool. There is no product-level
+box-count constant. A run activates only the boxes justified by its task graph and
+human-approved resource envelope. The harness continues until state gates are
+satisfied, a human decision is required, or an owner-defined pause condition is
+reached.
 
 Camol is not primarily a chat interface, a prompt collection, a web application, or
 a terminal multiplexer. Its product is the durable combination of:
@@ -38,7 +39,7 @@ a terminal multiplexer. Its product is the durable combination of:
 - inspectable agent boxes;
 - complete tool and model-call history;
 - evaluation, debugging, and hill-climb feedback loops; and
-- replaceable local, VM, model, and cloud adapters.
+- replaceable execution-target, transport, runtime, model, and cloud adapters.
 
 The orchestrator reasons. The deterministic kernel owns truth about state, leases,
 revisions, evidence, approvals, retries, wakeups, and terminal conditions.
@@ -59,8 +60,8 @@ for ordinary engineering work. The acceptance workflow is:
 
 1. Open an orchestrator session in the CLI.
 2. Use `/grill` to convert an objective into a human-confirmed plan.
-3. Register the v1 three-slot pool locally, through cmux, or on VMs, and activate only
-   the isolated boxes required by the plan.
+3. Discover, register, or provision eligible execution targets and activate the
+   isolated boxes required by the plan within its approved resource envelope.
 4. Select hosted or local models per box.
 5. Distribute repository work and route all inter-box communication through the
    orchestrator.
@@ -120,19 +121,20 @@ action is required; and `↻` means Camol is probing or refreshing it. The glyph
 text detail carry status independently of color. Worker boxes use the same solid-box
 language so a glance across the header and box list is consistent.
 
-The bottom edge is a persistent workspace switcher for the orchestrator and the three
-execution boxes:
+The bottom edge is a persistent workspace switcher for the orchestrator and a bounded
+window into the current N-box fleet:
 
 ```text
-[0 ORCH]  [1 ■ BUILDER]  ▸[2 ■ VERIFIER]  [3 □ WATCHER]    Alt+0..3
+[0 ORCH] [BOXES 12/47] [!2]  [1 ■ API] ▸[2 ■ VERIFY] [3 □ DEPLOY] [MORE...]
 ```
 
 The `■` and `□` glyphs continue to report connection readiness; they never mean
 "selected." The `▸` cursor, reinforced by inverse-video styling when supported,
-identifies the workspace being viewed. `Alt+0` through `Alt+3` select directly,
-left/right or `[`/`]` cycle, and mouse-capable terminals may select a workspace by
-clicking it. The switcher remains visible in orchestrator, repository-graph, eval,
-and box-detail views.
+identifies the workspace being viewed. `Alt+0` selects the orchestrator; `Alt+1`
+through `Alt+9` select visible pinned/recent shortcuts, not permanent box identities.
+Left/right or `[`/`]` cycle through the current filtered fleet, `/box <stable-id>`
+opens any box, and mouse-capable terminals may select a workspace by clicking it. The
+switcher remains visible in orchestrator, repository-graph, eval, and box-detail views.
 
 Selecting a box enters a read-only peer view without changing or interrupting its
 execution. That view exposes live terminal output plus `context`, `tools`, `diff`,
@@ -374,13 +376,15 @@ new obligations, evaluator changes, and the resume location. State-schema change
 require a tested migration. Unaffected boxes may continue only when the impact
 analysis demonstrates that their assumptions and dependencies remain valid.
 
-## 8. Box scheduling, integration, and optional expansion
+## 8. N-box scheduling, integration, and optional expansion
 
-V1 has capacity for three simultaneous agent leases, though zero to three may be
-active. The number three is a concurrency ceiling, not a prescribed team shape.
-Boxes are role-neutral execution containers; roles, tasks, and models are plan
-assignments rather than permanent identities. A model can strategize on one task and
-build on another, but consequential self-approval is forbidden.
+Camol has no fixed fleet size. A run may have zero to N active leases, where N is the
+finite concurrency ceiling in its human-approved resource envelope. The orchestrator
+selects how many boxes are useful; the kernel enforces cost, authority, infrastructure,
+rate-limit, and concurrency ceilings. Boxes are role-neutral execution containers;
+roles, tasks, and models are plan assignments rather than permanent identities. A
+model can strategize on one task and build on another, but consequential self-approval
+is forbidden.
 
 The orchestrator may choose any plan-backed topology:
 
@@ -619,8 +623,8 @@ ready agent. Readiness requires transport, runtime, agent, checkout, and project
 evidence.
 
 The worker registry may contain any number of discovered, dormant, historical, or
-unavailable machines while the v1 scheduler permits three simultaneous execution
-leases. Machines created outside Camol enter through an adoption flow:
+unavailable targets. Each run's plan-approved resource envelope supplies its finite
+concurrency ceiling. Targets created outside Camol enter through an adoption flow:
 
 ```text
 discover -> establish identity -> inspect work -> bind project
@@ -628,8 +632,14 @@ discover -> establish identity -> inspect work -> bind project
 ```
 
 Task readiness includes the required language toolchains, dependencies, credentials,
-services, database/migration state, source revision, and adapter capabilities. A VM
-that is alive but cannot execute its assigned task is not ready.
+services, database/migration state, source revision, and adapter capabilities. An
+execution target that is alive but cannot execute its assigned task is not ready.
+
+The terminal is a detachable client or an optional PTY session, not an execution
+target or connectivity boundary. A control-plane daemon may run locally, inside a VM,
+or on another durable target; closing the terminal must not end the run. The complete
+identity, transport, lifecycle, N-box admission, and scaling contract lives in
+`docs/execution-topology.md`.
 
 ### Model providers
 
@@ -689,7 +699,8 @@ not assume that a timed-out deployment, migration, message, or payment failed.
 The repository already contains an executable local control-plane slice:
 
 - a JSON runbook;
-- three configured process-backed slots with plan- and DAG-driven activation;
+- an arbitrary non-empty configured process-worker pool;
+- a positive per-run `max_concurrency` ceiling;
 - a task DAG and capability scheduler;
 - SQLite event replay;
 - frozen plan digests and human approval;
@@ -706,7 +717,8 @@ The following specification areas are not yet implemented and remain speculative
 - the full tool-invocation envelope and artifact store;
 - epistemic evidence status, observer-readiness gates, and evidence-conflict states;
 - durable cursor-based watchers and cross-system identity correlation;
-- arbitrary worker discovery/adoption with a three-active-lease scheduler;
+- dynamic worker discovery, authenticated adoption, and provisioning;
+- marginal-value scale-out, admission control, drain, and backpressure policies;
 - salvage-gated teardown and remote-effect reconciliation;
 - versioned deployment identities, CI waivers, and VCS integration relationships;
 - interactive `/grill` and terminal UI;
@@ -731,9 +743,10 @@ The following specification areas are not yet implemented and remain speculative
    and plan-revision schemas to the kernel.
 4. Add the complete tool-event envelope, central event streaming, and
    content-addressed artifact storage.
-5. Add arbitrary worker discovery/adoption, task readiness, three simultaneous
-   leases, and salvage-gated teardown.
-6. Prepare three isolated Git worktrees and real local agent adapters.
+5. Add arbitrary worker discovery/adoption, task readiness, plan-approved dynamic
+   concurrency, admission control, and salvage-gated teardown.
+6. Prepare N isolated Git worktrees and real local agent adapters under a bounded
+   scale test.
 7. Add read-only box inspection and replayable terminal/model/tool streams.
 8. Add dependency readiness probes, repository crawl snapshots, impact queries, and
    the first terminal graph view.
@@ -763,11 +776,11 @@ views remain terminal-native and two-dimensional.
 - Boxes may propose but not authorize new work or weaker truth conditions.
 - Newly discovered work enters through a versioned plan amendment.
 - Peering into boxes is read-only; mutation requires explicit takeover.
-- Three simultaneous box leases are the v1 ceiling, not the required active count;
-  the registry may track more discovered, dormant, unavailable, or historical boxes.
-  Boxes may receive different tasks, distinct candidate tasks for the same logical
-  objective, or mixed roles. Multiple implementations are optional and explicitly
-  requested or approved by the plan.
+- There is no product-level box-count constant. Every run declares a finite,
+  human-approved concurrency and resource envelope; the orchestrator selects any
+  justified active count within it. Boxes may receive different tasks, distinct
+  candidate tasks for the same logical objective, or mixed roles. Multiple
+  implementations are optional and explicitly requested or approved by the plan.
 - Local-only, hybrid, cmux-compatible, and VM-backed execution use the same protocol.
 - Integration is orchestrator-owned and every synthesized artifact is reevaluated.
 - Long-running sessions are owner-controlled and pause on declared lack of verified
@@ -942,7 +955,7 @@ No action is implicitly preauthorized merely because a tool can perform it.
 | Policy | Action classes |
 |---|---|
 | Automatic inside a frozen plan | scoped reads; box-local edits; builds, tests, and evals; local model execution; read-only peering; PHI-safe log queries; orchestration messages |
-| Plan-preauthorized within exact ceilings | hosted model calls; creation/restart of Camol-owned ephemeral workers up to 3 active leases; pushes to dedicated task branches; draft PR creation; teardown of Camol-owned disposable workers after a complete salvage receipt |
+| Plan-preauthorized within exact ceilings | hosted model calls; creation/restart of Camol-owned ephemeral workers within the run's approved concurrency, provider, and spend envelope; pushes to dedicated task branches; draft PR creation; teardown of Camol-owned disposable workers after a complete salvage receipt |
 | Human approval per occurrence | OAuth/device login; secrets or IAM changes; merge to a protected branch; CI waiver; staging deployment; database migration or restore; real voice call/message; adopted-VM destruction; any production mutation |
 | Never automatic | weakening an invariant or evaluator; treating `EFFECT_UNKNOWN` as failed and blindly retrying; exposing PHI or credentials; bypassing a gate; routing initial-cutover traffic to a legacy revision |
 

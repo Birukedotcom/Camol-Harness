@@ -13,12 +13,13 @@ terminal panes, repo-local skills, human memory, and ad hoc status messages. The
 is not a more elaborate prompt. The fix is a control plane that makes work and its
 evidence explicit.
 
-Camol has one authoritative orchestrator and three available agent slots in v1. This
-is a concurrency ceiling, not a requirement to run three builders or even three
-workers. Slots may run locally or on separate VMs, but workers never become
-independent sources of truth. They lease plan-selected tasks, emit evidence, ask
-questions, propose follow-up work, and return claims. The orchestrator decides what
-enters the run and what is accepted.
+Camol has one authoritative orchestrator and an N-box worker pool. Each run has a
+finite human-approved resource envelope, and the orchestrator activates only the
+boxes its plan can justify inside that envelope. Workers may run beside the control
+plane or on remote execution targets, but they never become independent sources of
+truth. They lease plan-selected tasks, emit evidence, ask questions, propose
+follow-up work, and return claims. The orchestrator decides what enters the run and
+what is accepted.
 
 The first reusable proof case is Sarah in Enrollment Hub:
 
@@ -47,15 +48,15 @@ general harness protocol.
                               |          ^
                    task lease |          | events / claims / questions
                               v          |
-                   +---------------------+---------------------+
-                   |                     |                     |
-             +-----+------+        +-----+------+        +-----+------+
-             | slot 1     |        | slot 2     |        | slot 3     |
-             | role/task A|        | role/task B|        | role/task A|
-             | box/adapter|        | box/adapter|        | box/adapter|
-             +------------+        +------------+        +------------+
-                   |                     |                     |
-                   +---------------------+---------------------+
+                   +---------------------+----------------------+ ... +
+                   |                     |                           |
+             +-----+------+        +-----+------+              +-----+------+
+             | box A      |        | box B      |              | box N      |
+             | role/task X|        | role/task Y|              | role/task X|
+             | worker     |        | worker     |              | worker     |
+             +------------+        +------------+              +------------+
+                   |                     |                           |
+                   +---------------------+----------------------+ ... +
                                          |
                                          v
                               append-only event ledger
@@ -65,13 +66,16 @@ general harness protocol.
                   replay/UI          debugger          eval/hill climb
 ```
 
-The VM transport can be SSH, an agent API, tmux/cmux, or another substrate. The
-transport is replaceable. Its contract is not.
+The transport can be local IPC, authenticated worker RPC, SSH, a provider API,
+tmux/cmux compatibility, or another substrate. The execution target might be the
+control-plane host, a VM, container, pod, bare-metal host, or provider job. Transport
+and target are both replaceable; their contracts are not.
 
-The diagram deliberately shows slots 1 and 3 on the same logical task. Parallel
+The diagram deliberately shows boxes A and N on the same logical task. Parallel
 candidates are represented by separate leased task IDs in one comparison group;
-other plans may partition work or activate only one slot. Slot identity never implies
-`builder`, `verifier`, or any other permanent role.
+other plans may partition work or activate only one box. Box identity never implies
+`builder`, `verifier`, or any other permanent role. Detailed topology and scaling
+semantics live in [`execution-topology.md`](execution-topology.md).
 
 ## 3. Authority boundaries
 
@@ -138,9 +142,9 @@ Follow-up tasks enter only through the orchestrator.
 
 ### Worker
 
-A registered execution endpoint. Identity and readiness are separate from provider
-existence. A VM being “running” does not prove its agent, checkout, dependencies, or
-task channel are ready.
+A registered agent-capable runtime endpoint on an execution target. Identity and
+readiness are separate from target existence. A VM, container, or local process being
+“running” does not prove its agent, checkout, dependencies, or task channel are ready.
 
 Suggested readiness vector:
 
@@ -235,9 +239,9 @@ fewer failed attempts, verified steps per 1,000 tokens, then total tokens. This 
 operational hill climb, while product-quality changes use the explicit vector
 comparison described below.
 
-## 8. VM adapter contract
+## 8. Execution-target adapter contract
 
-Each VM adapter will implement the same lifecycle:
+Each execution-target adapter implements the same lifecycle:
 
 ```text
 discover -> probe -> provision? -> prepare -> launch -> lease -> stream -> stop
@@ -251,7 +255,7 @@ Minimum adapter operations:
 - `launch(worker, task_lease)` starts the requested agent runtime;
 - `send(worker, envelope)` delivers an orchestrator-routed message;
 - `events(worker, cursor)` streams structured worker events;
-- `stop(worker, reason)` ends the process without deleting the VM;
+- `stop(worker, reason)` ends the agent process without deleting its target;
 - `destroy(worker)` is a separately authorized destructive operation.
 
 The existing Enrollment Hub cmux/exe.dev flow is a good adapter seed, but pane text,
@@ -290,18 +294,19 @@ it. In-flight runs retain the version they began with.
 - Transcript retention and redaction policy is explicit per run.
 - Raw worker output is untrusted data.
 - Every external mutation includes an idempotency key and authorization decision.
-- Deletion of a VM or evidence bundle is a distinct event and requires a retention
-  policy or explicit human authorization.
+- Deletion of an execution target or evidence bundle is a distinct event and requires
+  a retention policy or explicit human authorization.
 
 ## 11. Build order
 
-1. **Three-agent Python kernel (present):** frozen runbook, SQLite replay, task DAG,
+1. **N-worker Python kernel (present):** frozen runbook, SQLite replay, task DAG,
    process adapters, compact checkpoints, exact leases, evidence/verification gates,
    token budgets, restart recovery, debugger ratchet, and vector hill-climb logic.
 2. **Real local agent wrappers:** wrap Codex and/or Claude so they consume a turn
    packet and emit the result contract; prepare isolated Git worktrees for each box.
-3. **VM adapter:** wrap the existing Enrollment sandbox controller; prove identity and readiness
-   without relying on terminal scraping.
+3. **Execution-target adapter:** wrap the existing Enrollment sandbox controller;
+   prove target, worker, runtime, and workspace identity/readiness without relying on
+   terminal scraping.
 4. **Orchestrator planning session:** turn the collaborative plan conversation into a
    reviewed runbook draft and explicit plan amendments.
 5. **Debugger vertical slice:** import one Sarah defect bundle and promote it into a
@@ -313,7 +318,8 @@ it. In-flight runs retain the version they began with.
 8. **Durability hardening:** lease expiry/heartbeats, content-addressed artifacts,
    redaction, secrets references, idempotency contracts, and multi-user authorization.
 
-The control-plane milestone now passes deterministically with three workers in the
+The sample control-plane milestone passes deterministically with three workers in the
 first wave, one dependent integration task, independent command verification, and a
-restart replay. The next milestone is the same proof using real agent processes in
-three isolated worktrees.
+restart replay. Three is a property of that fixture, not the kernel. The next
+milestone repeats the proof with real agent processes, a variable worker count, and
+isolated worktrees.

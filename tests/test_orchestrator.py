@@ -1,3 +1,4 @@
+import copy
 import json
 import tempfile
 import unittest
@@ -38,7 +39,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(state["tasks"]["integrate"]["status"], "pending")
 
     def test_scheduler_leaves_slots_idle_when_only_one_task_is_ready(self):
-        raw = json.loads((ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8"))
+        raw = json.loads(
+            (ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8")
+        )
         raw["run"]["id"] = "one-ready-task-demo"
         raw["tasks"] = raw["tasks"][:1]
         state = self.orchestrator.initialize(raw)
@@ -54,6 +57,45 @@ class OrchestratorTests(unittest.TestCase):
             sum(agent["status"] == "idle" for agent in projected["agents"].values()),
             2,
         )
+
+    def test_scheduler_can_lease_an_n_worker_pool(self):
+        raw = json.loads(
+            (ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8")
+        )
+        raw["run"]["id"] = "four-worker-demo"
+        raw["run"]["max_concurrency"] = 4
+        fourth_agent = copy.deepcopy(raw["agents"][1])
+        fourth_agent.update(id="builder-2", box=".camol/boxes/builder-2")
+        raw["agents"].append(fourth_agent)
+        fourth_task = copy.deepcopy(raw["tasks"][1])
+        fourth_task["id"] = "inventory-2"
+        raw["tasks"].insert(3, fourth_task)
+        state = self.orchestrator.initialize(raw)
+        run_id = state["run_id"]
+        self.orchestrator.approve_plan(run_id, "test-owner", state["plan_digest"])
+        self.orchestrator.start(run_id)
+
+        assignments = self.orchestrator.lease_ready_tasks(run_id)
+
+        self.assertEqual(len(assignments), 4)
+        self.assertEqual(len({assignment["agent_id"] for assignment in assignments}), 4)
+
+    def test_scheduler_enforces_concurrency_across_existing_leases(self):
+        raw = json.loads(
+            (ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8")
+        )
+        raw["run"]["id"] = "two-concurrent-demo"
+        raw["run"]["max_concurrency"] = 2
+        state = self.orchestrator.initialize(raw)
+        run_id = state["run_id"]
+        self.orchestrator.approve_plan(run_id, "test-owner", state["plan_digest"])
+        self.orchestrator.start(run_id)
+
+        first_wave = self.orchestrator.lease_ready_tasks(run_id)
+        second_wave = self.orchestrator.lease_ready_tasks(run_id)
+
+        self.assertEqual(len(first_wave), 2)
+        self.assertEqual(second_wave, [])
 
     def test_lease_token_prevents_a_different_agent_from_starting_work(self):
         assignment = self.orchestrator.lease_ready_tasks(self.run_id)[0]

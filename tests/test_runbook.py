@@ -21,10 +21,49 @@ class RunbookTests(unittest.TestCase):
             "verifier",
         ])
 
-    def test_v1_refuses_more_or_fewer_than_three_boxes(self):
+    def test_accepts_an_arbitrary_worker_pool(self):
+        expanded = copy.deepcopy(self.raw)
+        expanded["run"]["max_concurrency"] = 4
+        fourth = copy.deepcopy(expanded["agents"][1])
+        fourth.update(id="builder-2", box=".camol/boxes/builder-2")
+        expanded["agents"].append(fourth)
+
+        runbook = validate_runbook(expanded)
+
+        self.assertEqual(len(runbook["agents"]), 4)
+        self.assertEqual(runbook["run"]["max_concurrency"], 4)
+
+    def test_concurrency_cannot_exceed_registered_workers(self):
         invalid = copy.deepcopy(self.raw)
-        invalid["agents"].pop()
-        with self.assertRaisesRegex(RunbookError, "exactly three"):
+        invalid["run"]["max_concurrency"] = 4
+        with self.assertRaisesRegex(RunbookError, "cannot exceed registered workers"):
+            validate_runbook(invalid)
+
+    def test_conflicting_legacy_concurrency_is_rejected(self):
+        invalid = copy.deepcopy(self.raw)
+        invalid["run"]["max_agents"] = 2
+        with self.assertRaisesRegex(RunbookError, "conflicts with legacy"):
+            validate_runbook(invalid)
+
+    def test_legacy_max_agents_is_preserved_for_plan_digest_compatibility(self):
+        legacy = copy.deepcopy(self.raw)
+        legacy["run"]["max_agents"] = legacy["run"].pop("max_concurrency")
+
+        runbook = validate_runbook(legacy)
+
+        self.assertEqual(runbook["run"]["max_agents"], 3)
+        self.assertNotIn("max_concurrency", runbook["run"])
+
+    def test_worker_pool_cannot_be_empty(self):
+        invalid = copy.deepcopy(self.raw)
+        invalid["agents"] = []
+        with self.assertRaisesRegex(RunbookError, "at least one"):
+            validate_runbook(invalid)
+
+    def test_concurrency_must_be_positive(self):
+        invalid = copy.deepcopy(self.raw)
+        invalid["run"]["max_concurrency"] = 0
+        with self.assertRaisesRegex(RunbookError, "positive integer"):
             validate_runbook(invalid)
 
     def test_dependencies_must_point_backward_to_keep_the_plan_acyclic(self):

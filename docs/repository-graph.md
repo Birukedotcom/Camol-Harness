@@ -21,6 +21,7 @@ The main view reserves the upper-right for a compact dependency rail:
 │ ■ 1 builder     EXECUTING           │ api ──requires──▶ database            │
 │ ■ 2 verifier    EVALUATING          │  │                 ▲                  │
 │ □ 3 watcher     DISCONNECTED        │  └──deploys──▶ cloud-run              │
+│ … 44 more; 2 need attention          │                                        │
 ├ selected evidence / dependency detail┴──────────────────────────────────────┤
 │ camol>                                                                     │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -30,21 +31,24 @@ The main viewport is followed by a persistent workspace switcher:
 
 ```text
 ── WORKSPACES ─────────────────────────────────────────────────────
-[0 ORCH]  [1 ■ BUILD]  ▸[2 ■ VERIFY]  [3 □ WATCH]
-Alt+0..3 direct · left/right or [/] cycle · click supported
+[0 ORCH] [BOXES 12/47] [!2] [1 ■ API] ▸[2 ■ VERIFY] [3 □ DEPLOY] [MORE]
+Alt+0 orchestrator · Alt+1..9 visible shortcut · [/] filtered fleet cycle
 ```
 
 The switcher remains visible while the graph is focused. Connection and selection
 are separate signals: `■` means the box is connected and task-ready, while `▸`
 (plus inverse-video styling where available) marks the workspace currently being
-viewed. A box does not become ready merely because the user selects it.
-`BUILD`, `VERIFY`, and `WATCH` are example current assignments, not fixed slot roles.
+viewed. A box does not become ready merely because the user selects it. `API`,
+`VERIFY`, and `DEPLOY` are example current assignments, not fixed slot roles.
 
-Direct selection uses `Alt+0` for the orchestrator and `Alt+1` through `Alt+3` for
-the boxes. Left/right or `[`/`]` cycles through all four workspaces; mouse-capable
-terminals may click a label. Focus movement is local UI state and emits no command to
-the worker. Attention badges for unread output, a pending question, or an approval
-may decorate a label without replacing its readiness glyph.
+Direct selection uses `Alt+0` for the orchestrator and `Alt+1` through `Alt+9` for the
+currently visible recent or pinned box shortcuts. The numbers are not permanent box
+identities. Left/right or `[`/`]` cycles through the current filtered fleet;
+`/box <stable-id>` opens any box; `/boxes` searches and filters by task, state, target,
+model, or attention; and mouse-capable terminals may click a label. Focus movement is
+local UI state and emits no command to the worker. Attention badges for unread output,
+a pending question, or an approval may decorate a label without replacing its
+readiness glyph.
 
 When a box is selected, the center workspace changes to a peer inspector:
 

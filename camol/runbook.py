@@ -65,8 +65,20 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
     run = _object(root.get("run"), "run")
     run_id = _identifier(run.get("id"), "run.id")
     objective = _string(run.get("objective"), "run.objective")
-    if run.get("max_agents") != 3:
-        raise RunbookError("run.max_agents must be exactly 3 in the v1 harness")
+    if (
+        "max_concurrency" in run
+        and "max_agents" in run
+        and run["max_concurrency"] != run["max_agents"]
+    ):
+        raise RunbookError("run.max_concurrency conflicts with legacy run.max_agents")
+    concurrency_field = "max_concurrency" if "max_concurrency" in run else "max_agents"
+    max_concurrency = run.get(concurrency_field)
+    if (
+        not isinstance(max_concurrency, int)
+        or isinstance(max_concurrency, bool)
+        or max_concurrency <= 0
+    ):
+        raise RunbookError("run.max_concurrency must be a positive integer")
 
     completion = _string_list(run.get("completion", []), "run.completion", allow_empty=False)
     supported_completion = {
@@ -110,8 +122,10 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
     _unique((rule["id"] for rule in normalized_rules), "rule ids")
 
     agents = root.get("agents")
-    if not isinstance(agents, list) or len(agents) != 3:
-        raise RunbookError("agents must define exactly three registered v1 slots")
+    if not isinstance(agents, list) or not agents:
+        raise RunbookError("agents must define at least one registered worker")
+    if max_concurrency > len(agents):
+        raise RunbookError("run.max_concurrency cannot exceed registered workers")
     normalized_agents = []
     for index, agent_value in enumerate(agents):
         agent = _object(agent_value, "agents[{}]".format(index))
@@ -246,7 +260,7 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
         "run": {
             "id": run_id,
             "objective": objective,
-            "max_agents": 3,
+            concurrency_field: max_concurrency,
             "completion": completion,
             "token_policy": {
                 "max_tokens_per_turn": token_policy["max_tokens_per_turn"],

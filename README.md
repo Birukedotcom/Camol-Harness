@@ -1,8 +1,8 @@
 # Camol Harness
 
-Camol is a restart-safe Python control plane for one human-guided orchestrator and a
-v1 pool of three bounded execution slots. Zero to three boxes may be active, and their
-task assignments are chosen by the plan rather than fixed by the slot number.
+Camol is a restart-safe Python control plane for one human-guided orchestrator and an
+N-box worker pool. Each run activates only the boxes its plan can justify within a
+human-approved concurrency, cost, infrastructure, and authority envelope.
 
 The consolidated product direction, trust model, transparent tool-log protocol,
 invariant gates, cmux/GCP compatibility target, and implementation roadmap live in
@@ -38,12 +38,12 @@ and completion. Agents work inside separate boxes and cannot declare themselves 
 
 ## What is executable now
 
-- A JSON runbook describes the objective, three registered agent slots, boxes, rules,
-  per-step instructions and commands, evidence requirements, verification commands,
-  retry limits, token budgets, and terminal conditions.
+- A JSON runbook describes the objective, registered workers, concurrency, boxes,
+  rules, per-step instructions and commands, evidence requirements, verification
+  commands, retry limits, token budgets, and terminal conditions.
 - A SQLite event ledger reconstructs the run after process restart.
-- The scheduler fills up to three compatible boxes and holds dependent work until its
-  receipts are green.
+- The scheduler fills compatible boxes up to the run's approved concurrency and holds
+  dependent work until its receipts are green.
 - Each turn gets a compact context packet containing the task, remaining steps,
   dependency receipts, latest checkpoint, latest verifier result, and remaining token
   budget—never an automatically growing transcript.
@@ -66,6 +66,10 @@ repository crawler, graph model, and terminal graph interactions are specified i
 [docs/repository-graph.md](docs/repository-graph.md). The iteration canaries, external
 coding-suite adapters, long-horizon campaigns, and matched harness comparisons are in
 [docs/evaluation-program.md](docs/evaluation-program.md).
+
+The distinction between terminals, execution targets, workers, workspaces, boxes, and
+leases—and the N-box scaling contract—is in
+[docs/execution-topology.md](docs/execution-topology.md).
 
 ## Run the deterministic three-agent proof
 

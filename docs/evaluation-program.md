@@ -52,11 +52,11 @@ delegation, recovery, or integration.
 
 Public suites are complemented by a Camol-owned workflow corpus. Its first long-run
 scenario family comes from sanitized Buckeye work patterns: inspect a repository,
-let the plan choose an appropriate one-to-three-box topology, implement and integrate
-a change, forward-deploy to an isolated GCP target, observe a voice-agent boundary,
-diagnose a seeded failure, recover from an orchestrator restart, and produce
-replayable evidence. This internal corpus measures product fit that a public
-leaderboard cannot.
+let the plan choose an appropriate N-box topology within a frozen resource envelope,
+implement and integrate a change, forward-deploy to an isolated GCP target, observe a
+voice-agent boundary, diagnose a seeded failure, recover from an orchestrator restart,
+and produce replayable evidence. This internal corpus measures product fit that a
+public leaderboard cannot.
 
 ## 3. Benchmark adapter contract
 
@@ -123,13 +123,13 @@ attribute. Every milestone campaign includes matched controls:
 ```text
 same model + direct vendor CLI
 same model + Camol with one active execution box
-same model + Camol with a plan-selected one-to-three-box topology
+same model + Camol with a plan-selected N-box topology
 ```
 
-Unused v1 slots remain dormant, so the three-slot registry contract does not force
-work into them. The adaptive arm records active count, role assignment, task fan-out,
-candidate groups, and why each additional box was justified. Fixed-topology
-ablations may separately test partitioned, replicated, mixed-role, and sequential
+Unused workers remain dormant; a registered fleet never forces work into them. The
+adaptive arm records active count, role assignment, task fan-out, candidate groups,
+and why each additional box was justified. Fixed-topology ablations may separately
+test partitioned, replicated, mixed-role, sequential, and different fixed-N
 assignments. Additional ablations may disable plan freezing, cross-box context
 routing, evaluator feedback, or recovery one at a time. Unsafe ablations run only in
 isolated benchmark environments.
@@ -176,9 +176,10 @@ restart recovery, deployment reconciliation, and evidence completeness
 ```
 
 A task may be won by the direct CLI, one-box Camol, or adaptive Camol. The adaptive
-arm may correctly choose one, two, or three active boxes. Camol does not promote a
-harness change merely because its preferred arm wins the average; the change must
-meet the predeclared threshold without a forbidden task-level regression.
+arm may correctly choose any finite active count inside its approved envelope. Camol
+does not promote a harness change merely because its preferred arm wins the average;
+the change must meet the predeclared threshold without a forbidden task-level
+regression.
 
 The planned command surface is:
 
