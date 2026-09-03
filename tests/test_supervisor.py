@@ -11,7 +11,7 @@ from pathlib import Path
 
 from camol.sandbox import process_start_fingerprint
 from camol.schema import canonical_digest
-from camol.supervisor import LeaderLock, Supervisor, SupervisorError, send_control
+from camol.supervisor import LeaderLock, Supervisor, SupervisorError, send_control, send_control_v2
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +87,56 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(SupervisorError, "control token"):
             await send_control(self.state, "status")
         self.assertFalse((self.state / "control/control.token").exists())
+
+    async def test_v2_plan_events_and_box_views_are_typed_and_reattachable(self):
+        supervisor = Supervisor(
+            ROOT / "examples/three-agent-runbook.json", self.source, self.state,
+        )
+        serving = asyncio.create_task(supervisor.serve())
+        await self._wait_for(supervisor.paths.socket)
+        try:
+            plan = await send_control_v2(self.state, "plan")
+            self.assertEqual(plan["result"]["schema"], "camol.control_plan")
+            self.assertEqual(plan["result"]["plan_digest"], "sha256:2850aa84a60f5177cd17f38ed1d6c3de9c921d2d2bdf4004c8ac29f77e3ee2ff")
+
+            first = await send_control_v2(
+                self.state, "events", params={"after_seq": 0, "limit": 5, "wait_ms": 0}
+            )
+            self.assertEqual(first["result"]["schema"], "camol.control_events")
+            self.assertTrue(first["result"]["events"])
+            resumed = await send_control_v2(
+                self.state,
+                "events",
+                params={"after_seq": first["result"]["next_seq"], "limit": 5, "wait_ms": 20},
+            )
+            self.assertEqual(resumed["result"]["events"], [])
+
+            box = await send_control_v2(
+                self.state, "box", params={"box_id": "builder", "after_seq": 0, "limit": 20}
+            )
+            self.assertEqual(box["result"]["schema"], "camol.control_box")
+            self.assertEqual(box["result"]["box_id"], "builder")
+            self.assertIn("inventory", box["result"]["eligible_task_ids"])
+        finally:
+            await send_control(self.state, "stop")
+            await asyncio.wait_for(serving, timeout=5)
+
+    async def test_v2_protocol_rejects_unknown_params_and_bad_cursors(self):
+        supervisor = Supervisor(
+            ROOT / "examples/three-agent-runbook.json", self.source, self.state,
+        )
+        serving = asyncio.create_task(supervisor.serve())
+        await self._wait_for(supervisor.paths.socket)
+        try:
+            with self.assertRaisesRegex(SupervisorError, "unknown fields"):
+                await send_control_v2(self.state, "events", params={"secret": "no"})
+            with self.assertRaisesRegex(SupervisorError, "non-negative"):
+                await send_control_v2(self.state, "events", params={"after_seq": -1})
+            with self.assertRaisesRegex(SupervisorError, "unknown box"):
+                await send_control_v2(self.state, "box", params={"box_id": "missing"})
+        finally:
+            await send_control(self.state, "stop")
+            await asyncio.wait_for(serving, timeout=5)
 
     async def test_database_and_control_symlink_must_stay_inside_state(self):
         outside = Path(self.temporary.name) / "outside"

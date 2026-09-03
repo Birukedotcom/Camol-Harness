@@ -10,7 +10,8 @@ import signal
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from .orchestrator import Orchestrator, StateTransitionError
 from .runner import HarnessRunner, summary
@@ -150,6 +151,7 @@ class Supervisor:
         self.orchestrator = None
         self.runner = None
         self.run_id = None
+        self.runbook = None
         self.mode = "starting"
         self.draining = False
         self.stop_after_drain = False
@@ -262,6 +264,77 @@ class Supervisor:
             **self._boxes(),
         }
 
+    def _plan(self) -> Dict[str, Any]:
+        state = self.orchestrator.state(self.run_id)
+        return {
+            "schema": "camol.control_plan",
+            "schema_version": 1,
+            "run_id": self.run_id,
+            "plan_digest": state["plan_digest"],
+            "approved_by": state.get("approved_by"),
+            "status": state["status"],
+            "runbook": self.runbook,
+        }
+
+    @staticmethod
+    def _event_mentions_task(event: Dict[str, Any], task_id: str) -> bool:
+        payload = event.get("payload", {})
+        if not isinstance(payload, dict):
+            return False
+        for name in ("task_id", "evaluated_task_id", "from_task_id", "to_task_id"):
+            if payload.get(name) == task_id:
+                return True
+        return False
+
+    def _box(self, box_id: str, after_seq: int, limit: int) -> Dict[str, Any]:
+        state = self.orchestrator.state(self.run_id)
+        worker = next((item for item in self.runbook["agents"] if item["id"] == box_id), None)
+        if worker is None:
+            raise SupervisorError("unknown box id")
+        task_ids = sorted(
+            task_id for task_id, task in state["tasks"].items()
+            if task.get("agent_id") == box_id
+        )
+        configured_tasks = sorted(
+            task["id"] for task in self.runbook["tasks"]
+            if set(task["capabilities"]).issubset(set(worker["capabilities"]))
+        )
+        relevant = [
+            event for event in self.store.read(self.run_id, after_seq=after_seq)
+            if event.get("actor_id") == box_id
+            or any(self._event_mentions_task(event, task_id) for task_id in set(task_ids + configured_tasks))
+        ][:limit]
+        workspace = next(
+            (item for item in self._boxes()["boxes"] if item.get("box_id") == box_id),
+            None,
+        )
+        return {
+            "schema": "camol.control_box",
+            "schema_version": 1,
+            "box_id": box_id,
+            "role": worker["role"],
+            "capabilities": worker["capabilities"],
+            "adapter_kind": worker["adapter"]["kind"],
+            "task_ids": task_ids,
+            "eligible_task_ids": configured_tasks,
+            "workspace": workspace,
+            "events": relevant,
+            "next_seq": relevant[-1]["seq"] if relevant else after_seq,
+        }
+
+    async def _events(self, after_seq: int, limit: int, wait_ms: int) -> Dict[str, Any]:
+        deadline = asyncio.get_running_loop().time() + (wait_ms / 1000)
+        while True:
+            events = self.store.read(self.run_id, after_seq=after_seq)[:limit]
+            if events or wait_ms == 0 or asyncio.get_running_loop().time() >= deadline:
+                return {
+                    "schema": "camol.control_events",
+                    "schema_version": 1,
+                    "events": events,
+                    "next_seq": events[-1]["seq"] if events else after_seq,
+                }
+            await asyncio.sleep(0.1)
+
     async def _driver(self) -> None:
         while not self._shutdown.is_set():
             state = self.orchestrator.state(self.run_id)
@@ -344,12 +417,17 @@ class Supervisor:
         self.orphans = []
 
     async def _dispatch(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        fields = ("schema", "schema_version", "token", "command", "requested_by")
+        version = request.get("schema_version")
+        fields = (
+            ("schema", "schema_version", "token", "command", "requested_by")
+            if version == 1 else
+            ("schema", "schema_version", "token", "request_id", "command", "requested_by", "params")
+        )
         reject_unknown_fields(request, fields, "control request")
         if (
             request.get("schema") != "camol.control_request"
             or type(request.get("schema_version")) is not int
-            or request.get("schema_version") != 1
+            or request.get("schema_version") not in {1, 2}
         ):
             raise SupervisorError("unsupported control request")
         if not isinstance(request.get("token"), str) or not hmac.compare_digest(request["token"], self.token):
@@ -357,6 +435,15 @@ class Supervisor:
         command = request.get("command")
         if not isinstance(command, str):
             raise SupervisorError("control command must be a string")
+        params: Dict[str, Any] = {}
+        if version == 2:
+            if not isinstance(request.get("request_id"), str) or not request["request_id"]:
+                raise SupervisorError("control request_id is required")
+            if not isinstance(request.get("params"), dict):
+                raise SupervisorError("control params must be an object")
+            params = request["params"]
+        elif "requested_by" not in request:
+            request["requested_by"] = "operator"
         if command == "ping":
             return {"ok": True, "pid": os.getpid()}
         if command in {"status", "boxes"}:
@@ -383,6 +470,33 @@ class Supervisor:
             self.orchestrator.approve_plan(self.run_id, approved_by, state["plan_digest"])
             self._wake.set()
             return {"ok": True, "result": {"plan_digest": state["plan_digest"], "approved_by": approved_by}}
+        if version == 2 and command == "plan":
+            reject_unknown_fields(params, (), "control plan params")
+            return {"ok": True, "result": self._plan()}
+        if version == 2 and command == "events":
+            reject_unknown_fields(params, ("after_seq", "limit", "wait_ms"), "control events params")
+            after_seq = params.get("after_seq", 0)
+            limit = params.get("limit", 100)
+            wait_ms = params.get("wait_ms", 0)
+            if type(after_seq) is not int or after_seq < 0:
+                raise SupervisorError("events after_seq must be a non-negative integer")
+            if type(limit) is not int or not 1 <= limit <= 500:
+                raise SupervisorError("events limit must be between 1 and 500")
+            if type(wait_ms) is not int or not 0 <= wait_ms <= 30_000:
+                raise SupervisorError("events wait_ms must be between 0 and 30000")
+            return {"ok": True, "result": await self._events(after_seq, limit, wait_ms)}
+        if version == 2 and command == "box":
+            reject_unknown_fields(params, ("box_id", "after_seq", "limit"), "control box params")
+            box_id = params.get("box_id")
+            after_seq = params.get("after_seq", 0)
+            limit = params.get("limit", 100)
+            if not isinstance(box_id, str) or not box_id:
+                raise SupervisorError("box_id is required")
+            if type(after_seq) is not int or after_seq < 0:
+                raise SupervisorError("box after_seq must be a non-negative integer")
+            if type(limit) is not int or not 1 <= limit <= 500:
+                raise SupervisorError("box limit must be between 1 and 500")
+            return {"ok": True, "result": self._box(box_id, after_seq, limit)}
         if command == "stop":
             self.draining = True
             self.stop_after_drain = True
@@ -421,8 +535,8 @@ class Supervisor:
                 self.paths.socket.unlink()
             self.store = SQLiteEventStore(self.paths.database)
             self.orchestrator = Orchestrator(self.store)
-            runbook = load_runbook(self.runbook_path)
-            state = self.orchestrator.initialize(runbook)
+            self.runbook = load_runbook(self.runbook_path)
+            state = self.orchestrator.initialize(self.runbook)
             self.run_id = state["run_id"]
             if state["status"] == "draft" and self.approve_by:
                 self.orchestrator.approve_plan(self.run_id, self.approve_by, state["plan_digest"])
@@ -486,4 +600,39 @@ async def send_control(state_dir: Path, command: str, *, requested_by: str = "op
     await writer.wait_closed()
     if not response.get("ok"):
         raise SupervisorError(response.get("error") or "control request failed")
+    return response
+
+
+async def send_control_v2(
+    state_dir: Path,
+    command: str,
+    *,
+    requested_by: str = "operator",
+    params: Optional[Dict[str, Any]] = None,
+    timeout: float = 35,
+) -> Dict[str, Any]:
+    """Send a typed V2 request while preserving the public V1 control client."""
+    paths = SupervisorPaths.under(state_dir)
+    token = _read_control_token(paths.token)
+    if not paths.socket.exists() or paths.socket.is_symlink():
+        raise SupervisorError("Camol supervisor socket is not available")
+    reader, writer = await asyncio.open_unix_connection(str(paths.socket))
+    request_id = "request-" + uuid4().hex
+    request = {
+        "schema": "camol.control_request",
+        "schema_version": 2,
+        "token": token,
+        "request_id": request_id,
+        "command": command,
+        "requested_by": requested_by,
+        "params": dict(params or {}),
+    }
+    writer.write((json.dumps(request, sort_keys=True) + "\n").encode("utf-8"))
+    await writer.drain()
+    response = json.loads(await asyncio.wait_for(reader.readline(), timeout=timeout))
+    writer.close()
+    await writer.wait_closed()
+    if not response.get("ok"):
+        raise SupervisorError(response.get("error") or "control request failed")
+    response["request_id"] = request_id
     return response

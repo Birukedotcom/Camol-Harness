@@ -9,6 +9,9 @@ description = "A persistent, plan-driven multi-agent orchestration harness."
 requires-python = ">=3.9"
 dependencies = []
 
+[project.optional-dependencies]
+tui = ["textual>=8.0,<9"]
+
 [project.scripts]
 camol = "camol.cli:main"
 
