@@ -576,8 +576,26 @@ class WorkspaceManager:
         self._validate_handle(handle)
         if not isinstance(message, str) or not message.strip():
             raise WorkspaceError("integration commit message is required")
+        name = self._git("-C", str(handle.path), "config", "--local", "--get", "user.name", check=False)
+        email = self._git("-C", str(handle.path), "config", "--local", "--get", "user.email", check=False)
+        if not name or not email:
+            inherited = self._git(
+                "-C", str(handle.path), "show", "-s", "--format=%an%x00%ae", handle.receipt.base_revision
+            ).split("\x00")
+            if len(inherited) != 2:
+                raise WorkspaceError("base commit has no usable integration identity")
+            name = name or inherited[0]
+            email = email or inherited[1]
+        if any(not value or len(value) > 320 or any(character in value for character in "\x00\r\n") for value in (name, email)):
+            raise WorkspaceError("integration identity is empty or contains control characters")
         self._git("-C", str(handle.path), "add", "-A")
-        self._git("-C", str(handle.path), "commit", "--allow-empty", "-m", message, timeout=300)
+        self._git(
+            "-C", str(handle.path),
+            "-c", "user.name=" + name,
+            "-c", "user.email=" + email,
+            "commit", "--allow-empty", "-m", message,
+            timeout=300,
+        )
         return self._git("-C", str(handle.path), "rev-parse", "HEAD")
 
     def head_revision(self, handle: Optional[WorkspaceHandle] = None) -> str:

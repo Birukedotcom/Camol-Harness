@@ -146,6 +146,19 @@ class WorkspaceManagerTests(unittest.TestCase):
         self.assertTrue(again.integration)
         self.assertTrue(record["integration"])
 
+    def test_integration_commit_inherits_base_identity_without_global_or_local_config(self):
+        git(self.source, "config", "--unset", "user.name")
+        git(self.source, "config", "--unset", "user.email")
+        manager = WorkspaceManager(self.source, self.state)
+        base = git(self.source, "rev-parse", "HEAD")
+        generation = manager.prepare_integration_generation(
+            "run", "task", "candidate-proof", base_revision=base,
+        )
+        (generation.path / "tracked.txt").write_text("integrated\n", encoding="utf-8")
+        revision = manager.commit_workspace(generation, "integration proof")
+        identity = git(generation.path, "show", "-s", "--format=%an%n%ae", revision).splitlines()
+        self.assertEqual(identity, ["Camol Test", "camol@example.invalid"])
+
     def test_cleanup_never_destroys_adopted_workspace(self):
         manager = WorkspaceManager(self.source, self.state)
         handle = manager.prepare_task("run", "task", "box")
