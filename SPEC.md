@@ -2,6 +2,11 @@
 
 Status: `SPECULATIVE`
 
+Evidence posture: `PARTIALLY_MAPPED` from the external, PHI-bearing
+`buckeye-worklog-2026-08-26_2026-09-02` bundle. The bundle is deliberately not
+committed. Its extracted claims are `BUNDLE_REPORTED` until Camol reproduces them
+through its own adapters and event ledger.
+
 This document is the authoritative product specification for Camol. The executable
 protocol details in `docs/` refine this document but do not override it. A run becomes
 authoritative only when a human approves the exact digest of its compiled plan.
@@ -192,6 +197,21 @@ gate it.
 An agent never marks a state complete. It emits a completion claim. The gate accepts,
 rejects, or escalates that claim.
 
+Gate verdicts are precise rather than a generic pass/fail:
+
+```text
+DISPROVED
+NOT_DISPROVED_WITHIN_BUDGET
+STATISTICALLY_REGRESSED
+SUPPORTED_BY_REQUIRED_EVIDENCE
+OBSERVATION_INCOMPLETE
+EVIDENCE_CONFLICT
+HUMAN_ACCEPTED
+```
+
+`NOT_DISPROVED_WITHIN_BUDGET` cannot discharge an obligation that requires positive
+or real-boundary evidence.
+
 ### Invariants
 
 Invariants come from human intention and policy, not from trusting an implementation.
@@ -308,6 +328,16 @@ Every evaluation is visible. Every command, model request, tool call, message,
 approval, remote action, result, and redaction is represented as structured events.
 Terminal text is a projection of this ledger, not the authoritative record.
 
+Evidence and claims carry an epistemic status:
+
+```text
+OBSERVED | EXECUTED | DERIVED | INFERRED
+HUMAN_REPORTED | UNVERIFIED | CONTRADICTED
+```
+
+An inferred claim cannot satisfy a gate requiring executed evidence. Corrections
+append a contradiction or supersession event; they never rewrite the original claim.
+
 ### Tool invocation envelope
 
 Every tool invocation records at minimum:
@@ -333,6 +363,13 @@ Commands are stored as argument arrays rather than ambiguous shell strings. Stre
 tools emit start, bounded chunk/reference, and terminal events. A tool result cannot
 be attached to another context packet because the packet and invocation hashes are
 part of its receipt.
+
+For critical boxes, the wrapper alone is not considered complete observation. Policy
+may require process-tree accounting, filesystem before/after receipts, network
+destination observation, credential-access events, cloud audit correlation, and
+child-tool causation links. Missing expected telemetry produces
+`OBSERVATION_INCOMPLETE`; absence of a parsed event is not evidence that the event did
+not occur.
 
 Model-call evidence includes provider, model, effort, sampling configuration, input
 message hashes, complete tool definitions, tool choices, output, finish reason,
@@ -453,6 +490,11 @@ verified progress—obligations discharged, counterexamples resolved, or accepte
 integration evidence—rather than message or token volume. A pause is restartable and
 does not erase leases, checkpoints, or history.
 
+Durable watchers use a query, cursor or watermark, deduplication identity, wake
+policy, observation window, and terminality condition. A timed-out poll returns to
+`waiting`; it does not complete the watcher. A watcher never reports the same source
+event twice unless a later revision explicitly reopens it.
+
 ## 13. Replaceable adapters
 
 ### Execution substrate
@@ -476,6 +518,19 @@ Initial substrates are:
 Camol never treats an open terminal, running VM, or successful SSH connection as a
 ready agent. Readiness requires transport, runtime, agent, checkout, and project
 evidence.
+
+The worker registry may contain any number of discovered, dormant, historical, or
+unavailable machines while the v1 scheduler permits three simultaneous execution
+leases. Machines created outside Camol enter through an adoption flow:
+
+```text
+discover -> establish identity -> inspect work -> bind project
+  -> register -> task-specific readiness probe
+```
+
+Task readiness includes the required language toolchains, dependencies, credentials,
+services, database/migration state, source revision, and adapter capabilities. A VM
+that is alive but cannot execute its assigned task is not ready.
 
 ### Model providers
 
@@ -521,6 +576,15 @@ The first divergent event, not the final conversational symptom, drives debuggin
 - The orchestrator performs post-action reads to distinguish command success from
   real system success.
 
+Remote mutations have explicit outcome states:
+
+```text
+EFFECT_REQUESTED -> EFFECT_CONFIRMED | EFFECT_REJECTED | EFFECT_UNKNOWN
+```
+
+`EFFECT_UNKNOWN` requires a provider read and reconciliation before retry. Camol does
+not assume that a timed-out deployment, migration, message, or payment failed.
+
 ## 15. Current implementation and gaps
 
 The repository already contains an executable local control-plane slice:
@@ -541,6 +605,11 @@ The following specification areas are not yet implemented and remain speculative
 - `basic`, `backed`, and `critical` gate compilation;
 - plan revisions and state migrations;
 - the full tool-invocation envelope and artifact store;
+- epistemic evidence status, observer-readiness gates, and evidence-conflict states;
+- durable cursor-based watchers and cross-system identity correlation;
+- arbitrary worker discovery/adoption with a three-active-lease scheduler;
+- salvage-gated teardown and remote-effect reconciliation;
+- versioned deployment identities, CI waivers, and VCS integration relationships;
 - interactive `/grill` and terminal UI;
 - isolated Git worktree execution;
 - real Codex, Claude, local-model, cmux, SSH, and GCP adapters;
@@ -551,17 +620,27 @@ The following specification areas are not yet implemented and remain speculative
 
 ## 16. Build sequence
 
-1. Record and map one current cmux-to-GCP workflow, including a voice-agent case.
-2. Add invariant, obligation, gate, approval, and plan-revision schemas to the kernel.
-3. Add the complete tool-event envelope and content-addressed artifact storage.
-4. Prepare three isolated Git worktrees and real local agent adapters.
-5. Add read-only box inspection and replayable terminal/model/tool streams.
-6. Implement plan amendments, migration, reconciliation, and liveness heartbeats.
-7. Wrap cmux/SSH and the actual GCP deployment/observation path.
-8. Implement the evaluator compiler and adaptive counterexample loop.
-9. Run the recorded workflow, force failures, recover, and promote the milestone from
-   `MAPPED` to `BACKED`.
-10. Add the polished TUI, supplied Camol branding, packaging, and Homebrew formula.
+1. Convert the external worklog into the sanitized requirements in section 19 while
+   retaining its `BUNDLE_REPORTED` provenance.
+2. Capture one intact current cmux-to-GCP workflow, including the underlying tool
+   invocations and one voice-agent case.
+3. Add invariant, obligation, gate, approval, epistemic-status, observer-readiness,
+   and plan-revision schemas to the kernel.
+4. Add the complete tool-event envelope, central event streaming, and
+   content-addressed artifact storage.
+5. Add arbitrary worker discovery/adoption, task readiness, three simultaneous
+   leases, and salvage-gated teardown.
+6. Prepare three isolated Git worktrees and real local agent adapters.
+7. Add read-only box inspection and replayable terminal/model/tool streams.
+8. Implement cursor-based watchers, plan migration, reconciliation, evidence
+   invalidation, and liveness heartbeats.
+9. Wrap cmux/SSH and the actual GCP deployment/observation path, including
+   deployment identities, effect reconciliation, and expiring waivers.
+10. Implement the evaluator compiler, observation contracts, statistical voice
+    campaigns, and adaptive counterexample loop.
+11. Run the vertical slice in section 20, force failures, recover, and promote the
+    milestone from `MAPPED` to `BACKED`.
+12. Add the polished TUI, supplied Camol branding, packaging, and Homebrew formula.
 
 ## 17. Decisions frozen for the initial build
 
@@ -573,8 +652,9 @@ The following specification areas are not yet implemented and remain speculative
 - Boxes may propose but not authorize new work or weaker truth conditions.
 - Newly discovered work enters through a versioned plan amendment.
 - Peering into boxes is read-only; mutation requires explicit takeover.
-- Three boxes are the v1 execution target; multiple implementations are optional and
-  explicitly requested.
+- Three simultaneous box leases are the v1 execution target; the registry may track
+  more discovered, dormant, unavailable, or historical boxes. Multiple
+  implementations are optional and explicitly requested.
 - Local-only, hybrid, cmux-compatible, and VM-backed execution use the same protocol.
 - Integration is orchestrator-owned and every synthesized artifact is reevaluated.
 - Long-running sessions are owner-controlled and pause on declared lack of verified
@@ -585,8 +665,9 @@ The following specification areas are not yet implemented and remain speculative
 The architecture can progress with conservative defaults, but these inputs are still
 needed before the relevant adapters become `BACKED`:
 
-1. A captured example of the actual cmux workflow, from task intake through GCP
-   deployment and monitoring.
+1. One intact command/tool-level trace of the actual cmux workflow, from task intake
+   through GCP deployment and monitoring. The current worklog partially maps the
+   workflow but some VM-local histories were already lost.
 2. The GCP products, projects, regions, credential boundaries, and rollback methods
    used in that workflow.
 3. The voice-agent providers and the evidence that may be retained safely.
@@ -594,3 +675,208 @@ needed before the relevant adapters become `BACKED`:
    deployment health.
 5. Which external action classes, if any, the human wants to preauthorize rather than
    approve per occurrence.
+
+## 19. Requirements backed by the Buckeye worklog
+
+### 19.1 Evidence boundary
+
+The external worklog covers 2026-08-26 through 2026-09-02. Its summary reports 815
+typed prompts across seven Claude sessions, 1,189 authored commits, 5,703 distinct
+files touched, 108 opened pull requests, and fourteen sandbox VMs active at the end
+of the work period. It also contains GCP and voice-call forensic notes, including
+PHI-bearing transcripts that must remain outside Git.
+
+Camol did not produce this bundle and has not independently replayed its source
+systems. These facts therefore have `BUNDLE_REPORTED` provenance. The bundle is
+sufficient to derive product requirements but not to declare an adapter `BACKED`.
+
+### 19.2 Workflow crosswalk
+
+| Observed workflow | Required Camol primitive |
+|---|---|
+| Repeated planning and specification conversations | `/grill`, semantic decisions, frozen plan revisions |
+| Many parallel and disposable VMs | worker discovery, adoption, leases, readiness, salvage, teardown |
+| Large branch and PR volume | VCS integration graph and evidence invalidation |
+| CI repair, monitoring, and temporary skips | visible gates, durable watchers, expiring waivers |
+| Manual and automated GCP deployment | approval, deployment identity, effect reconciliation, post-action reads |
+| Live GCP log investigation | bounded queries, watermarks, deduplication, cross-source correlation |
+| Voice-call review and debugging | observation contracts, terminality gates, statistical campaigns, restricted evidence |
+| Competing implementations and generated probes | optional candidate expansion and differential evaluation |
+| Corrections to earlier diagnoses | epistemic status, contradiction events, observer-readiness gates |
+| Work rescued before VM deletion | central streaming and salvage-gated teardown |
+
+### 19.3 Observer readiness
+
+The worklog records a debugger reporting zero tool calls while the system had accepted
+hundreds of voice events. Its parser expected an obsolete log representation. This
+creates a kernel requirement: an evaluator must prove its observation channel is
+ready before interpreting absence.
+
+```text
+OBSERVER_DISCOVERED
+  -> SCHEMA_IDENTIFIED
+  -> FIXTURE_DETECTED
+  -> CORRELATION_PROVEN
+  -> OBSERVATION_READY
+```
+
+The readiness receipt includes source schema/version, query window, parser version,
+fixture or heartbeat, expected event classes, correlation keys, freshness, and known
+blind fields. A broken instrument blocks consequential evaluation before product code
+is changed.
+
+### 19.4 Correctable knowledge
+
+The worklog explicitly corrects earlier diagnoses after new executed evidence. Camol
+must preserve that distinction:
+
+```text
+Claim A [INFERRED]
+  -> contradicted by Evidence B [EXECUTED]
+  -> Claim C [DERIVED]
+```
+
+The UI shows the current conclusion without hiding the reasoning history. Debug and
+evaluation packets receive the corrected claim plus the evidence that superseded it,
+not the obsolete diagnosis as unqualified context.
+
+### 19.5 Fleet adoption and salvage
+
+The worklog records machines created outside the controller, stale local inventory,
+provider schema drift, unpushed commits, untracked artifacts, and VM-local prompts
+lost after deletion. Therefore:
+
+- Provider schemas use versioned decoding and capability negotiation; optional or
+  renamed provider fields do not invalidate the entire fleet response.
+- Provider identity, harness identity, VM name, box identity, project, branch, and
+  lease are distinct fields.
+- A discovered machine can be adopted without pretending Camol created it.
+- Event and artifact streaming begins before disposable work is trusted.
+- Teardown requires a salvage receipt proving no required unpushed commit, untracked
+  artifact, running invocation, or unacknowledged event remains.
+- Provider deletion and session/logout cleanup are separate recorded effects.
+
+### 19.6 VCS and integration graph
+
+The worklog contains stacked, folded, superseded, closed, merged, and still-open pull
+requests. Task dependencies alone cannot express this. Version-control objects
+support:
+
+```text
+depends_on | supersedes | absorbs | conflicts_with
+deploys | backports | abandons
+```
+
+Every candidate records source base, head, dirty-state digest, commit identities,
+remote push receipt, PR identity, checks, review state, and integration result. A
+merge, rebase, fold, environment change, or plan amendment computes which evidence
+must be rerun.
+
+### 19.7 Deployment truth and waivers
+
+A deployment identity is a vector:
+
+```text
+source revision
+build identity
+image digest
+service revision
+configuration digest
+infrastructure resources
+database migration head
+deployment timestamp and target
+```
+
+Environment-only changes create a new identity even when the image is unchanged.
+Post-deployment evidence is invalid if it cannot be bound to that vector.
+
+A temporarily bypassed CI or release condition creates a visible waiver rather than
+a green check:
+
+```text
+failed invariant, reason, owner, scope
+created_at, expires_at
+compensating evidence
+remediation obligation
+```
+
+Expired waivers block the gate. Results produced under a live waiver display
+`GREEN_WITH_WAIVER`.
+
+### 19.8 Durable watchers
+
+The worklog repeatedly re-arms timed monitors and separately maintains a review
+watermark so calls are not reported twice. Camol adopts the latter as the contract.
+Watchers survive UI exit and orchestrator restart, resume from the last acknowledged
+cursor, distinguish no-new-data from broken observation, and wait for terminality
+before judging a live call.
+
+### 19.9 Identity and correlation
+
+Voice work spans caller or participant identity, call job, voice session, screening,
+worker generation, deployment, turn, tool invocation, database write, and terminal
+outcome. Multiple calls may belong to one screening and may overlap. Camol stores
+these as typed correlation links rather than assuming one call equals one run.
+
+Evidence sources may disagree. The reconciler records `EVIDENCE_CONFLICT`, identifies
+the conflicting windows and correlation assumptions, and opens an experiment or
+human gate. It does not manufacture a winner.
+
+### 19.10 Voice observation contracts
+
+A voice campaign declares:
+
+```text
+scenario distribution and valid inputs
+deployment/model/tool identities
+audio, transcript, state, and tool observables
+call terminality condition
+trial count and controlled variables
+acceptable stochastic variance
+latency and outcome thresholds
+retention and redaction policy
+```
+
+A single call may disprove a safety or state invariant when its observation is
+decisive. Quality and reliability claims require a declared campaign and cannot be
+established by one favorable call. A correct internal refusal that produces silence
+still violates the end-to-end caller outcome, demonstrating why local correctness
+does not imply global correctness.
+
+### 19.11 Human-gate scale
+
+The recorded work volume makes per-command human approval impractical. Human gates
+belong at semantic, authority, risk, and state boundaries. Routine tool calls proceed
+only under a visible preauthorized policy. Plan expansion, weaker invariants,
+consequential ambiguity, production mutation, live waivers, and final acceptance
+remain human decisions.
+
+## 20. Backed vertical slice
+
+Camol earns `BACKED` for the core Buckeye workflow only after one real run completes
+this sequence with replayable evidence:
+
+```text
+human /grill session
+  -> frozen plan and invariant gates
+  -> discover or adopt one real worker
+  -> prove task-specific readiness
+  -> stream every command, tool, model, and artifact event centrally
+  -> bind work to an isolated branch/worktree
+  -> produce and integrate one reviewed change
+  -> pass CI or display an explicit unexpired waiver
+  -> obtain human staging-deploy approval
+  -> deploy and reconcile the exact GCP deployment identity
+  -> prove observer readiness
+  -> observe one terminal voice call from a durable watcher cursor
+  -> create one evidence-backed debug case
+  -> repair, redeploy, and rerun the affected gates
+  -> restart the orchestrator without losing or duplicating work
+  -> salvage and tear down the worker without losing required evidence
+  -> obtain final human acceptance
+```
+
+The controlled proof must include at least one simulated or safe occurrence of an
+observer blind spot, remote `EFFECT_UNKNOWN`, rejected evaluation, expired waiver,
+and interrupted worker. Camol remains `SPECULATIVE` for any adapter or evidence lane
+that is mocked rather than exercised at its real boundary.
