@@ -145,6 +145,7 @@ class PlanningTests(unittest.TestCase):
             "Preserve basic authentication",
             "preserve token max_tokens_per_turn",
             "use basic authentication-required",
+            "token MaximumTokensPerRequest",
             "Change cookie: behavior",
             "Rotate credentials through an opaque reference",
             "AUTH_ENABLED=true",
@@ -168,6 +169,13 @@ class PlanningTests(unittest.TestCase):
             "MY_TOKEN=abcdefghijk",
             "MY_TOKEN: abcdefghijk",
             "PAT=abcdefghijk",
+            "clientSecret=abcdefghijklmnopqrstuvwxyz",
+            "accessToken=abcdefghijklmnopqrstuvwxyz",
+            "SESSION=abcdefghijklmnopqrstuvwxyz",
+            "PASSWORD=123456",
+            "AUTH_TOKEN=123456789",
+            "Bearer abcdefghijklmnop-qrstuvwxyz",
+            "Bearer deadbeefdeadbeef",
         ):
             with self.assertRaisesRegex(PlanningError, "credential material"):
                 reject_sensitive_text(text)

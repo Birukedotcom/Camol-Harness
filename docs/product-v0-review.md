@@ -74,11 +74,15 @@ and `tests.test_runbook.RunbookV4Tests.test_v4_verification_can_select_box_or_wo
 A final review of that remediation found two P2 usability regressions in the
 high-confidence input guard. Broad output-redaction names had been reused for input
 admission, and generic auth-scheme words were classified by length alone. Input
-admission now uses credential-bearing field suffixes plus a non-placeholder value;
-auth-scheme candidates require compact credential structure or measured character
-entropy. Regression cases cover `AUTH_ENABLED=true`, `GIT_AUTHOR_NAME=test`,
+admission now uses normalized credential-bearing field forms plus a non-placeholder
+value. Bearer values are always opaque credentials, while generic Basic/Token
+candidates require mixed token structure. Regression cases cover `AUTH_ENABLED=true`, `GIT_AUTHOR_NAME=test`,
 `max_tokens=12000`, snake/kebab auth prose, and the credential examples that must
 remain denied. The aggressive defense-in-depth output redactor remains separate.
+
+The remediation follow-up found and closed three P1 omissions: camelCase/session
+credential names, numeric credential values, and low-entropy or hyphenated Bearer
+values. Those forms are now denied before any raw grill or plan persistence.
 
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python
