@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable
 
 from .admission import AdmissionBundle
+from .evidence import EvidenceRecord
 from .readiness import LeaseFence, ReadinessReceipt, WaitingReason
 
 
@@ -157,13 +158,36 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         agent["stats"]["verified_steps"] += payload["newly_completed_steps"]
         next_state["total_tokens"] += used_tokens
     elif event_type == "EVIDENCE_RECORDED":
-        next_state["evidence"][payload["evidence_id"]] = deepcopy(payload)
-        task_id = payload.get("task_id")
+        if payload.get("schema") == EvidenceRecord.SCHEMA:
+            record = EvidenceRecord.from_dict(payload)
+            if record.run_id != event["run_id"]:
+                raise ValueError("EVIDENCE_RECORDED belongs to another run")
+            if record.task_id is not None:
+                task = next_state["tasks"].get(record.task_id)
+                if (
+                    task is None
+                    or task["agent_id"] != record.agent_id
+                    or task["lease_id"] != record.lease_id
+                    or task["fence_digest"] != record.fence_digest
+                    or task["status"] not in {"running", "verifying"}
+                ):
+                    raise ValueError("EVIDENCE_RECORDED does not match the active fenced lease")
+            elif record.debug_case_id not in next_state["debug_cases"]:
+                raise ValueError("EVIDENCE_RECORDED names an unknown debug case")
+            normalized_payload = record.to_dict()
+        else:
+            # Historical v0 ledgers used an unversioned payload. They remain
+            # replayable but cannot satisfy the stricter epistemic gate below.
+            normalized_payload = deepcopy(payload)
+        if normalized_payload["evidence_id"] in next_state["evidence"]:
+            raise ValueError("EVIDENCE_RECORDED evidence id already exists")
+        next_state["evidence"][normalized_payload["evidence_id"]] = normalized_payload
+        task_id = normalized_payload.get("task_id")
         if task_id:
-            next_state["tasks"][task_id]["evidence_ids"].append(payload["evidence_id"])
-        debug_case_id = payload.get("debug_case_id")
+            next_state["tasks"][task_id]["evidence_ids"].append(normalized_payload["evidence_id"])
+        debug_case_id = normalized_payload.get("debug_case_id")
         if debug_case_id:
-            next_state["debug_cases"][debug_case_id]["evidence_ids"].append(payload["evidence_id"])
+            next_state["debug_cases"][debug_case_id]["evidence_ids"].append(normalized_payload["evidence_id"])
     elif event_type == "MESSAGE_ROUTED":
         next_state["messages"].append(deepcopy(payload))
     elif event_type == "TASK_SUBMITTED":

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .orchestrator import Orchestrator, StateTransitionError
+from .artifacts import ArtifactError, ArtifactStore, RunArchive
 from .runner import HarnessRunner, summary
 from .doctor import DoctorOptions, run_doctor
 from .runbook import RunbookError, load_runbook
@@ -87,6 +88,25 @@ def command_events(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_export(args: argparse.Namespace) -> int:
+    store = SQLiteEventStore(Path(args.db))
+    try:
+        run_id = _run_id(store, args.run_id)
+        artifacts = ArtifactStore(Path(args.state_dir))
+        manifest = RunArchive.export(run_id, store.read(run_id), artifacts, Path(args.output))
+        _write_json(manifest)
+    finally:
+        store.close()
+    return 0
+
+
+def command_verify_export(args: argparse.Namespace) -> int:
+    manifest, _ = RunArchive.verify(Path(args.archive))
+    state = RunArchive.replay(Path(args.archive))
+    _write_json({"valid": True, "manifest": manifest, "run": summary(state)})
+    return 0
+
+
 def command_run(args: argparse.Namespace) -> int:
     runbook = load_runbook(Path(args.runbook))
     workspace = Path(args.workspace)
@@ -163,6 +183,17 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--after", type=int, default=0)
     events.set_defaults(handler=command_events)
 
+    export = subparsers.add_parser("export", help="export a replayable run ledger and its artifacts")
+    export.add_argument("--db", required=True)
+    export.add_argument("--state-dir", required=True)
+    export.add_argument("--run-id")
+    export.add_argument("--output", required=True)
+    export.set_defaults(handler=command_export)
+
+    verify_export = subparsers.add_parser("verify-export", help="verify and replay an exported run")
+    verify_export.add_argument("archive")
+    verify_export.set_defaults(handler=command_verify_export)
+
     run = subparsers.add_parser("run", help="run or resume the harness until terminal")
     run.add_argument("runbook")
     run.add_argument("--db", help="event database (default: STATE_DIR/camol.sqlite3)")
@@ -200,7 +231,10 @@ def main(argv: Any = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (RunbookError, SchemaError, StateTransitionError, WorkspaceError, OSError, json.JSONDecodeError) as error:
+    except (
+        ArtifactError, RunbookError, SchemaError, StateTransitionError,
+        WorkspaceError, OSError, json.JSONDecodeError,
+    ) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2
 

@@ -1,6 +1,7 @@
 """Explicit process sandbox policies and execution backends."""
 
 import asyncio
+import hashlib
 import os
 import shutil
 import sys
@@ -136,6 +137,12 @@ class SandboxResult:
     exit_code: int
     stdout: bytes
     stderr: bytes
+    stdout_sha256: str
+    stderr_sha256: str
+    stdout_bytes: int
+    stderr_bytes: int
+    stdout_truncated: bool
+    stderr_truncated: bool
     started_at: str
     finished_at: str
     backend: str
@@ -144,6 +151,21 @@ class SandboxResult:
 
 class SandboxBackend:
     name = "sandbox"
+    max_capture_bytes = 1 << 20
+
+    async def _drain(self, stream: asyncio.StreamReader) -> Tuple[bytes, str, int, bool]:
+        retained = bytearray()
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+            if len(retained) < self.max_capture_bytes:
+                retained.extend(chunk[: self.max_capture_bytes - len(retained)])
+        return bytes(retained), "sha256:" + digest.hexdigest(), total, total > len(retained)
 
     async def run(
         self,
@@ -181,12 +203,16 @@ class SandboxBackend:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            stdout_task = asyncio.create_task(self._drain(process.stdout))
+            stderr_task = asyncio.create_task(self._drain(process.stderr))
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+                await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
             except asyncio.TimeoutError as error:
                 process.kill()
                 await process.wait()
+                await asyncio.gather(stdout_task, stderr_task)
                 raise SandboxError("sandboxed process timed out") from error
+            stdout_capture, stderr_capture = await asyncio.gather(stdout_task, stderr_task)
         except OSError as error:
             raise SandboxError("sandboxed process could not launch: {}".format(error.__class__.__name__)) from error
         finished = datetime.now(timezone.utc).isoformat(timespec="microseconds")
@@ -194,8 +220,14 @@ class SandboxBackend:
             argv=tuple(recorded_argv),
             cwd=str(resolved_cwd),
             exit_code=process.returncode,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=stdout_capture[0],
+            stderr=stderr_capture[0],
+            stdout_sha256=stdout_capture[1],
+            stderr_sha256=stderr_capture[1],
+            stdout_bytes=stdout_capture[2],
+            stderr_bytes=stderr_capture[2],
+            stdout_truncated=stdout_capture[3],
+            stderr_truncated=stderr_capture[3],
             started_at=started,
             finished_at=finished,
             backend=self.name,

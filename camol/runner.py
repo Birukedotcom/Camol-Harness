@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .admission import AdmissionBundle, AdmissionController, AdmissionError
 from .adapter import AdapterError, ProcessAgentAdapter
+from .artifacts import ArtifactError, ArtifactRef, ArtifactStore
 from .orchestrator import Orchestrator, StateTransitionError
 from .readiness import WaitingReason
 from .sandbox import SandboxError, select_backend
@@ -19,13 +20,32 @@ class HarnessRunner:
         self.workspace = Path(workspace).resolve()
         self.state_dir = Path(state_dir).resolve() if state_dir is not None else None
         self.workspaces = WorkspaceManager(self.workspace, self.state_dir) if self.state_dir else None
+        self.artifacts = ArtifactStore(self.state_dir, redactor=self.orchestrator.redactor) if self.state_dir else None
         self._handles: Dict[Tuple[str, str], WorkspaceHandle] = {}
 
     def _agent_for(self, state: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
         return state["agents"][agent_id]
 
+    async def _bounded_stream(self, stream: asyncio.StreamReader, limit: int = 1 << 20):
+        retained = bytearray()
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+            if len(retained) < limit:
+                retained.extend(chunk[: limit - len(retained)])
+        return bytes(retained), "sha256:" + digest.hexdigest(), total, total > len(retained)
+
     async def _run_check(
-        self, box: Path, command: Dict[str, Any], timeout_seconds: int = 900
+        self,
+        box: Path,
+        command: Dict[str, Any],
+        assignment: Dict[str, str],
+        timeout_seconds: int = 900,
     ) -> Dict[str, Any]:
         try:
             process = await asyncio.create_subprocess_exec(
@@ -34,20 +54,50 @@ class HarnessRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+            stdout_task = asyncio.create_task(self._bounded_stream(process.stdout))
+            stderr_task = asyncio.create_task(self._bounded_stream(process.stderr))
+            await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+            stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+            references = []
+            if self.artifacts is not None:
+                invocation_id = "verify-{}".format(hashlib.sha256(repr(command["argv"]).encode()).hexdigest()[:20])
+                producer = {
+                    "run_id": assignment["fence"]["run_id"],
+                    "task_id": assignment["task_id"],
+                    "agent_id": assignment["agent_id"],
+                    "lease_id": assignment["lease_id"],
+                    "invocation_id": invocation_id,
+                    "role": "verifier",
+                }
+                for channel, capture in (("stdout", stdout), ("stderr", stderr)):
+                    reference = self.artifacts.put_bytes(
+                        capture[0],
+                        producer=dict(producer, channel=channel),
+                        media_type="text/plain",
+                        redact=True,
+                        source_sha256=capture[1],
+                        source_bytes=capture[2],
+                        truncated=capture[3],
+                    )
+                    references.append(reference.to_dict())
             return {
                 "purpose": command["purpose"],
                 "argv": command["argv"],
                 "exit_code": process.returncode,
                 "passed": process.returncode == 0,
-                "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
-                "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
-                "stdout_bytes": len(stdout),
-                "stderr_bytes": len(stderr),
+                "stdout_sha256": stdout[1],
+                "stderr_sha256": stderr[1],
+                "stdout_bytes": stdout[2],
+                "stderr_bytes": stderr[2],
+                "stdout_truncated": stdout[3],
+                "stderr_truncated": stderr[3],
+                "artifact_refs": references,
             }
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()
+            if "stdout_task" in locals():
+                await asyncio.gather(stdout_task, stderr_task)
             return {
                 "purpose": command["purpose"],
                 "argv": command["argv"],
@@ -76,19 +126,174 @@ class HarnessRunner:
         box = (execution_workspace / agent["box"]).resolve()
         checks = []
         for command in task["verification"]:
-            checks.append(await self._run_check(box, command))
-        self.orchestrator.record_evidence(
+            check = await self._run_check(box, command, assignment)
+            checks.append(check)
+            self.orchestrator.record_observed_evidence(
+                run_id,
+                assignment,
+                kind="command",
+                data={key: value for key, value in check.items() if key != "artifact_refs"},
+                epistemic_status="EXECUTED",
+                producer="verifier",
+                artifact_refs=tuple(
+                    {
+                        item["digest"]: ArtifactRef.from_dict(item)
+                        for item in check.get("artifact_refs", [])
+                    }.values()
+                ),
+            )
+        all_references = {
+            item["digest"]: ArtifactRef.from_dict(item)
+            for check in checks
+            for item in check.get("artifact_refs", [])
+        }
+        self.orchestrator.record_observed_evidence(
             run_id,
             assignment,
-            {
-                "kind": "test_result",
-                "data": {
-                    "passed": bool(checks) and all(check["passed"] for check in checks),
-                    "checks": checks,
-                },
+            kind="test_result",
+            data={
+                "passed": bool(checks) and all(check["passed"] for check in checks),
+                "checks": [{key: value for key, value in check.items() if key != "artifact_refs"} for check in checks],
             },
+            epistemic_status="EXECUTED",
+            producer="verifier",
+            artifact_refs=tuple(all_references.values()),
         )
         return self.orchestrator.record_verification(run_id, assignment, checks)
+
+    def _record_observed(
+        self, run_id: str, assignment: Dict[str, str], evidence: Dict[str, Any]
+    ) -> None:
+        expected = {"kind", "data", "epistemic_status", "producer", "artifact_refs"}
+        if not isinstance(evidence, dict) or set(evidence) != expected:
+            raise AdapterError("adapter evidence envelope is malformed")
+        references = tuple(
+            {
+                item["digest"]: ArtifactRef.from_dict(item)
+                for item in evidence["artifact_refs"]
+            }.values()
+        )
+        if self.artifacts is not None:
+            for reference in references:
+                self.artifacts.verify(reference)
+        self.orchestrator.record_observed_evidence(
+            run_id,
+            assignment,
+            kind=evidence["kind"],
+            data=evidence["data"],
+            epistemic_status=evidence["epistemic_status"],
+            producer=evidence["producer"],
+            artifact_refs=references,
+        )
+
+    @staticmethod
+    def _text_artifact(path: Path) -> bool:
+        return path.suffix.lower() in {
+            ".txt", ".md", ".json", ".jsonl", ".yaml", ".yml", ".toml",
+            ".py", ".js", ".ts", ".tsx", ".jsx", ".css", ".html", ".xml",
+            ".sh", ".zsh", ".bash", ".sql", ".csv", ".log",
+        }
+
+    def _capture_worker_artifact(
+        self,
+        run_id: str,
+        assignment: Dict[str, str],
+        execution_workspace: Path,
+        evidence: Dict[str, Any],
+    ) -> None:
+        if self.artifacts is None:
+            return
+        data = evidence.get("data")
+        path_value = data.get("path") if isinstance(data, dict) else None
+        if not isinstance(path_value, str) or not path_value:
+            raise ArtifactError("worker artifact evidence must name a path")
+        raw = Path(path_value)
+        candidate = (raw if raw.is_absolute() else execution_workspace / raw).resolve()
+        try:
+            relative = candidate.relative_to(execution_workspace.resolve())
+        except ValueError as error:
+            raise ArtifactError("worker artifact path escapes its task workspace") from error
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ArtifactError("worker artifact must be a regular non-symlink file")
+        reference = self.artifacts.put_file(
+            candidate,
+            producer={
+                "run_id": run_id,
+                "task_id": assignment["task_id"],
+                "agent_id": assignment["agent_id"],
+                "lease_id": assignment["lease_id"],
+                "channel": "worker-artifact",
+                "role": "collector",
+            },
+            media_type="text/plain" if self._text_artifact(candidate) else "application/octet-stream",
+            redact=self._text_artifact(candidate),
+        )
+        claimed = data.get("sha256")
+        if isinstance(claimed, str):
+            normalized = claimed if claimed.startswith("sha256:") else "sha256:" + claimed
+            if normalized != reference.source_sha256:
+                raise ArtifactError("worker artifact hash claim does not match observed bytes")
+        self.orchestrator.record_observed_evidence(
+            run_id,
+            assignment,
+            kind="artifact",
+            data={
+                "path": str(relative),
+                "source_sha256": reference.source_sha256,
+                "source_bytes": reference.source_bytes,
+                "worker_hash_matched": isinstance(claimed, str),
+            },
+            epistemic_status="OBSERVED",
+            producer="collector",
+            artifact_refs=(reference,),
+        )
+
+    def _capture_workspace_diff(self, run_id: str, assignment: Dict[str, str]) -> None:
+        if self.workspaces is None or self.artifacts is None:
+            return
+        handle = self._handles[(assignment["task_id"], assignment["agent_id"])]
+        patch, files, status = self.workspaces.diff_snapshot(handle)
+        producer = {
+            "run_id": run_id,
+            "task_id": assignment["task_id"],
+            "agent_id": assignment["agent_id"],
+            "lease_id": assignment["lease_id"],
+            "role": "collector",
+        }
+        references = [
+            self.artifacts.put_bytes(
+                patch,
+                producer=dict(producer, channel="git-diff"),
+                media_type="text/x-diff",
+                redact=True,
+            )
+        ]
+        file_records = []
+        for path in files:
+            reference = self.artifacts.put_file(
+                path,
+                producer=dict(producer, channel="workspace-file"),
+                media_type="text/plain" if self._text_artifact(path) else "application/octet-stream",
+                redact=self._text_artifact(path),
+            )
+            references.append(reference)
+            file_records.append(
+                {
+                    "path": str(path.relative_to(handle.path)),
+                    "source_sha256": reference.source_sha256,
+                    "source_bytes": reference.source_bytes,
+                }
+            )
+        unique = {reference.digest: reference for reference in references}
+        self.orchestrator.record_observed_evidence(
+            run_id,
+            assignment,
+            kind="diff",
+            data={"status": list(status), "files": file_records},
+            epistemic_status="OBSERVED",
+            producer="collector",
+            artifact_refs=tuple(unique.values()),
+        )
 
     async def _execute_assignment(
         self,
@@ -106,6 +311,8 @@ class HarnessRunner:
                 state_dir=self.state_dir,
                 sandbox_backend=select_backend(bundle.sandbox_policy),
                 sandbox_policy=bundle.sandbox_policy,
+                artifact_store=self.artifacts,
+                redactor=self.orchestrator.redactor,
             )
         else:
             adapter = ProcessAgentAdapter(execution_workspace, run_id)
@@ -145,14 +352,22 @@ class HarnessRunner:
                     packet,
                     task["turn_count"] + 1,
                 )
-            except (AdapterError, SandboxError, OSError) as error:
+            except (AdapterError, SandboxError, ArtifactError, OSError) as error:
+                for observed in getattr(error, "observed_evidence", ()):
+                    self._record_observed(run_id, assignment, observed)
                 self.orchestrator.retry_or_block(run_id, assignment, "adapter_error: {}".format(error))
                 return
 
             try:
+                observed_evidence = result.pop("_camol_observed_evidence", [])
                 violations = self.orchestrator.record_turn(run_id, assignment, result)
+                for observed in observed_evidence:
+                    self._record_observed(run_id, assignment, observed)
                 for evidence in result["evidence"]:
                     self.orchestrator.record_evidence(run_id, assignment, evidence)
+                    if evidence.get("kind") == "artifact":
+                        self._capture_worker_artifact(run_id, assignment, execution_workspace, evidence)
+                self._capture_workspace_diff(run_id, assignment)
                 for message in result.get("messages", []):
                     self.orchestrator.route_message(
                         run_id,

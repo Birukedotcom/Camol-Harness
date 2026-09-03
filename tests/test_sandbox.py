@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import sys
 import tempfile
@@ -80,6 +81,30 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.stdout.strip(), b"True False")
         self.assertEqual(result.backend, "developer_trusted")
+
+    def test_process_streams_are_drained_but_retention_is_bounded(self):
+        policy = self.policy(trust_tier="developer_trusted")
+        size = (1 << 20) + 8192
+        result = asyncio.run(
+            DeveloperTrustedBackend().run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.buffer.write(b'x' * {}); sys.stderr.buffer.write(b'y' * {})".format(size, size),
+                ],
+                cwd=self.workspace,
+                policy=policy,
+                timeout_seconds=20,
+            )
+        )
+        self.assertEqual(len(result.stdout), 1 << 20)
+        self.assertEqual(len(result.stderr), 1 << 20)
+        self.assertEqual(result.stdout_bytes, size)
+        self.assertEqual(result.stderr_bytes, size)
+        self.assertTrue(result.stdout_truncated)
+        self.assertTrue(result.stderr_truncated)
+        self.assertEqual(result.stdout_sha256, "sha256:" + hashlib.sha256(b"x" * size).hexdigest())
+        self.assertEqual(result.stderr_sha256, "sha256:" + hashlib.sha256(b"y" * size).hexdigest())
 
     @unittest.skipUnless(MacOSSandboxBackend.available(), "requires macOS sandbox-exec")
     def test_destructive_fixture_can_write_only_inside_disposable_worktree(self):

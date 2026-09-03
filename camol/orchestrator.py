@@ -5,9 +5,12 @@ from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from .admission import AdmissionBundle
+from .artifacts import ArtifactRef
+from .evidence import EvidenceRecord
 from .events import EVIDENCE_KINDS, new_event
 from .hillclimb import agent_efficiency_vector, compare_vectors
 from .readiness import CapacityReservation, LeaseFence, ReadinessDecision, WaitingReason
+from .probes import Redactor
 from .runbook import runbook_digest, validate_runbook
 from .schema import parse_timestamp
 from .state import project
@@ -26,17 +29,26 @@ class Orchestrator:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         lease_ttl_seconds: int = 90,
+        redactor: Optional[Redactor] = None,
     ):
         self.store = store
         self.actor_id = actor_id
         self.clock = clock
         self.lease_ttl_seconds = lease_ttl_seconds
+        self.redactor = redactor or Redactor()
 
     def _now(self) -> str:
         value = self.clock()
         if value.tzinfo is None:
             raise StateTransitionError("orchestrator clock must be timezone-aware")
         return value.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+    @staticmethod
+    def _gate_evidence(payload: Dict[str, Any]) -> bool:
+        return (
+            payload.get("schema") == EvidenceRecord.SCHEMA
+            and EvidenceRecord.from_dict(payload).satisfies_gate()
+        )
 
     def state(self, run_id: str) -> Dict[str, Any]:
         return project(self.store.read(run_id))
@@ -773,16 +785,27 @@ class Orchestrator:
         dependency_receipts = []
         for dependency_id in task["depends_on"]:
             dependency = state["tasks"][dependency_id]
+            compact_evidence = {}
+            for evidence_id in dependency["evidence_ids"]:
+                evidence = state["evidence"][evidence_id]
+                if evidence["kind"] not in {"artifact", "claim", "test_result"}:
+                    continue
+                if evidence.get("schema") == EvidenceRecord.SCHEMA and not self._gate_evidence(evidence):
+                    continue
+                compact_evidence[evidence["kind"]] = {
+                    "evidence_id": evidence_id,
+                    "kind": evidence["kind"],
+                    "epistemic_status": evidence.get("epistemic_status", "UNVERIFIED"),
+                    "data": evidence["data"],
+                    "artifact_digests": [
+                        reference["digest"] for reference in evidence.get("artifact_refs", [])
+                    ],
+                }
             dependency_receipts.append(
                 {
                     "task_id": dependency_id,
                     "submission": dependency.get("submission"),
-                    "evidence": [
-                        state["evidence"][evidence_id]
-                        for evidence_id in dependency["evidence_ids"]
-                        if state["evidence"][evidence_id]["kind"]
-                        in {"artifact", "claim", "test_result"}
-                    ],
+                    "evidence": [compact_evidence[kind] for kind in sorted(compact_evidence)],
                 }
             )
         last_verification = task["verification_history"][-1] if task["verification_history"] else None
@@ -862,6 +885,7 @@ class Orchestrator:
         checkpoint = result.get("checkpoint")
         if not isinstance(checkpoint, str) or not checkpoint.strip():
             raise ValueError("every turn must leave a non-empty checkpoint")
+        checkpoint = self.redactor.text(checkpoint)
         input_tokens = result.get("input_tokens")
         output_tokens = result.get("output_tokens")
         if not isinstance(input_tokens, int) or input_tokens < 0:
@@ -934,7 +958,7 @@ class Orchestrator:
                 "from_task_id": task["id"],
                 "to_task_id": to_task_id,
                 "kind": kind,
-                "body": body,
+                "body": self.redactor.text(body),
             },
             actor_id=assignment["agent_id"],
             expected_seq=state["last_seq"],
@@ -946,6 +970,59 @@ class Orchestrator:
         assignment: Dict[str, str],
         evidence: Dict[str, Any],
     ) -> str:
+        """Ingest worker-reported evidence as unverified data."""
+        if not isinstance(evidence, dict):
+            raise ValueError("evidence must be an object")
+        unknown = sorted(set(evidence) - {"evidence_id", "kind", "data"})
+        if unknown:
+            raise ValueError("worker evidence has unknown fields: {}".format(", ".join(unknown)))
+        return self._record_task_evidence(
+            run_id,
+            assignment,
+            evidence_id=evidence.get("evidence_id"),
+            kind=evidence.get("kind"),
+            data=evidence.get("data"),
+            epistemic_status="UNVERIFIED",
+            producer="worker",
+            artifact_refs=(),
+        )
+
+    def record_observed_evidence(
+        self,
+        run_id: str,
+        assignment: Dict[str, str],
+        *,
+        kind: str,
+        data: Dict[str, Any],
+        epistemic_status: str,
+        producer: str,
+        artifact_refs: Any = (),
+        evidence_id: Optional[str] = None,
+    ) -> str:
+        """Record evidence produced by a Camol-controlled observer boundary."""
+        return self._record_task_evidence(
+            run_id,
+            assignment,
+            evidence_id=evidence_id,
+            kind=kind,
+            data=data,
+            epistemic_status=epistemic_status,
+            producer=producer,
+            artifact_refs=artifact_refs,
+        )
+
+    def _record_task_evidence(
+        self,
+        run_id: str,
+        assignment: Dict[str, str],
+        *,
+        evidence_id: Optional[str],
+        kind: str,
+        data: Dict[str, Any],
+        epistemic_status: str,
+        producer: str,
+        artifact_refs: Any,
+    ) -> str:
         state, _ = self._require_lease(
             run_id,
             assignment["task_id"],
@@ -955,25 +1032,32 @@ class Orchestrator:
             "verifying",
             fence_digest=assignment.get("fence_digest"),
         )
-        kind = evidence.get("kind")
         if kind not in EVIDENCE_KINDS:
             raise ValueError("unknown evidence kind: {}".format(kind))
-        data = evidence.get("data")
         if not isinstance(data, dict):
             raise ValueError("evidence data must be an object")
-        evidence_id = evidence.get("evidence_id") or str(uuid4())
+        evidence_id = evidence_id or str(uuid4())
         if evidence_id in state["evidence"]:
             raise ValueError("evidence id already exists: {}".format(evidence_id))
+        record = EvidenceRecord.task(
+            evidence_id=evidence_id,
+            run_id=run_id,
+            task_id=assignment["task_id"],
+            agent_id=assignment["agent_id"],
+            lease_id=assignment["lease_id"],
+            fence_digest=assignment["fence_digest"],
+            kind=kind,
+            epistemic_status=epistemic_status,
+            producer=producer,
+            observed_at=self._now(),
+            data=data,
+            artifact_refs=tuple(artifact_refs),
+            redactor=self.redactor,
+        )
         self._emit(
             run_id,
             "EVIDENCE_RECORDED",
-            {
-                "evidence_id": evidence_id,
-                "task_id": assignment["task_id"],
-                "agent_id": assignment["agent_id"],
-                "kind": kind,
-                "data": data,
-            },
+            record.to_dict(),
             actor_id=assignment["agent_id"],
             expected_seq=state["last_seq"],
         )
@@ -1002,7 +1086,11 @@ class Orchestrator:
         self._emit(
             run_id,
             "TASK_SUBMITTED",
-            {"task_id": task["id"], "lease_id": assignment["lease_id"], "summary": summary},
+            {
+                "task_id": task["id"],
+                "lease_id": assignment["lease_id"],
+                "summary": self.redactor.text(summary),
+            },
             actor_id=assignment["agent_id"],
             expected_seq=state["last_seq"],
         )
@@ -1025,7 +1113,11 @@ class Orchestrator:
         self._emit(
             run_id,
             "TASK_VERIFICATION_RECORDED",
-            {"task_id": assignment["task_id"], "passed": passed, "checks": checks},
+            {
+                "task_id": assignment["task_id"],
+                "passed": passed,
+                "checks": self.redactor.value(checks),
+            },
             expected_seq=state["last_seq"],
         )
         return passed
@@ -1042,7 +1134,9 @@ class Orchestrator:
         if not task["verification_history"] or task["verification_history"][-1]["passed"] is not True:
             raise StateTransitionError("the latest verification is not green")
         present_kinds = {
-            state["evidence"][evidence_id]["kind"] for evidence_id in task["evidence_ids"]
+            state["evidence"][evidence_id]["kind"]
+            for evidence_id in task["evidence_ids"]
+            if self._gate_evidence(state["evidence"][evidence_id])
         }
         missing = sorted(set(task["required_evidence"]) - present_kinds)
         if missing:
@@ -1080,7 +1174,13 @@ class Orchestrator:
                 (
                     "TASK_BLOCKED",
                     self.actor_id,
-                    {"task_id": task["id"], "blocker": {"kind": "attempts_exhausted", "detail": reason}},
+                    {
+                        "task_id": task["id"],
+                        "blocker": {
+                            "kind": "attempts_exhausted",
+                            "detail": self.redactor.text(reason),
+                        },
+                    },
                 ),
                 (
                     "RESERVATION_RELEASED",
@@ -1097,7 +1197,11 @@ class Orchestrator:
             self._emit_many(
                 run_id,
                 [
-                    ("TASK_RETRY_SCHEDULED", self.actor_id, {"task_id": task["id"], "reason": reason}),
+                    (
+                        "TASK_RETRY_SCHEDULED",
+                        self.actor_id,
+                        {"task_id": task["id"], "reason": self.redactor.text(reason)},
+                    ),
                     (
                         "RESERVATION_RELEASED",
                         self.actor_id,
@@ -1130,7 +1234,11 @@ class Orchestrator:
             self._emit_many(
                 run_id,
                 [
-                    ("TASK_BLOCKED", self.actor_id, {"task_id": task["id"], "blocker": blocker}),
+                    (
+                        "TASK_BLOCKED",
+                        self.actor_id,
+                        {"task_id": task["id"], "blocker": self.redactor.value(blocker)},
+                    ),
                     (
                         "RESERVATION_RELEASED",
                         self.actor_id,
@@ -1150,7 +1258,11 @@ class Orchestrator:
         missing_evidence = {}
         failed_verification = []
         for task in tasks:
-            present = {state["evidence"][item]["kind"] for item in task["evidence_ids"]}
+            present = {
+                state["evidence"][item]["kind"]
+                for item in task["evidence_ids"]
+                if self._gate_evidence(state["evidence"][item])
+            }
             missing = sorted(set(task["required_evidence"]) - present)
             if missing:
                 missing_evidence[task["id"]] = missing
@@ -1272,16 +1384,27 @@ class Orchestrator:
         if not isinstance(data, dict):
             raise ValueError("debug evidence data must be an object")
         evidence_id = str(uuid4())
+        record = EvidenceRecord(
+            evidence_id=evidence_id,
+            run_id=run_id,
+            task_id=None,
+            debug_case_id=case_id,
+            agent_id=None,
+            lease_id=None,
+            fence_digest=None,
+            kind=kind,
+            epistemic_status="HUMAN_REPORTED",
+            producer=actor_id,
+            observed_at=self._now(),
+            data=self.redactor.value(data),
+            artifact_refs=(),
+        )
         self._emit(
             run_id,
             "EVIDENCE_RECORDED",
-            {
-                "evidence_id": evidence_id,
-                "debug_case_id": case_id,
-                "kind": kind,
-                "data": data,
-            },
+            record.to_dict(),
             actor_id=actor_id,
+            expected_seq=state["last_seq"],
         )
         return evidence_id
 

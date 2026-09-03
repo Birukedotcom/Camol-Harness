@@ -309,6 +309,33 @@ class WorkspaceManager:
             created_at=handle.receipt.created_at,
         )
 
+    def diff_snapshot(self, handle: WorkspaceHandle) -> Tuple[bytes, Tuple[Path, ...], Tuple[str, ...]]:
+        """Return the tracked binary patch, changed regular files, and status lines."""
+        self._validate_handle(handle)
+        patch = self._git_result("-C", str(handle.path), "diff", "--binary", "HEAD").stdout
+        status_lines = tuple(
+            sorted(
+                line
+                for line in self._git(
+                    "-C", str(handle.path), "status", "--porcelain", "--untracked-files=all"
+                ).splitlines()
+                if line.strip()
+            )
+        )
+        names = self._git_result(
+            "-C", str(handle.path), "ls-files", "-z", "--modified", "--others", "--exclude-standard"
+        ).stdout.split(b"\0")
+        files = []
+        for raw in names:
+            if not raw:
+                continue
+            relative = Path(raw.decode("utf-8", "surrogateescape"))
+            candidate = handle.path / relative
+            if candidate.is_symlink() or not candidate.is_file() or not _inside(candidate, handle.path):
+                continue
+            files.append(_real(candidate))
+        return patch, tuple(sorted(set(files))), status_lines
+
     def _validate_handle(self, handle: WorkspaceHandle) -> None:
         path = _real(handle.path)
         if handle.path.is_symlink() or not path.is_dir() or not _inside(path, self.state_dir / "worktrees"):

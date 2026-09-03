@@ -7,6 +7,7 @@ from pathlib import Path
 
 from camol.orchestrator import Orchestrator
 from camol.adapter import ProcessAgentAdapter
+from camol.artifacts import ArtifactError, RunArchive
 from camol.runner import HarnessRunner
 from camol.runbook import load_runbook
 from camol.store import SQLiteEventStore
@@ -40,7 +41,7 @@ class RunnerTests(unittest.TestCase):
                 final = asyncio.run(
                     HarnessRunner(orchestrator, workspace, state_dir=state_dir).run_until_terminal(state["run_id"])
                 )
-                self.assertEqual(final["status"], "completed")
+                self.assertEqual(final["status"], "completed", (final.get("terminal"), final["tasks"]))
                 self.assertTrue(all(task["status"] == "succeeded" for task in final["tasks"].values()))
                 self.assertGreater(final["total_tokens"], 0)
                 first_wave_leases = [
@@ -93,7 +94,7 @@ class RunnerTests(unittest.TestCase):
                 },
             )
             final = await runner.run_until_terminal(run_id)
-            self.assertEqual(final["status"], "completed")
+            self.assertEqual(final["status"], "completed", (final.get("terminal"), final["tasks"]))
             recovered = [
                 evidence
                 for evidence in final["evidence"].values()
@@ -107,6 +108,33 @@ class RunnerTests(unittest.TestCase):
             workspace, state_dir, store = self._workspace_and_store(temporary)
             try:
                 asyncio.run(scenario(workspace, state_dir, store))
+            finally:
+                store.close()
+
+    def test_completed_run_exports_and_replays_without_terminal_scrollback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, state_dir, store = self._workspace_and_store(temporary)
+            try:
+                orchestrator = Orchestrator(store)
+                state = orchestrator.initialize(load_runbook(ROOT / "examples/three-agent-runbook.json"))
+                orchestrator.approve_plan(state["run_id"], "test-owner", state["plan_digest"])
+                runner = HarnessRunner(orchestrator, workspace, state_dir=state_dir)
+                final = asyncio.run(runner.run_until_terminal(state["run_id"]))
+                self.assertEqual(final["status"], "completed")
+                archive = Path(temporary) / "export"
+                manifest = RunArchive.export(state["run_id"], store.read(state["run_id"]), runner.artifacts, archive)
+                verified, events = RunArchive.verify(archive)
+                self.assertEqual(verified, manifest)
+                replayed = RunArchive.replay(archive)
+                self.assertEqual(replayed["status"], "completed")
+                self.assertEqual(replayed["tasks"], final["tasks"])
+                self.assertEqual(replayed["evidence"], final["evidence"])
+                self.assertGreater(len(manifest["artifact_digests"]), 0)
+                first = manifest["artifact_digests"][0].split(":", 1)[1]
+                blob = archive / "blobs" / "sha256" / first[:2] / first[2:]
+                blob.write_bytes(blob.read_bytes() + b"corrupt")
+                with self.assertRaisesRegex(ArtifactError, "corrupt"):
+                    RunArchive.verify(archive)
             finally:
                 store.close()
 
