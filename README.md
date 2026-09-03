@@ -11,10 +11,12 @@ and evaluators are replaceable components. The kernel owns durable truth about
 plans, state, readiness, authority, leases, evidence, budgets, retries, integration,
 and completion.
 
-> Project status: `v0.1 / PROVISIONAL` for the deterministic local-process kernel;
-> `SPECULATIVE` for the hosted Claude/Fable profile until an opt-in live run supplies
-> account, model-resolution, cost, and recovery evidence. This is developer software,
-> not a production-safe remote execution or deployment system.
+> Project status: V0 implementation complete and `MAPPED` for the broader
+> deterministic local-process kernel; `BACKED` only for the exact bounded dogfood
+> path in `evidence/v0-local-kernel-proof.json`; and `SPECULATIVE` for the hosted
+> Claude/Fable profile until an opt-in live run supplies account, model-resolution,
+> cost, and recovery evidence. This is developer software, not a production-safe
+> remote execution or deployment system.
 
 <table>
   <tr>
@@ -281,6 +283,11 @@ Run the reproducible Camol-on-Camol kernel proof from a clean checkout:
 ```bash
 python3 scripts/run_v0_proof.py --output /path/outside/repo/v0-proof
 ```
+
+The checked-in compact attestation is
+[`evidence/v0-local-kernel-proof.json`](evidence/v0-local-kernel-proof.json). It
+binds the exact implementation commit and archive-manifest hash while preserving the
+explicit boundary that this is not hosted-model evidence.
 
 Or detach a draft run, inspect it, approve the exact plan, and let the daemon continue
 after the client exits:

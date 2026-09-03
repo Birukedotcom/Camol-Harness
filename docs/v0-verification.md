@@ -4,7 +4,8 @@ Camol V0 has two deliberately separate claims.
 
 | Scope | Maturity | Evidence |
 |---|---|---|
-| Deterministic local-process control-plane kernel | `PROVISIONAL` until the final proof artifact is attached to the release; its individual safety properties are test-backed | Full unit/adversarial suite, deterministic N-box demo, detachable-daemon integration test, refinement test, and `scripts/run_v0_proof.py` archive |
+| Broader deterministic local-process V0 kernel | `MAPPED`; the complete feature set has not run as one real external workflow | Full unit/adversarial suite, deterministic N-box demo, detachable-daemon integration test, refinement test, and strict contracts |
+| Exact bounded Camol-on-Camol dogfood path | `BACKED` | Checked-in compact proof plus a locally retained, replay-verified archive with controlled evaluator failure and refinement |
 | Claude CLI requesting the speculative Fable profile | `SPECULATIVE` | Contract, fake provider, provider-readiness and spend-preflight tests only; no owner-authorized live result is claimed |
 | Remote workers, cloud deployment, voice operations, public benchmark campaigns | specified | No implementation or operational claim in V0 |
 
@@ -21,6 +22,11 @@ python3 scripts/run_v0_proof.py --output /absolute/path/outside/the/repository
 `proof.json` names the exact harness/source commit, plan digest, accepted integration
 revision, event counts, archive-manifest digest, and all claim limitations. The
 adjacent `archive/` can be replayed with `python3 -m camol verify-export`.
+
+The repository includes the compact result at
+`evidence/v0-local-kernel-proof.json`. The full generated archive is deliberately an
+output rather than a checked-in fixture: it records execution-host paths and target
+identity. Re-running the command produces a fresh independently verifiable archive.
 
 ## Required controlled failures
 
