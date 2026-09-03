@@ -337,6 +337,12 @@ class ProbeContext:
     services: Tuple[str, ...] = ()
     min_free_bytes: int = 1 << 30
     version_allowlist: Tuple[str, ...] = VERSION_ALLOWLIST
+    # Runtime admission probes inspect a managed task worktree living below
+    # state_dir while protecting the original source checkout separately.
+    source_workspace: Optional[Path] = None
+    expected_dirty_digest: Optional[str] = None
+    sandbox_policy: Optional[Dict[str, Any]] = None
+    reservation_id: Optional[str] = None
 
     @classmethod
     def guarded(cls, *, runner: CommandRunner = run_command, **values: Any) -> "ProbeContext":
@@ -384,14 +390,17 @@ class ProbeContext:
         path = Path(substituted)
         return path if path.is_absolute() else self.workspace / path
 
-    def protected_roots(self) -> List[Path]:
-        """Roots nothing may live in: the workspace and its git common dir (when it is a repository)."""
-        roots = [self.workspace]
-        if _real(self.workspace).is_dir():
-            common = self.git("-C", str(self.workspace), "rev-parse", "--git-common-dir")
+    def protected_roots(self, *, include_observed_workspace: bool = True) -> List[Path]:
+        """Source/Git roots that state and artifact paths must never alias."""
+        primary = self.source_workspace or self.workspace
+        roots = [primary]
+        if include_observed_workspace and self.source_workspace is not None:
+            roots.append(self.workspace)
+        if _real(primary).is_dir():
+            common = self.git("-C", str(primary), "rev-parse", "--git-common-dir")
             if common is not None and common.exit_code == 0 and common.stdout.strip():
                 common_dir = Path(common.stdout.strip())
-                roots.append(common_dir if common_dir.is_absolute() else self.workspace / common_dir)
+                roots.append(common_dir if common_dir.is_absolute() else primary / common_dir)
         return roots
 
 
@@ -501,7 +510,10 @@ class StateDirProbe(Probe):
     def observe(self, context):
         state_dir = context.state_dir
         facts = {"state_dir": str(_lexical(state_dir)), "state_dir_resolved": str(_real(state_dir)), "workspace": str(_real(context.workspace))}
-        roots = context.protected_roots()
+        # A managed task worktree intentionally lives below state_dir.  Only
+        # the original source and its Git common dir are protected for this
+        # containment check; artifact-sink checks still include the worktree.
+        roots = context.protected_roots(include_observed_workspace=context.source_workspace is None)
         facts["protected_roots"] = [str(_real(root)) for root in roots]
         for root in roots:
             if _nested(state_dir, root) or _nested(root, state_dir):
@@ -599,6 +611,23 @@ class RepositoryProbe(Probe):
             raise ProbeExecutionError("git status exited {}".format(status.exit_code))
         dirty = sorted(line for line in status.stdout.splitlines() if line.strip())
         facts = {"repository_id": repository_id, "base_revision": revision, "branch": branch, "workspace": str(workspace), "dirty_entries": len(dirty), "dirty_digest": canonical_digest(dirty)}
+        if context.expected_dirty_digest is not None:
+            if facts["dirty_digest"] != context.expected_dirty_digest:
+                return self.red(
+                    context,
+                    "managed workspace dirty state changed after its workspace receipt was assembled",
+                    reason="WORKSPACE_CONFLICT",
+                    wake="refresh the managed workspace receipt and re-probe",
+                    missing=["workspace dirty digest {}".format(context.expected_dirty_digest)],
+                    command=status.argv,
+                    facts=facts,
+                )
+            return self.green(
+                context,
+                "managed checkout at {} has the exact bound dirty-state digest ({} entries)".format(revision[:12], len(dirty)),
+                command=status.argv,
+                facts=facts,
+            )
         if dirty:
             return self.red(context, "source checkout has {} uncommitted or untracked entries; a dirty checkout is rejected by default".format(len(dirty)), reason="WORKSPACE_CONFLICT", wake="commit, stash, or clean the checkout (Camol never snapshots it silently)", missing=["clean source checkout"], command=status.argv, facts=facts)
         return self.green(context, "clean checkout at {} on {}".format(revision[:12], branch), command=status.argv, facts=facts)
@@ -765,10 +794,17 @@ class CapacityProbe(Probe):
         run = context.runbook["run"]
         max_concurrency = run.get("max_concurrency", run.get("max_agents"))
         cpus = os.cpu_count() or 0
-        facts = {"cpu_count": cpus, "max_concurrency": max_concurrency, "registered_workers": len(context.runbook["agents"]), "reservation_ledger": "none (M3)"}
+        facts = {
+            "cpu_count": cpus,
+            "max_concurrency": max_concurrency,
+            "registered_workers": len(context.runbook["agents"]),
+            "reservation_id": context.reservation_id,
+        }
         if cpus < 1:
             return self.unknown(context, "could not determine CPU count", reason="OPERATOR_ATTENTION", wake="expose CPU count to the control plane", missing=["CPU count"], facts=facts)
-        return self.green(context, "{} CPUs observed for a concurrency ceiling of {}; no reservations exist yet".format(cpus, max_concurrency), facts=facts)
+        if context.reservation_id:
+            return self.green(context, "{} CPUs observed and capacity reservation {} is bound to this probe".format(cpus, context.reservation_id), facts=facts)
+        return self.green(context, "{} CPUs observed for a concurrency ceiling of {}; no reservation was supplied to this read-only preflight".format(cpus, max_concurrency), facts=facts)
 
 
 class NetworkPolicyProbe(Probe):
@@ -777,6 +813,13 @@ class NetworkPolicyProbe(Probe):
     required = False
 
     def observe(self, context):
+        if context.sandbox_policy is not None:
+            destinations = context.sandbox_policy.get("network_destinations", [])
+            return self.green(
+                context,
+                "sandbox network policy is frozen ({})".format("egress denied" if not destinations else "explicit unrestricted egress"),
+                facts={"sandbox_policy_digest": canonical_digest(context.sandbox_policy), "network_destinations": destinations},
+            )
         tiers = sorted({agent.get("trust_tier", "developer_trusted") for agent in context.runbook["agents"]})
         return self.unknown(context, "no sandbox exists yet; the process adapter runs with unconstrained egress (trust tiers: {})".format(", ".join(tiers)), reason="OPERATOR_ATTENTION", wake="M2 sandbox boundary with an explicit network policy", missing=["sandbox network policy"], facts={"trust_tiers": tiers})
 

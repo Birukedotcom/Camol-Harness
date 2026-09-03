@@ -139,11 +139,10 @@ to the frozen `ProbePolicy` by digest. Validity is `start <= now < expires_at`
 everywhere; a green receipt cannot outlive or predate its weakest probe; hashed
 collections are immutable tuples; no plan field can disable readiness proof; and
 a grant must equal its authority policy exactly. See `docs/readiness.md`. The
-characterization cases in
-`tests/test_readiness.py` pass by asserting the current unsafe behavior; M3 must
-invert every `test_CURRENT_UNSAFE_*` assertion. Nothing in M0 probes, provisions,
-reserves, grants, or launches; `assess_ready_to_lease` is a pure function the
-scheduler does not yet call.
+original characterization cases in `tests/test_readiness.py` asserted the
+unsafe boundary. M3 inverted them: missing proof creates a typed wait, and the
+scheduler now calls `assess_ready_to_lease` before issuing an atomic fenced
+lease. M0 itself remains the pure-contract foundation.
 
 Work:
 

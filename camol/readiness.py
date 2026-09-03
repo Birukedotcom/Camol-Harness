@@ -1,10 +1,8 @@
 """Versioned readiness, workspace, reservation, grant, and lease-fence contracts.
 
-Status of this module: CONTRACTS AND A PURE PREDICATE. Nothing here probes a host,
-creates a worktree, talks to a provider, reserves real capacity, or launches an
-agent. Read-only probing lives in :mod:`camol.probes` / :mod:`camol.doctor`; the
-scheduler in :mod:`camol.orchestrator` does not yet consume these records (see
-``tests/test_readiness.py`` for the characterization of that unsafe boundary).
+This module owns the contracts and pure predicate. Read-only probing lives in
+:mod:`camol.probes` / :mod:`camol.doctor`; :mod:`camol.admission` assembles the
+runtime records and :mod:`camol.orchestrator` consumes them before leasing.
 
 Identity model
 --------------
@@ -1300,9 +1298,9 @@ def assess_ready_to_lease(
 ) -> ReadinessDecision:
     """Pure evaluation of the READY_TO_LEASE conjunction over typed inputs.
 
-    This function is NOT called by the scheduler yet (M3). It exists so the
-    predicate has one deterministic definition. Every failed conjunct yields a
-    typed reason; the caller sees all of them, not just the first.
+    This is the scheduler's single deterministic admission definition. Every
+    failed conjunct yields a typed reason; the caller sees all of them, not
+    just the first.
 
     ``binding`` fixes the subject and the workspace. Every other record must
     bind to exactly that subject and to the frozen plan, workspace, evaluator,

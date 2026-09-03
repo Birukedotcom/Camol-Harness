@@ -3,16 +3,23 @@
 import asyncio
 import hashlib
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
+from .admission import AdmissionBundle, AdmissionController, AdmissionError
 from .adapter import AdapterError, ProcessAgentAdapter
 from .orchestrator import Orchestrator, StateTransitionError
+from .readiness import WaitingReason
+from .sandbox import SandboxError, select_backend
+from .workspace import WorkspaceError, WorkspaceHandle, WorkspaceManager
 
 
 class HarnessRunner:
-    def __init__(self, orchestrator: Orchestrator, workspace: Path):
+    def __init__(self, orchestrator: Orchestrator, workspace: Path, *, state_dir: Optional[Path] = None):
         self.orchestrator = orchestrator
         self.workspace = Path(workspace).resolve()
+        self.state_dir = Path(state_dir).resolve() if state_dir is not None else None
+        self.workspaces = WorkspaceManager(self.workspace, self.state_dir) if self.state_dir else None
+        self._handles: Dict[Tuple[str, str], WorkspaceHandle] = {}
 
     def _agent_for(self, state: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
         return state["agents"][agent_id]
@@ -65,7 +72,8 @@ class HarnessRunner:
         state = self.orchestrator.state(run_id)
         task = state["tasks"][assignment["task_id"]]
         agent = state["agents"][assignment["agent_id"]]
-        box = (self.workspace / agent["box"]).resolve()
+        execution_workspace = self._execution_workspace(run_id, assignment)
+        box = (execution_workspace / agent["box"]).resolve()
         checks = []
         for command in task["verification"]:
             checks.append(await self._run_check(box, command))
@@ -89,14 +97,44 @@ class HarnessRunner:
     ) -> None:
         state = self.orchestrator.state(run_id)
         agent = self._agent_for(state, assignment["agent_id"])
-        adapter = ProcessAgentAdapter(self.workspace, run_id)
+        execution_workspace = self._execution_workspace(run_id, assignment)
+        if self.state_dir is not None:
+            bundle = self._admission_for(state, assignment)
+            adapter = ProcessAgentAdapter(
+                execution_workspace,
+                run_id,
+                state_dir=self.state_dir,
+                sandbox_backend=select_backend(bundle.sandbox_policy),
+                sandbox_policy=bundle.sandbox_policy,
+            )
+        else:
+            adapter = ProcessAgentAdapter(execution_workspace, run_id)
         task_status = state["tasks"][assignment["task_id"]]["status"]
         if task_status == "leased":
-            self.orchestrator.start_task(run_id, assignment)
+            if self.workspaces is not None:
+                observed_workspace = self.workspaces.refresh_receipt(
+                    self._handles[(assignment["task_id"], assignment["agent_id"])]
+                )
+                if observed_workspace.digest() != bundle.workspace.digest():
+                    self.orchestrator.reject_launch(
+                        run_id,
+                        assignment,
+                        WaitingReason(
+                            code="WORKSPACE_CONFLICT",
+                            detail="workspace changed after admission and before process launch",
+                            wake_condition="workspace state is re-probed and a new fenced lease is issued",
+                            task_id=assignment["task_id"],
+                            box_id=assignment["agent_id"],
+                        ),
+                    )
+                    return
+            if not self.orchestrator.start_task(run_id, assignment):
+                return
         elif task_status != "running":
             raise StateTransitionError("cannot execute task from {}".format(task_status))
 
         while True:
+            self.orchestrator.heartbeat(run_id, assignment)
             state = self.orchestrator.state(run_id)
             task = state["tasks"][assignment["task_id"]]
             packet = self.orchestrator.context_packet(run_id, assignment)
@@ -107,7 +145,7 @@ class HarnessRunner:
                     packet,
                     task["turn_count"] + 1,
                 )
-            except (AdapterError, OSError) as error:
+            except (AdapterError, SandboxError, OSError) as error:
                 self.orchestrator.retry_or_block(run_id, assignment, "adapter_error: {}".format(error))
                 return
 
@@ -182,16 +220,114 @@ class HarnessRunner:
                 "agent_id": task["agent_id"],
                 "lease_id": task["lease_id"],
                 "status": task["status"],
+                "fence_digest": task["fence_digest"],
+                "fence": task["lease_fence"],
+                "admission_digest": task.get("admission_digest"),
             }
             for task in state["tasks"].values()
             if task["status"] in {"leased", "running", "verifying"}
         ]
 
+    def _admission_for(self, state: Dict[str, Any], assignment: Dict[str, Any]) -> AdmissionBundle:
+        payload = state["admissions"].get("{}:{}".format(assignment["task_id"], assignment["agent_id"]))
+        if payload is None:
+            raise StateTransitionError("active assignment has no admission bundle")
+        bundle = AdmissionBundle.from_dict(payload)
+        if bundle.digest() != assignment.get("admission_digest"):
+            raise StateTransitionError("active assignment admission digest changed")
+        return bundle
+
+    def _execution_workspace(self, run_id: str, assignment: Dict[str, Any]) -> Path:
+        if self.workspaces is None:
+            return self.workspace
+        key = (assignment["task_id"], assignment["agent_id"])
+        handle = self._handles.get(key)
+        if handle is None:
+            handle = self.workspaces.prepare_task(run_id, assignment["task_id"], assignment["agent_id"])
+            self._handles[key] = handle
+        return handle.path
+
+    def _ensure_admissions(self, run_id: str) -> None:
+        if self.workspaces is None:
+            return
+        state = self.orchestrator.state(run_id)
+        runbook = state["runbook"]
+        maximum = runbook["run"].get("max_concurrency", runbook["run"].get("max_agents"))
+        active_reservations = set(self.orchestrator.active_reservation_ids(run_id))
+        remaining = max(0, maximum - len(active_reservations))
+        if remaining == 0:
+            return
+        reserved_workers = {
+            AdmissionBundle.from_dict(payload).binding.worker_id
+            for payload in state["admissions"].values()
+            if AdmissionBundle.from_dict(payload).reservation.reservation_id in active_reservations
+        }
+        controller = AdmissionController(
+            runbook,
+            self.workspaces,
+            clock=self.orchestrator.clock,
+        )
+        tasks = [
+            task for task in state["tasks"].values()
+            if task["status"] in {"pending", "waiting"}
+            and all(state["tasks"][item]["status"] == "succeeded" for item in task["depends_on"])
+        ]
+        idle_agents = [
+            agent for agent in state["agents"].values()
+            if agent["status"] == "idle" and agent["id"] not in reserved_workers
+        ]
+        for task in tasks:
+            if remaining == 0:
+                break
+            already = []
+            for agent in idle_agents:
+                payload = state["admissions"].get("{}:{}".format(task["id"], agent["id"]))
+                if payload is not None:
+                    bundle = AdmissionBundle.from_dict(payload)
+                    if bundle.reservation.reservation_id in active_reservations:
+                        already.append(agent["id"])
+            if already:
+                continue
+            eligible = [
+                agent for agent in idle_agents
+                if set(task["capabilities"]).issubset(set(agent["capabilities"]))
+            ]
+            if not eligible:
+                continue
+            agent = sorted(eligible, key=lambda candidate: self.orchestrator._agent_order(candidate, task))[0]
+            try:
+                bundle, handle = controller.prepare(
+                    plan_digest=state["plan_digest"],
+                    task=task,
+                    agent=agent,
+                    granted_by=state["approved_by"],
+                )
+            except (AdmissionError, WorkspaceError, SandboxError) as error:
+                code = "WORKSPACE_CONFLICT" if isinstance(error, WorkspaceError) else "POLICY_DENIED"
+                self.orchestrator.wait_task(
+                    run_id,
+                    task["id"],
+                    WaitingReason(
+                        code=code,
+                        detail="admission preparation failed: {}".format(error),
+                        wake_condition="repair the admission prerequisite and retry probing",
+                        task_id=task["id"],
+                        box_id=agent["id"],
+                    ),
+                )
+                continue
+            self._handles[(task["id"], agent["id"])] = handle
+            decision = self.orchestrator.record_admission(run_id, bundle)
+            state = self.orchestrator.state(run_id)
+            if decision.ready:
+                remaining -= 1
+                idle_agents = [item for item in idle_agents if item["id"] != agent["id"]]
+
     def _deadlock_details(self, run_id: str) -> Dict[str, Any]:
         state = self.orchestrator.state(run_id)
         details = {}
         for task in state["tasks"].values():
-            if task["status"] != "pending":
+            if task["status"] not in {"pending", "waiting"}:
                 continue
             unmet = [
                 dependency
@@ -212,6 +348,8 @@ class HarnessRunner:
 
     async def run_until_terminal(self, run_id: str) -> Dict[str, Any]:
         self.orchestrator.start(run_id)
+        if self.workspaces is not None:
+            self.workspaces.prepare_integration(run_id)
         while True:
             state = self.orchestrator.state(run_id)
             if state["status"] in {"completed", "blocked"}:
@@ -231,9 +369,17 @@ class HarnessRunner:
                 )
                 continue
 
+            try:
+                self._ensure_admissions(run_id)
+            except (AdmissionError, WorkspaceError, SandboxError, StateTransitionError) as error:
+                self.orchestrator.block_run(run_id, "admission_failure", {"detail": str(error)})
+                return self.orchestrator.state(run_id)
             assignments = self.orchestrator.lease_ready_tasks(run_id)
             if not assignments:
                 details = self._deadlock_details(run_id)
+                state = self.orchestrator.state(run_id)
+                if any(task["status"] == "waiting" for task in state["tasks"].values()):
+                    return state
                 self.orchestrator.block_run(run_id, "scheduler_deadlock", details)
                 return self.orchestrator.state(run_id)
 

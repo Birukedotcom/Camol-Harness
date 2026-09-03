@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .readiness import TRUST_TIERS
-from .schema import canonical_digest
+from .schema import (
+    canonical_digest,
+    reject_unknown_fields,
+    require_schema_header,
+    require_string_list,
+)
 
 
 class SandboxError(RuntimeError):
@@ -37,6 +42,11 @@ class SandboxPolicy:
 
     SCHEMA = "camol.sandbox_policy"
     SCHEMA_VERSION = 1
+    FIELDS = (
+        "schema", "schema_version", "policy_id", "workspace", "read_paths",
+        "write_paths", "environment_names", "network_destinations",
+        "credential_refs", "trust_tier",
+    )
 
     policy_id: str
     workspace: str
@@ -88,6 +98,30 @@ class SandboxPolicy:
     def digest(self) -> str:
         return canonical_digest(self.to_dict())
 
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "SandboxPolicy":
+        if not isinstance(payload, dict):
+            raise SandboxError("sandbox policy must be an object")
+        require_schema_header(payload, cls.SCHEMA, cls.SCHEMA_VERSION, "sandbox policy")
+        reject_unknown_fields(payload, cls.FIELDS, "sandbox policy")
+        missing = sorted(set(cls.FIELDS) - set(payload))
+        if missing:
+            raise SandboxError("sandbox policy is missing fields: {}".format(", ".join(missing)))
+        for field in (
+            "read_paths", "write_paths", "environment_names", "network_destinations", "credential_refs"
+        ):
+            require_string_list(payload[field], "sandbox policy " + field)
+        return cls(
+            policy_id=payload["policy_id"],
+            workspace=payload["workspace"],
+            read_paths=tuple(payload["read_paths"]),
+            write_paths=tuple(payload["write_paths"]),
+            environment_names=tuple(payload["environment_names"]),
+            network_destinations=tuple(payload["network_destinations"]),
+            credential_refs=tuple(payload["credential_refs"]),
+            trust_tier=payload["trust_tier"],
+        )
+
     def environment(self, overrides: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
         source = dict(os.environ)
         if overrides:
@@ -133,8 +167,10 @@ class SandboxBackend:
         environment: Optional[Mapping[str, str]],
     ) -> SandboxResult:
         resolved_cwd = Path(_real(str(cwd)))
-        if str(resolved_cwd) != policy.workspace:
-            raise SandboxError("sandbox cwd must equal the policy workspace")
+        try:
+            resolved_cwd.relative_to(Path(policy.workspace))
+        except ValueError as error:
+            raise SandboxError("sandbox cwd must stay inside the policy workspace") from error
         started = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         try:
             process = await asyncio.create_subprocess_exec(

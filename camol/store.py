@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+class ConcurrentAppendError(RuntimeError):
+    """The stream advanced after a caller made its state-based decision."""
+
+
 class SQLiteEventStore:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -35,38 +39,56 @@ class SQLiteEventStore:
     def close(self) -> None:
         self.connection.close()
 
-    def append(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        payload_json = json.dumps(event["payload"], sort_keys=True, separators=(",", ":"))
+    def append(self, event: Dict[str, Any], *, expected_seq: Optional[int] = None) -> Dict[str, Any]:
+        return self.append_many([event], expected_seq=expected_seq)[0]
+
+    def append_many(
+        self, events: List[Dict[str, Any]], *, expected_seq: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        if not events:
+            return []
+        run_id = events[0]["run_id"]
+        if any(event["run_id"] != run_id for event in events):
+            raise ValueError("one append transaction cannot span runs")
         try:
             self.connection.execute("BEGIN IMMEDIATE")
-            next_seq = self.connection.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE run_id = ?",
-                (event["run_id"],),
+            current_seq = self.connection.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM events WHERE run_id = ?",
+                (run_id,),
             ).fetchone()[0]
-            self.connection.execute(
-                """
-                INSERT INTO events (
-                    run_id, seq, event_id, event_type, actor_id, occurred_at,
-                    causation_id, correlation_id, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event["run_id"],
-                    next_seq,
-                    event["event_id"],
-                    event["type"],
-                    event["actor_id"],
-                    event["occurred_at"],
-                    event.get("causation_id"),
-                    event.get("correlation_id"),
-                    payload_json,
-                ),
-            )
+            if expected_seq is not None and current_seq != expected_seq:
+                raise ConcurrentAppendError(
+                    "event stream advanced from expected seq {} to {}".format(expected_seq, current_seq)
+                )
+            appended = []
+            for offset, event in enumerate(events, 1):
+                sequence = current_seq + offset
+                payload_json = json.dumps(event["payload"], sort_keys=True, separators=(",", ":"))
+                self.connection.execute(
+                    """
+                    INSERT INTO events (
+                        run_id, seq, event_id, event_type, actor_id, occurred_at,
+                        causation_id, correlation_id, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event["run_id"],
+                        sequence,
+                        event["event_id"],
+                        event["type"],
+                        event["actor_id"],
+                        event["occurred_at"],
+                        event.get("causation_id"),
+                        event.get("correlation_id"),
+                        payload_json,
+                    ),
+                )
+                appended.append(dict(event, seq=sequence))
             self.connection.commit()
         except Exception:
             self.connection.rollback()
             raise
-        return dict(event, seq=next_seq)
+        return appended
 
     def read(self, run_id: str, after_seq: int = 0) -> List[Dict[str, Any]]:
         rows = self.connection.execute(

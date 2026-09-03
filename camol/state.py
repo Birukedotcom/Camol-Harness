@@ -3,7 +3,8 @@
 from copy import deepcopy
 from typing import Any, Dict, Iterable
 
-from .readiness import ReadinessReceipt, WaitingReason
+from .admission import AdmissionBundle
+from .readiness import LeaseFence, ReadinessReceipt, WaitingReason
 
 
 def empty_state() -> Dict[str, Any]:
@@ -21,6 +22,11 @@ def empty_state() -> Dict[str, Any]:
         "evals": {},
         "hillclimbs": [],
         "readiness_receipts": {},
+        "admissions": {},
+        "reservations": {},
+        "released_reservation_ids": [],
+        "lease_epochs": {},
+        "heartbeats": {},
         "total_tokens": 0,
         "last_seq": 0,
     }
@@ -53,6 +59,8 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
                 status="pending",
                 agent_id=None,
                 lease_id=None,
+                lease_fence=None,
+                fence_digest=None,
                 attempts=0,
                 turn_count=0,
                 completed_step_ids=[],
@@ -74,10 +82,64 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     elif event_type == "TASK_LEASED":
         task = next_state["tasks"][payload["task_id"]]
         agent = next_state["agents"][payload["agent_id"]]
-        task.update(status="leased", agent_id=payload["agent_id"], lease_id=payload["lease_id"])
+        fence = LeaseFence.from_dict(payload["fence"])
+        if task["status"] != "pending" or agent["status"] != "idle":
+            raise ValueError("TASK_LEASED requires a pending task and idle worker")
+        admission_payload = next_state["admissions"].get(
+            "{}:{}".format(payload["task_id"], payload["agent_id"])
+        )
+        if admission_payload is None:
+            raise ValueError("TASK_LEASED has no persisted admission bundle")
+        admission = AdmissionBundle.from_dict(admission_payload)
+        if admission.digest() != payload["admission_digest"]:
+            raise ValueError("TASK_LEASED admission digest is invalid")
+        if admission.reservation.reservation_id in next_state["released_reservation_ids"]:
+            raise ValueError("TASK_LEASED uses a released reservation")
+        if (
+            fence.lease_id != payload["lease_id"]
+            or fence.task_id != payload["task_id"]
+            or fence.worker_id != payload["agent_id"]
+            or fence.box_id != payload["box_id"]
+            or fence.run_id != event["run_id"]
+            or fence.target_id != admission.binding.target_id
+        ):
+            raise ValueError("TASK_LEASED fence does not match its event subject")
+        if fence.digest() != payload["fence_digest"]:
+            raise ValueError("TASK_LEASED fence digest is invalid")
+        if fence.epoch != next_state["lease_epochs"].get(payload["task_id"], 0) + 1:
+            raise ValueError("TASK_LEASED fence epoch is not monotonic")
+        expected_digests = {
+            "plan_digest": next_state["plan_digest"],
+            "box_binding_digest": admission.binding.digest(),
+            "evaluator_digest": admission.evaluator_digest,
+            "workspace_digest": admission.workspace.digest(),
+            "authority_digest": admission.authority_policy.digest(),
+            "probe_policy_digest": admission.probe_policy.digest(),
+            "readiness_digest": admission.receipt.digest(),
+            "grant_digest": admission.grant.digest(),
+            "reservation_digest": admission.reservation.digest(),
+        }
+        if fence.bound_digests() != expected_digests:
+            raise ValueError("TASK_LEASED fence does not bind its admission bundle")
+        task.update(
+            status="leased",
+            agent_id=payload["agent_id"],
+            lease_id=payload["lease_id"],
+            lease_fence=fence.to_dict(),
+            fence_digest=fence.digest(),
+            admission_digest=payload["admission_digest"],
+        )
+        next_state["lease_epochs"][payload["task_id"]] = fence.epoch
         agent.update(status="leased", task_id=payload["task_id"])
     elif event_type == "TASK_STARTED":
         task = next_state["tasks"][payload["task_id"]]
+        if (
+            task["status"] != "leased"
+            or task["agent_id"] != payload["agent_id"]
+            or task["lease_id"] != payload["lease_id"]
+            or task["fence_digest"] != payload.get("fence_digest")
+        ):
+            raise ValueError("TASK_STARTED does not match the active fenced lease")
         task["status"] = "running"
         task["attempts"] += 1
     elif event_type == "AGENT_TURN_RECORDED":
@@ -114,20 +176,29 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     elif event_type == "TASK_SUCCEEDED":
         task = next_state["tasks"][payload["task_id"]]
         agent = next_state["agents"][task["agent_id"]]
-        task.update(status="succeeded", lease_id=None)
+        task.update(
+            status="succeeded", lease_id=None, lease_fence=None, fence_digest=None,
+            admission_digest=None,
+        )
         agent.update(status="idle", task_id=None)
         agent["stats"]["successful_tasks"] += 1
     elif event_type == "TASK_RETRY_SCHEDULED":
         task = next_state["tasks"][payload["task_id"]]
         agent = next_state["agents"][task["agent_id"]]
-        task.update(status="pending", agent_id=None, lease_id=None)
+        task.update(
+            status="pending", agent_id=None, lease_id=None, lease_fence=None,
+            fence_digest=None, admission_digest=None,
+        )
         task["last_retry_reason"] = payload["reason"]
         agent.update(status="idle", task_id=None)
         agent["stats"]["failed_attempts"] += 1
     elif event_type == "TASK_BLOCKED":
         task = next_state["tasks"][payload["task_id"]]
         agent = next_state["agents"].get(task["agent_id"])
-        task.update(status="blocked", blocker=deepcopy(payload["blocker"]), lease_id=None)
+        task.update(
+            status="blocked", blocker=deepcopy(payload["blocker"]), lease_id=None,
+            lease_fence=None, fence_digest=None, admission_digest=None,
+        )
         if agent:
             agent.update(status="idle", task_id=None)
     elif event_type == "DEBUG_CASE_OPENED":
@@ -161,8 +232,6 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError("READINESS_RECORDED receipt names unknown task {!r}".format(receipt.task_id))
         if receipt.worker_id not in next_state["agents"]:
             raise ValueError("READINESS_RECORDED receipt names unknown worker {!r}".format(receipt.worker_id))
-        # box_id is not validated: the current runbook registers agents with a box
-        # path, not a box identity. M2 introduces box records; bind it there.
         if receipt.receipt_id in next_state["readiness_receipts"]:
             raise ValueError("READINESS_RECORDED receipt id already exists: {}".format(receipt.receipt_id))
         next_state["readiness_receipts"][receipt.receipt_id] = receipt.to_dict()
@@ -176,8 +245,8 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 "TASK_WAITING reason task_id {!r} does not match payload task_id {!r}".format(reason.task_id, task_id)
             )
-        if task["status"] != "pending":
-            raise ValueError("only a pending task can enter a typed wait")
+        if task["status"] not in {"pending", "waiting"}:
+            raise ValueError("only a pending or waiting task can enter a typed wait")
         task.update(status="waiting", waiting=reason.to_dict())
     elif event_type == "TASK_WAIT_CLEARED":
         task_id = payload["task_id"]
@@ -187,6 +256,73 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         if task["status"] != "waiting":
             raise ValueError("task is not waiting")
         task.update(status="pending", waiting=None)
+    elif event_type == "ADMISSION_RECORDED":
+        bundle = AdmissionBundle.from_dict(payload["bundle"])
+        if bundle.digest() != payload.get("bundle_digest"):
+            raise ValueError("ADMISSION_RECORDED bundle digest is invalid")
+        if bundle.binding.run_id != event["run_id"] or bundle.binding.plan_digest != next_state["plan_digest"]:
+            raise ValueError("ADMISSION_RECORDED belongs to another run or plan")
+        if bundle.binding.task_id not in next_state["tasks"] or bundle.binding.worker_id not in next_state["agents"]:
+            raise ValueError("ADMISSION_RECORDED names an unknown task or worker")
+        if bundle.binding.box_id != bundle.binding.worker_id:
+            raise ValueError("ADMISSION_RECORDED box id does not match its registered worker")
+        recorded_receipt = next_state["readiness_receipts"].get(bundle.receipt.receipt_id)
+        if recorded_receipt != bundle.receipt.to_dict():
+            raise ValueError("ADMISSION_RECORDED readiness receipt was not recorded exactly")
+        existing_reservation = next_state["reservations"].get(bundle.reservation.reservation_id)
+        if existing_reservation is not None and existing_reservation != bundle.reservation.to_dict():
+            raise ValueError("ADMISSION_RECORDED reservation id is already bound to another record")
+        key = "{}:{}".format(bundle.binding.task_id, bundle.binding.box_id)
+        next_state["admissions"][key] = bundle.to_dict()
+        next_state["reservations"][bundle.reservation.reservation_id] = bundle.reservation.to_dict()
+        next_state["readiness_receipts"][bundle.receipt.receipt_id] = bundle.receipt.to_dict()
+    elif event_type == "RESERVATION_RELEASED":
+        reservation_id = payload["reservation_id"]
+        if reservation_id not in next_state["reservations"]:
+            raise ValueError("RESERVATION_RELEASED names an unknown reservation")
+        if reservation_id not in next_state["released_reservation_ids"]:
+            next_state["released_reservation_ids"].append(reservation_id)
+    elif event_type in {"TASK_LEASE_REJECTED", "LEASE_REVOKED"}:
+        task = next_state["tasks"][payload["task_id"]]
+        if task["lease_id"] != payload["lease_id"] or task["status"] not in {"leased", "running", "verifying"}:
+            raise ValueError("{} does not match the active lease".format(event_type))
+        agent = next_state["agents"].get(task.get("agent_id"))
+        reason = WaitingReason.from_dict(payload["reason"])
+        if reason.task_id != task["id"] or reason.box_id not in (None, task["agent_id"]):
+            raise ValueError("{} reason does not match the active lease".format(event_type))
+        task.update(
+            status="waiting",
+            waiting=reason.to_dict(),
+            agent_id=None,
+            lease_id=None,
+            lease_fence=None,
+            fence_digest=None,
+            admission_digest=None,
+        )
+        if agent:
+            agent.update(status="idle", task_id=None)
+    elif event_type == "LEASE_HEARTBEAT":
+        task = next_state["tasks"][payload["task_id"]]
+        if (
+            task["lease_id"] != payload["lease_id"]
+            or task["fence_digest"] != payload["fence_digest"]
+            or task["status"] not in {"leased", "running", "verifying"}
+        ):
+            raise ValueError("LEASE_HEARTBEAT does not match the active fenced lease")
+        next_state["heartbeats"][payload["lease_id"]] = deepcopy(payload)
+    elif event_type == "LEASE_RENEWED":
+        task = next_state["tasks"][payload["task_id"]]
+        fence = LeaseFence.from_dict(payload["fence"])
+        if (
+            fence.lease_id != task["lease_id"]
+            or fence.task_id != task["id"]
+            or fence.worker_id != task["agent_id"]
+            or fence.epoch != next_state["lease_epochs"][task["id"]]
+            or fence.digest() != payload.get("fence_digest")
+        ):
+            raise ValueError("LEASE_RENEWED does not match the active fence")
+        task["lease_fence"] = fence.to_dict()
+        task["fence_digest"] = fence.digest()
     else:
         raise ValueError("projection does not handle {}".format(event_type))
 

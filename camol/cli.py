@@ -13,6 +13,7 @@ from .doctor import DoctorOptions, run_doctor
 from .runbook import RunbookError, load_runbook
 from .schema import SchemaError
 from .store import SQLiteEventStore
+from .workspace import WorkspaceError, WorkspaceManager
 
 
 def _write_json(value: Any) -> None:
@@ -88,7 +89,12 @@ def command_events(args: argparse.Namespace) -> int:
 
 def command_run(args: argparse.Namespace) -> int:
     runbook = load_runbook(Path(args.runbook))
-    store = SQLiteEventStore(Path(args.db))
+    workspace = Path(args.workspace)
+    state_dir = Path(args.state_dir)
+    # Validate containment before creating any state path.
+    WorkspaceManager(workspace, state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    store = SQLiteEventStore(Path(args.db) if args.db else state_dir / "camol.sqlite3")
     try:
         orchestrator = Orchestrator(store)
         state = orchestrator.initialize(runbook)
@@ -100,7 +106,7 @@ def command_run(args: argparse.Namespace) -> int:
                 )
             orchestrator.approve_plan(run_id, args.approve_by, state["plan_digest"])
         final_state = asyncio.run(
-            HarnessRunner(orchestrator, Path(args.workspace)).run_until_terminal(run_id)
+            HarnessRunner(orchestrator, workspace, state_dir=state_dir).run_until_terminal(run_id)
         )
         _write_json(summary(final_state))
         return 0 if final_state["status"] == "completed" else 2
@@ -159,8 +165,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="run or resume the harness until terminal")
     run.add_argument("runbook")
-    run.add_argument("--db", default=".camol/camol.sqlite3")
-    run.add_argument("--workspace", default=".")
+    run.add_argument("--db", help="event database (default: STATE_DIR/camol.sqlite3)")
+    run.add_argument("--workspace", default=".", help="clean source repository root")
+    run.add_argument("--state-dir", required=True, help="external Camol state and isolated-worktree root")
     run.add_argument("--approve-by")
     run.set_defaults(handler=command_run)
 
@@ -193,7 +200,7 @@ def main(argv: Any = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (RunbookError, SchemaError, StateTransitionError, OSError, json.JSONDecodeError) as error:
+    except (RunbookError, SchemaError, StateTransitionError, WorkspaceError, OSError, json.JSONDecodeError) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2
 

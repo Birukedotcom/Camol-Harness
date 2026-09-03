@@ -26,17 +26,36 @@ EVENT_TYPES = frozenset(
         "DEBUG_CASE_VERIFIED",
         "EVAL_PROMOTED",
         "HILLCLIMB_RECORDED",
-        # M0 readiness contracts. Recorded by callers that hold a validated
-        # contract; the scheduler does not emit them yet.
+        # Readiness and typed non-runnable state.
         "READINESS_RECORDED",
         "TASK_WAITING",
         "TASK_WAIT_CLEARED",
+        # M3 admission, capacity, and fenced lease lifecycle.
+        "ADMISSION_RECORDED",
+        "RESERVATION_RELEASED",
+        "TASK_LEASE_REJECTED",
+        "LEASE_HEARTBEAT",
+        "LEASE_RENEWED",
+        "LEASE_REVOKED",
     }
 )
 
 # Event types that existed before M0. Replay of a ledger containing only these
 # must produce a projection identical to the pre-M0 projection.
-LEGACY_EVENT_TYPES = frozenset(EVENT_TYPES - {"READINESS_RECORDED", "TASK_WAITING", "TASK_WAIT_CLEARED"})
+LEGACY_EVENT_TYPES = frozenset(
+    EVENT_TYPES
+    - {
+        "READINESS_RECORDED",
+        "TASK_WAITING",
+        "TASK_WAIT_CLEARED",
+        "ADMISSION_RECORDED",
+        "RESERVATION_RELEASED",
+        "TASK_LEASE_REJECTED",
+        "LEASE_HEARTBEAT",
+        "LEASE_RENEWED",
+        "LEASE_REVOKED",
+    }
+)
 
 EVIDENCE_KINDS = frozenset(
     {

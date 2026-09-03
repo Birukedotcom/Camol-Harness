@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from .sandbox import SandboxBackend, SandboxPolicy
 
 
 class AdapterError(RuntimeError):
@@ -22,9 +24,22 @@ def _substitute(argv: List[str], values: Dict[str, str]) -> List[str]:
 
 
 class ProcessAgentAdapter:
-    def __init__(self, workspace: Path, run_id: str):
+    def __init__(
+        self,
+        workspace: Path,
+        run_id: str,
+        *,
+        state_dir: Optional[Path] = None,
+        sandbox_backend: Optional[SandboxBackend] = None,
+        sandbox_policy: Optional[SandboxPolicy] = None,
+    ):
         self.workspace = Path(workspace).resolve()
         self.run_id = run_id
+        self.state_dir = Path(state_dir).resolve() if state_dir is not None else self.workspace / ".camol"
+        self.sandbox_backend = sandbox_backend
+        self.sandbox_policy = sandbox_policy
+        if (sandbox_backend is None) != (sandbox_policy is None):
+            raise AdapterError("sandbox backend and policy must be supplied together")
 
     def _inside_workspace(self, relative: str) -> Path:
         path = (self.workspace / relative).resolve()
@@ -42,9 +57,11 @@ class ProcessAgentAdapter:
         turn_number: int,
     ) -> Dict[str, Any]:
         box = self._inside_workspace(agent["box"])
-        packet_dir = self._inside_workspace(
-            ".camol/packets/{}/{}".format(self.run_id, assignment["task_id"])
-        )
+        packet_dir = self.state_dir / "packets" / self.run_id / assignment["task_id"]
+        try:
+            packet_dir.resolve().relative_to(self.state_dir)
+        except ValueError as error:
+            raise AdapterError("packet path escapes the state directory") from error
         box.mkdir(parents=True, exist_ok=True)
         packet_dir.mkdir(parents=True, exist_ok=True)
         packet_path = packet_dir / "turn-{:03d}.packet.json".format(turn_number)
@@ -55,14 +72,9 @@ class ProcessAgentAdapter:
             try:
                 existing_packet_bytes = packet_path.read_bytes()
                 existing_packet = json.loads(existing_packet_bytes)
-                expected_lease = {
-                    "task_id": assignment["task_id"],
-                    "agent_id": assignment["agent_id"],
-                    "lease_id": assignment["lease_id"],
-                }
                 if (
                     existing_packet.get("run", {}).get("id") == self.run_id
-                    and existing_packet.get("lease") == expected_lease
+                    and existing_packet.get("lease") == packet.get("lease")
                 ):
                     packet_bytes = existing_packet_bytes
                 else:
@@ -106,36 +118,54 @@ class ProcessAgentAdapter:
                 "agent_id": assignment["agent_id"],
             },
         )
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(box),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+        if self.sandbox_backend is not None:
+            sandboxed = await self.sandbox_backend.run(
+                argv,
+                cwd=box,
+                policy=self.sandbox_policy,
+                timeout_seconds=agent["adapter"]["timeout_seconds"],
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(), timeout=agent["adapter"]["timeout_seconds"]
-            )
-        except asyncio.TimeoutError as error:
-            process.kill()
-            await process.wait()
-            raise AdapterError("agent turn timed out") from error
+            return_code = sandboxed.exit_code
+            stdout_bytes = sandboxed.stdout
+            stderr_bytes = sandboxed.stderr
+            backend = sandboxed.backend
+            sandbox_policy_digest = sandboxed.policy_digest
+        else:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *argv,
+                    cwd=str(box),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    process.communicate(), timeout=agent["adapter"]["timeout_seconds"]
+                )
+            except asyncio.TimeoutError as error:
+                process.kill()
+                await process.wait()
+                raise AdapterError("agent turn timed out") from error
+            return_code = process.returncode
+            backend = "legacy-unsandboxed"
+            sandbox_policy_digest = None
         command_evidence = {
             "kind": "command",
             "data": {
                 "argv": argv,
                 "cwd": str(box),
-                "exit_code": process.returncode,
+                "exit_code": return_code,
                 "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
                 "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
                 "stdout_bytes": len(stdout_bytes),
                 "stderr_bytes": len(stderr_bytes),
+                "sandbox_backend": backend,
+                "sandbox_policy_digest": sandbox_policy_digest,
             },
         }
-        if process.returncode != 0:
+        if return_code != 0:
             raise AdapterError(
                 "agent process exited {}; stderr sha256 {}".format(
-                    process.returncode, hashlib.sha256(stderr_bytes).hexdigest()
+                    return_code, hashlib.sha256(stderr_bytes).hexdigest()
                 )
             )
         if not result_path.exists():

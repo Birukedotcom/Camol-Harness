@@ -1,16 +1,4 @@
-"""Readiness contracts, the READY_TO_LEASE predicate, and the current unsafe boundary.
-
-The ``UnsafeBoundaryCharacterization`` class documents what the scheduler does
-TODAY: it leases an idle worker to any ready task whose static capability list
-is a subset of the worker's, without any runtime, workspace, provider,
-evaluator, or task-specific readiness evidence. These tests pass on purpose.
-
-M3 replaces them: when the scheduler starts consuming ``ReadinessReceipt``,
-``CapabilityGrant``, and ``CapacityReservation``, every ``test_CURRENT_UNSAFE_*``
-assertion below must be inverted (the lease must NOT happen and a typed
-``TASK_WAITING`` event must appear instead). Keeping them here, named loudly,
-makes that flip a deliberate, reviewable change rather than a silent one.
-"""
+"""Readiness contracts, the READY_TO_LEASE predicate, and launch boundary."""
 
 import json
 import tempfile
@@ -262,11 +250,11 @@ def assess(**overrides):
 ALL_CONTRACTS = (probe, workspace, binding, authority, probe_policy, receipt, reservation, grant, fence)
 
 
-# --------------------------------------------------------------------------- unsafe boundary
+# --------------------------------------------------------------------------- enforced launch boundary
 
 
-class UnsafeBoundaryCharacterization(unittest.TestCase):
-    """CURRENT BEHAVIOR, NOT DESIRED BEHAVIOR. See module docstring."""
+class ReadinessLaunchBoundaryTests(unittest.TestCase):
+    """No persisted, green admission proof means no lease and no process launch."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -281,36 +269,34 @@ class UnsafeBoundaryCharacterization(unittest.TestCase):
         self.store.close()
         self.temporary.cleanup()
 
-    def test_CURRENT_UNSAFE_idle_static_capability_match_is_leased_with_no_readiness_evidence(self):
+    def test_idle_static_capability_match_is_not_leased_without_admission_evidence(self):
         state = self.orchestrator.state(self.run_id)
         self.assertEqual(state["readiness_receipts"], {}, "precondition: no receipt exists")
         assignments = self.orchestrator.lease_ready_tasks(self.run_id)
-        self.assertEqual({item["task_id"] for item in assignments}, {"frame", "inventory", "challenge"})
+        self.assertEqual(assignments, [])
         after = self.orchestrator.state(self.run_id)
         self.assertEqual(after["readiness_receipts"], {})
-        for assignment in assignments:
-            task = after["tasks"][assignment["task_id"]]
-            agent = after["agents"][assignment["agent_id"]]
-            self.assertEqual(task["status"], "leased")
-            self.assertTrue(set(task["capabilities"]).issubset(agent["capabilities"]))
+        self.assertTrue(all(agent["status"] == "idle" for agent in after["agents"].values()))
+        self.assertEqual(
+            {task["waiting"]["code"] for task in after["tasks"].values()},
+            {"READINESS_STALE", "WAITING_DEPENDENCY"},
+        )
 
-    def test_CURRENT_UNSAFE_lease_event_binds_no_readiness_workspace_grant_or_reservation_digest(self):
+    def test_no_lease_event_exists_without_bound_admission_digests(self):
         self.orchestrator.lease_ready_tasks(self.run_id)
         lease_events = [event for event in self.store.read(self.run_id) if event["type"] == "TASK_LEASED"]
-        self.assertTrue(lease_events)
-        for event in lease_events:
-            self.assertEqual(set(event["payload"]), {"task_id", "agent_id", "lease_id"})
-            for bound in LeaseFence.BOUND_DIGESTS:
-                self.assertNotIn(bound, event["payload"])
-            self.assertNotIn("epoch", event["payload"])
+        self.assertEqual(lease_events, [])
 
-    def test_CURRENT_UNSAFE_no_typed_wait_is_emitted_when_readiness_is_unproven(self):
+    def test_typed_wait_is_emitted_when_readiness_is_unproven(self):
         self.orchestrator.lease_ready_tasks(self.run_id)
-        types = [event["type"] for event in self.store.read(self.run_id)]
-        self.assertNotIn("TASK_WAITING", types)
+        events = self.store.read(self.run_id)
+        types = [event["type"] for event in events]
+        self.assertIn("TASK_WAITING", types)
         self.assertNotIn("READINESS_RECORDED", types)
+        reasons = [event["payload"]["reason"]["code"] for event in events if event["type"] == "TASK_WAITING"]
+        self.assertIn("READINESS_STALE", reasons)
 
-    def test_CURRENT_UNSAFE_scheduler_leases_a_v2_plan_without_any_receipt(self):
+    def test_v2_plan_is_not_leased_without_any_receipt(self):
         raw = json.loads((ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8"))
         raw["schema_version"] = 2
         raw["run"]["id"] = "v2-policy-not-enforced"
@@ -321,10 +307,10 @@ class UnsafeBoundaryCharacterization(unittest.TestCase):
         self.orchestrator.approve_plan(state["run_id"], "test-owner", state["plan_digest"])
         self.orchestrator.start(state["run_id"])
         assignments = self.orchestrator.lease_ready_tasks(state["run_id"])
-        self.assertEqual(len(assignments), 3)
+        self.assertEqual(assignments, [])
         self.assertEqual(self.orchestrator.state(state["run_id"])["readiness_receipts"], {})
 
-    def test_desired_predicate_disagrees_with_the_current_scheduler(self):
+    def test_predicate_and_scheduler_both_deny_missing_proofs(self):
         state = self.orchestrator.state(self.run_id)
         decision = assess_ready_to_lease(
             now=T0,
@@ -355,7 +341,7 @@ class UnsafeBoundaryCharacterization(unittest.TestCase):
                 "CAPACITY_EXHAUSTED",
             ],
         )
-        self.assertEqual(len(self.orchestrator.lease_ready_tasks(self.run_id)), 3)
+        self.assertEqual(self.orchestrator.lease_ready_tasks(self.run_id), [])
 
 
 # --------------------------------------------------------------------------- vocabulary
@@ -1109,7 +1095,10 @@ class EventAndProjectionTests(unittest.TestCase):
                 reason = WaitingReason(code="AUTH_REQUIRED", detail="provider login required", task_id="frame")
                 store.append(new_event(run_id, "TASK_WAITING", "orchestrator", {"task_id": "frame", "reason": reason.to_dict()}))
                 assignments = orchestrator.lease_ready_tasks(run_id)
-                self.assertEqual({item["task_id"] for item in assignments}, {"inventory", "challenge"})
+                self.assertEqual(assignments, [])
+                projected = orchestrator.state(run_id)
+                self.assertEqual(projected["tasks"]["frame"]["waiting"]["code"], "AUTH_REQUIRED")
+                self.assertEqual(projected["tasks"]["inventory"]["waiting"]["code"], "READINESS_STALE")
             finally:
                 store.close()
 

@@ -188,12 +188,26 @@ the full `READY_TO_LEASE` assessment for that candidate, which on a green doctor
 still reads `APPROVAL_REQUIRED` (no grant) and `CAPACITY_EXHAUSTED` (no
 reservation), so a green doctor is visibly not a lease.
 
-## 5. What remains for M2 and M3
+## 5. Runtime enforcement (M2 and M3)
 
-- M2 creates isolated worktrees and replaces the `shared_checkout_write`
-  workspace receipt; box records replace the agent-id-as-box rule.
-- M3 makes the scheduler consume receipts, grants, reservations, and fences,
-  inverts the `test_CURRENT_UNSAFE_*` characterization, and emits `TASK_WAITING`
-  from the typed reasons the predicate already produces.
-- M5 registers provider probe adapters so `provider.connection` can become green
-  without a billable request.
+The runtime admission path is stricter than the read-only doctor path:
+
+- `WorkspaceManager` creates a dedicated task worktree and emits an
+  `isolated_worktree_write` receipt. The source checkout and integration
+  worktree remain protected roots.
+- `AdmissionController` reserves capacity, issues exact authority, freezes the
+  sandbox and probe policies, runs the required probes, and records one
+  reservation-bound admission bundle.
+- The scheduler calls the same `READY_TO_LEASE` predicate, then atomically emits
+  a monotonic `LeaseFence` bound to the plan, box binding, evaluator, workspace,
+  authority, probe policy, readiness receipt, grant, and reservation.
+- The runner re-observes the workspace immediately before process launch. A
+  changed or expired input emits a typed wait and releases capacity without
+  calling the adapter.
+- Admission and lease appends use optimistic compare-and-append transactions,
+  so concurrent schedulers cannot overbook capacity or issue two fences for one
+  task. Cancellation, revocation, retry, blocking, and success release the
+  reservation atomically with their state transition.
+
+M5 still needs to register provider probe adapters so
+`provider.connection` can become green without a billable request.

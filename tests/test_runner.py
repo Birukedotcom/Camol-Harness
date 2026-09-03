@@ -2,6 +2,7 @@ import asyncio
 import shutil
 import tempfile
 import unittest
+import subprocess
 from pathlib import Path
 
 from camol.orchestrator import Orchestrator
@@ -9,6 +10,7 @@ from camol.adapter import ProcessAgentAdapter
 from camol.runner import HarnessRunner
 from camol.runbook import load_runbook
 from camol.store import SQLiteEventStore
+from camol.sandbox import select_backend
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,20 +18,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class RunnerTests(unittest.TestCase):
     def _workspace_and_store(self, temporary):
-        workspace = Path(temporary)
-        (workspace / "examples").mkdir()
+        root = Path(temporary)
+        workspace = root / "source"
+        state_dir = root / "state"
+        (workspace / "examples").mkdir(parents=True)
         shutil.copy(ROOT / "examples/fake_agent.py", workspace / "examples/fake_agent.py")
-        return workspace, SQLiteEventStore(workspace / ".camol/events.sqlite3")
+        subprocess.run(["git", "-C", str(workspace), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(workspace), "config", "user.name", "Camol Test"], check=True)
+        subprocess.run(["git", "-C", str(workspace), "config", "user.email", "camol@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(workspace), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(workspace), "commit", "-q", "-m", "fixture"], check=True)
+        return workspace, state_dir, SQLiteEventStore(state_dir / "events.sqlite3")
 
     def test_long_running_loop_reaches_only_declared_completion(self):
         with tempfile.TemporaryDirectory() as temporary:
-            workspace, store = self._workspace_and_store(temporary)
+            workspace, state_dir, store = self._workspace_and_store(temporary)
             try:
                 orchestrator = Orchestrator(store)
                 state = orchestrator.initialize(load_runbook(ROOT / "examples/three-agent-runbook.json"))
                 orchestrator.approve_plan(state["run_id"], "test-owner", state["plan_digest"])
                 final = asyncio.run(
-                    HarnessRunner(orchestrator, workspace).run_until_terminal(state["run_id"])
+                    HarnessRunner(orchestrator, workspace, state_dir=state_dir).run_until_terminal(state["run_id"])
                 )
                 self.assertEqual(final["status"], "completed")
                 self.assertTrue(all(task["status"] == "succeeded" for task in final["tasks"].values()))
@@ -44,18 +53,29 @@ class RunnerTests(unittest.TestCase):
                 store.close()
 
     def test_runner_resumes_active_leases_and_reuses_an_unconsumed_result(self):
-        async def scenario(workspace, store):
+        async def scenario(workspace, state_dir, store):
             orchestrator = Orchestrator(store)
             state = orchestrator.initialize(load_runbook(ROOT / "examples/three-agent-runbook.json"))
             run_id = state["run_id"]
             orchestrator.approve_plan(run_id, "test-owner", state["plan_digest"])
             orchestrator.start(run_id)
+            runner = HarnessRunner(orchestrator, workspace, state_dir=state_dir)
+            runner.workspaces.prepare_integration(run_id)
+            runner._ensure_admissions(run_id)
             assignments = orchestrator.lease_ready_tasks(run_id)
             frame = next(item for item in assignments if item["task_id"] == "frame")
             orchestrator.start_task(run_id, frame)
             active_state = orchestrator.state(run_id)
             packet = orchestrator.context_packet(run_id, frame)
-            adapter = ProcessAgentAdapter(workspace, run_id)
+            execution_workspace = runner._execution_workspace(run_id, frame)
+            bundle = runner._admission_for(active_state, frame)
+            adapter = ProcessAgentAdapter(
+                execution_workspace,
+                run_id,
+                state_dir=state_dir,
+                sandbox_backend=select_backend(bundle.sandbox_policy),
+                sandbox_policy=bundle.sandbox_policy,
+            )
             await adapter.execute_turn(
                 active_state["agents"][frame["agent_id"]], frame, packet, 1
             )
@@ -72,7 +92,7 @@ class RunnerTests(unittest.TestCase):
                     "output_tokens": 80,
                 },
             )
-            final = await HarnessRunner(orchestrator, workspace).run_until_terminal(run_id)
+            final = await runner.run_until_terminal(run_id)
             self.assertEqual(final["status"], "completed")
             recovered = [
                 evidence
@@ -84,9 +104,9 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(len(recovered), 1)
 
         with tempfile.TemporaryDirectory() as temporary:
-            workspace, store = self._workspace_and_store(temporary)
+            workspace, state_dir, store = self._workspace_and_store(temporary)
             try:
-                asyncio.run(scenario(workspace, store))
+                asyncio.run(scenario(workspace, state_dir, store))
             finally:
                 store.close()
 
