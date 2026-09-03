@@ -496,6 +496,16 @@ configuration, budget, and every generated probe are visible. A counterexample c
 disprove an invariant or equivalence claim. Exhausting the probe budget without a
 counterexample is evidence, not proof.
 
+Coding benchmarks apply repeatable outside pressure at several cadences. Every agent
+turn runs repository-local gates; every meaningful candidate hill climb also runs a
+small frozen external-suite canary; scheduled campaigns run rotating benchmark
+slices; and releases run pinned full cohorts plus long-horizon builds. Camol never
+collapses correctness, invariant violations, cost, liveness, recovery, and human
+intervention into one score. Harness revisions are tested against matched direct-CLI
+and one-active-box controls so orchestration gains can be distinguished from model or
+budget changes. The suite selection, adapter contract, metrics, and anti-overfitting
+rules live in `docs/evaluation-program.md`.
+
 A failed evaluation creates a permanent counterexample linked to the plan revision
 and artifact hash:
 
@@ -683,6 +693,7 @@ The following specification areas are not yet implemented and remain speculative
 - isolated Git worktree execution;
 - real Codex, Claude, local-model, cmux, SSH, and GCP adapters;
 - adaptive differential evaluation;
+- external coding-suite adapters, canary campaigns, and benchmark ablations;
 - read-only box attachment and explicit takeover;
 - voice-agent evidence ingestion;
 - dependency readiness inventory and repository graph crawling/rendering; and
@@ -715,6 +726,12 @@ The following specification areas are not yet implemented and remain speculative
     milestone from `MAPPED` to `BACKED`.
 13. Add the polished TUI, supplied Camol branding, packaging, and Homebrew formula.
 
+Post-v1, add an optional spatial build visualizer that projects repository topology,
+box placement, task flow, build artifacts, and evaluation state into a navigable
+almost-3D scene. It is a read-only projection of the same graph snapshots and event
+ledger, never a second source of orchestration truth. The v1 dependency and repository
+views remain terminal-native and two-dimensional.
+
 ## 17. Decisions frozen for the initial build
 
 - All evals, generators, thresholds, results, tool calls, and approval reasons are
@@ -732,6 +749,9 @@ The following specification areas are not yet implemented and remain speculative
 - Integration is orchestrator-owned and every synthesized artifact is reevaluated.
 - Long-running sessions are owner-controlled and pause on declared lack of verified
   progress rather than arbitrary wall time alone.
+- Each candidate hill climb receives a frozen coding-benchmark canary; full suites
+  and long-horizon build campaigns run at scheduled or release cadence.
+- The spatial, almost-3D build visualizer is explicitly post-v1.
 
 ## 18. Buckeye adapter profile and initial operating defaults
 

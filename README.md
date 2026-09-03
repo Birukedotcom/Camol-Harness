@@ -62,7 +62,9 @@ The current executable architecture is in
 in [docs/runbook-reference.md](docs/runbook-reference.md), and the debug ratchet is in
 [docs/debugger-protocol.md](docs/debugger-protocol.md). The planned dependency rail,
 repository crawler, graph model, and terminal graph interactions are specified in
-[docs/repository-graph.md](docs/repository-graph.md).
+[docs/repository-graph.md](docs/repository-graph.md). The iteration canaries, external
+coding-suite adapters, long-horizon campaigns, and matched harness comparisons are in
+[docs/evaluation-program.md](docs/evaluation-program.md).
 
 ## Run the deterministic three-agent proof
 

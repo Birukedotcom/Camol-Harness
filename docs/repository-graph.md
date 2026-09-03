@@ -295,7 +295,21 @@ diffs, and links from every visible element to its evidence. DOT and GraphML exp
 allow richer external rendering without making Graphviz or a browser a runtime
 requirement.
 
-## 7. First implementation slice
+## 7. Post-v1 spatial build view
+
+The future visualizer is about builds, not decorative repository browsing. It may
+project the same graph into an almost-3D scene in which depth separates source,
+build, runtime/deployment, and evaluation layers. Boxes occupy visible work areas;
+task and artifact movement follows evidence-backed edges; failed or blocked build
+paths remain selectable; and a time scrubber can reconstruct how the build changed.
+
+This view is explicitly outside v1. Its camera, layout, and animation are local
+presentation state. Selection never mutates a task, apparent proximity never creates
+a dependency, and every object must link to the underlying snapshot or ledger event.
+Camol does not need to choose a 3D rendering technology until the terminal graph and
+real build telemetry prove what spatial questions are worth answering.
+
+## 8. First implementation slice
 
 1. Add graph snapshot, node, edge, and crawl-event records to SQLite.
 2. Implement safe inventory plus Git, Python, package-manifest, Docker, and Camol
