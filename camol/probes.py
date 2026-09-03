@@ -48,6 +48,7 @@ output passes through :class:`Redactor`.
 """
 
 import json
+import math
 import os
 import platform
 import re
@@ -104,15 +105,11 @@ _AUTHORIZATION_HEADER = re.compile(
     r"(?i)\bauthorization\s*:\s*(?:bearer|basic|token)\s+\S{8,}"
 )
 _COOKIE_VALUE = re.compile(r"(?i)\b(?:cookie|set-cookie)\s*:\s*[^\n]*(?:=|;)[^\n]*")
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:secret|access[_-]?token|auth[_-]?token|api[_-]?key|password|passwd|private[_-]?key|credential)"
-    r"\s*[=:]\s*[^\s,;]{4,}"
-)
 _SECRET_FLAG_VALUE = re.compile(
     r"(?i)(?:^|\s)--(?:secret|token|api[_-]?key|password|credential)(?:=|\s+)\S{6,}"
 )
-_HIGH_CONFIDENCE_AUTH_SCHEME = re.compile(
-    r"(?i)\b(?:bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{16,}"
+_AUTH_SCHEME_CANDIDATE = re.compile(
+    r"(?i)\b(?:bearer|basic|token)\s+([A-Za-z0-9._~+/=-]{16,})"
 )
 _TOKEN_SHAPES = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
@@ -125,6 +122,59 @@ _TOKEN_SHAPES = [
     re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bnpm_[A-Za-z0-9]{30,}\b"),
 ]
+
+
+def _credential_field_name(name: str) -> bool:
+    """Recognize credential-bearing assignment names, not generic auth vocabulary."""
+    normalized = name.lower().replace("-", "_")
+    exact = {
+        "auth", "authorization", "cookie", "credential", "credentials", "dsn",
+        "pass", "password", "passwd", "pat", "pwd", "secret", "sk", "token",
+        "api_key", "private_key", "secret_key", "signing_key", "access_key",
+    }
+    if normalized in exact:
+        return True
+    return normalized.endswith((
+        "_auth", "_cookie", "_credential", "_dsn", "_pass", "_password",
+        "_passwd", "_pat", "_pwd", "_secret", "_sk", "_token", "_api_key",
+        "_private_key", "_secret_key", "_signing_key", "_access_key",
+    ))
+
+
+def _credential_assignment(name: str, separator: str, assigned: str) -> bool:
+    if not _credential_field_name(name):
+        return False
+    normalized = assigned.strip("'\"").lower()
+    if not normalized or normalized.isdigit() or normalized in {
+        "configured", "disabled", "enabled", "env", "environment", "false",
+        "missing", "none", "null", "opaque", "optional", "present", "redacted",
+        "reference", "required", "true", "unset",
+    }:
+        return False
+    # `cookie: behavior` is ordinary prose. Real cookie headers have a name/value
+    # pair and are caught by _COOKIE_VALUE below.
+    if ":" in separator and name.lower() in {"cookie", "set-cookie"} and not any(
+        marker in assigned for marker in ("=", ";")
+    ):
+        return False
+    return len(normalized) >= 4
+
+
+def _high_confidence_auth_scheme(value: str) -> bool:
+    for match in _AUTH_SCHEME_CANDIDATE.finditer(value):
+        candidate = match.group(1)
+        # Snake/kebab identifiers after words such as `token` and `basic` are
+        # overwhelmingly specification prose, not authorization values.
+        if re.fullmatch(r"[a-z]+(?:[_-][a-z]+)+", candidate):
+            continue
+        classes = sum(bool(re.search(pattern, candidate)) for pattern in (
+            r"[a-z]", r"[A-Z]", r"[0-9]", r"[._~+/=-]",
+        ))
+        frequencies = [candidate.count(char) / len(candidate) for char in set(candidate)]
+        entropy = -sum(frequency * math.log2(frequency) for frequency in frequencies)
+        if classes >= 3 or entropy >= 3.75:
+            return True
+    return False
 
 
 class Redactor:
@@ -168,29 +218,17 @@ class Redactor:
         if any(pattern.search(value) for pattern in _TOKEN_SHAPES):
             return True
         for match in _KEY_VALUE.finditer(value):
-            name = match.group(1)
-            assigned = match.group(3)
-            # Colon is also ordinary prose punctuation (`cookie: behavior`).
-            # Explicit auth/cookie headers and common secret names are covered
-            # by the dedicated patterns below; use the generic suffix rule for
-            # unambiguous assignments only.
-            if "=" not in match.group(2):
-                continue
-            # The grill's `tokens=N` resource limit is not a credential. A
-            # singular TOKEN/PAT/etc. assignment remains sensitive.
-            if name.lower() == "tokens" and assigned.isdigit():
-                continue
-            if _SECRET_NAME.search(name):
+            if _credential_assignment(match.group(1), match.group(2), match.group(3)):
                 return True
-        return any(pattern.search(value) for pattern in (
+        if any(pattern.search(value) for pattern in (
             _PEM_BLOCK,
             _URL_USERINFO,
             _AUTHORIZATION_HEADER,
             _COOKIE_VALUE,
-            _SECRET_ASSIGNMENT,
             _SECRET_FLAG_VALUE,
-            _HIGH_CONFIDENCE_AUTH_SCHEME,
-        ))
+        )):
+            return True
+        return _high_confidence_auth_scheme(value)
 
     def argv(self, argv: Sequence[str]) -> List[str]:
         redacted: List[str] = []

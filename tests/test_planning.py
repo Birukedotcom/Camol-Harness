@@ -143,8 +143,18 @@ class PlanningTests(unittest.TestCase):
         for text in (
             "Implement token validation",
             "Preserve basic authentication",
+            "preserve token max_tokens_per_turn",
+            "use basic authentication-required",
             "Change cookie: behavior",
             "Rotate credentials through an opaque reference",
+            "AUTH_ENABLED=true",
+            "GIT_AUTHOR_NAME=test",
+            "SESSION_TIMEOUT=300",
+            "TOKEN_VALIDATION=strict",
+            "API_KEY=environment",
+            "AUTH_TOKEN=required",
+            "PASSWORD=redacted",
+            "max_tokens=12000",
             "tokens=12000",
         ):
             self.assertEqual(reject_sensitive_text(text), text)
@@ -156,6 +166,7 @@ class PlanningTests(unittest.TestCase):
             "Cookie: session=abcdefgh",
             "--password hunter2-secret",
             "MY_TOKEN=abcdefghijk",
+            "MY_TOKEN: abcdefghijk",
             "PAT=abcdefghijk",
         ):
             with self.assertRaisesRegex(PlanningError, "credential material"):

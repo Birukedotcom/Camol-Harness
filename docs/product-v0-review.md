@@ -71,6 +71,15 @@ Regression coverage is in
 `tests.test_tui.TuiTests.test_terminal_app_has_transcript_multiline_prompt_and_fleet`,
 and `tests.test_runbook.RunbookV4Tests.test_v4_verification_can_select_box_or_workspace_root`.
 
+A final review of that remediation found two P2 usability regressions in the
+high-confidence input guard. Broad output-redaction names had been reused for input
+admission, and generic auth-scheme words were classified by length alone. Input
+admission now uses credential-bearing field suffixes plus a non-placeholder value;
+auth-scheme candidates require compact credential structure or measured character
+entropy. Regression cases cover `AUTH_ENABLED=true`, `GIT_AUTHOR_NAME=test`,
+`max_tokens=12000`, snake/kebab auth prose, and the credential examples that must
+remain denied. The aggressive defense-in-depth output redactor remains separate.
+
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python
 compilation, focused static checks, and `git diff --check`. Live Fable performance,
