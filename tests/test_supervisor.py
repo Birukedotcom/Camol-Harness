@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from camol.sandbox import process_start_fingerprint
 from camol.schema import canonical_digest
@@ -144,6 +145,41 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await send_control(self.state, "stop")
             await asyncio.wait_for(serving, timeout=5)
+
+    async def test_box_tail_filters_unassigned_tasks_and_keeps_latest_events(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        supervisor.run_id = "run"
+        supervisor.runbook = {
+            "agents": [{
+                "id": "builder", "role": "build", "capabilities": ["code"],
+                "adapter": {"kind": "process"},
+            }],
+            "tasks": [
+                {"id": "owned", "capabilities": ["code"]},
+                {"id": "other", "capabilities": ["code"]},
+            ],
+        }
+        state = {"tasks": {
+            "owned": {"agent_id": "builder"},
+            "other": {"agent_id": "another"},
+        }}
+        supervisor.orchestrator = Mock(state=Mock(return_value=state))
+        events = [
+            {"seq": index, "actor_id": "orchestrator", "payload": {
+                "task_id": "owned", "agent_id": "builder",
+            }}
+            for index in range(1, 121)
+        ] + [{
+            "seq": 121, "actor_id": "orchestrator", "payload": {
+                "task_id": "other", "agent_id": "another",
+            },
+        }]
+        supervisor.store = Mock(read=Mock(return_value=events))
+        supervisor._boxes = Mock(return_value={"boxes": []})
+        view = supervisor._box("builder", 0, 100, tail=True)
+        self.assertEqual(len(view["events"]), 100)
+        self.assertEqual(view["events"][0]["seq"], 21)
+        self.assertEqual(view["events"][-1]["seq"], 120)
 
     async def test_database_and_control_symlink_must_stay_inside_state(self):
         outside = Path(self.temporary.name) / "outside"

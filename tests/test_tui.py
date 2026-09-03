@@ -29,6 +29,12 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.2)
             rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
             self.assertIn("/grill GOAL", rendered)
+            prompt.load_text("sk-live-abcdefghijklmnopqrstuvwxyz123456")
+            app.action_submit()
+            await pilot.pause(0.2)
+            rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+            self.assertNotIn("abcdefghijklmnopqrstuvwxyz", rendered)
+            self.assertIn("[REDACTED]", rendered)
 
     async def test_n_box_fleet_and_keyboard_navigation(self):
         for command in (
@@ -39,7 +45,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             "preserve secrets",
             "a | first\nb | second | after=a",
             "python3 -m unittest",
-            "boxes=2 turns=3 tokens=10000",
+            "boxes=2 turns=3 tokens=10000 cost_cents=100 turn_timeout_seconds=600",
         ):
             self.controller.handle(command)
         app = CamolApp(self.controller, show_boot=False)

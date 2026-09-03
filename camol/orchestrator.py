@@ -5,7 +5,6 @@ from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from .admission import AdmissionBundle
-from .artifacts import ArtifactRef
 from .evidence import EvidenceRecord
 from .effects import EffectRequest, outcome_payload
 from .evaluation import CandidateRecord, CounterexampleRecord, IntegrationReceipt

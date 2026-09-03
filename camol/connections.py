@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import shutil
@@ -36,6 +37,31 @@ CONNECTION_STATUSES = frozenset({"ready", "auth_required", "unavailable", "unkno
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def validate_loopback_endpoint(endpoint: str) -> str:
+    """Return a normalized HTTP(S) numeric-loopback endpoint or deny it."""
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+        host = ipaddress.ip_address(parsed.hostname or "")
+        parsed.port
+    except (ValueError, UnicodeError) as error:
+        raise ConnectionError("local model endpoint must use a valid numeric loopback address") from error
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not host.is_loopback
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConnectionError("local model endpoint must use credential-free HTTP(S) numeric loopback")
+    return endpoint.rstrip("/")
+
+
+def open_without_proxy(request: Any, *, timeout: int) -> Any:
+    """Open a loopback request without consulting proxy environment state."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=timeout)
 
 
 def validate_connection(value: Mapping[str, Any]) -> Dict[str, Any]:
@@ -198,12 +224,9 @@ class ConnectionRegistry:
         )
 
     def probe_local(self, endpoint: str = "http://127.0.0.1:11434/v1") -> Dict[str, Any]:
-        parsed = urllib.parse.urlparse(endpoint)
-        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-            raise ConnectionError("local model endpoint must use HTTP(S) loopback")
-        url = endpoint.rstrip("/") + "/models"
+        url = validate_loopback_endpoint(endpoint) + "/models"
         try:
-            with urllib.request.urlopen(url, timeout=2) as response:
+            with open_without_proxy(url, timeout=2) as response:
                 if response.status != 200:
                     raise ConnectionError("local model endpoint returned status {}".format(response.status))
                 payload = json.loads(response.read(1 << 20).decode("utf-8"))
@@ -221,7 +244,21 @@ class ConnectionRegistry:
             )
 
     def probe_all(self) -> List[Dict[str, Any]]:
-        records = [self.probe_claude(), self.probe_codex(), self.probe_openai_environment(), self.probe_local()]
+        probes = (
+            (self.probe_claude, ("claude-cli", "anthropic", "cli", "claude")),
+            (self.probe_codex, ("codex-cli", "openai", "cli", "codex")),
+            (self.probe_openai_environment, ("openai-api-env", "openai", "api", "https")),
+            (self.probe_local, ("local-openai", "local", "openai_compatible", "http://127.0.0.1:11434/v1")),
+        )
+        records = []
+        for probe, (connection_id, provider, kind, runtime) in probes:
+            try:
+                records.append(probe())
+            except (ConnectionError, OSError, ValueError) as error:
+                records.append(_record(
+                    connection_id, provider, kind, status="error", runtime=runtime,
+                    detail="{} probe failed safely: {}".format(connection_id, error.__class__.__name__),
+                ))
         self.save(records)
         return records
 

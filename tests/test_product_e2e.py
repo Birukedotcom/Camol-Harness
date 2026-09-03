@@ -51,7 +51,7 @@ class ProductFlowTests(unittest.TestCase):
             "No credentials and no source-checkout writes",
             "implement | create the fixture artifact",
             "python3 -c \"from pathlib import Path; assert Path('artifacts/implement.txt').is_file()\"",
-            "boxes=1 turns=3 tokens=12000 local only",
+            "boxes=1 turns=3 tokens=12000 cost_cents=100 turn_timeout_seconds=600",
         ):
             final = self.controller.handle(answer)
         self.assertIn("Nothing has started", final.messages[0])

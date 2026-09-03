@@ -62,6 +62,14 @@ class ConversationTests(unittest.TestCase):
             with self.subTest(selection=selection), self.assertRaises(ConversationError):
                 converse(selection, "hello", [], effort="high", workspace=self.workspace)
 
+    def test_local_conversation_rejects_non_loopback_before_network_access(self):
+        with patch("camol.conversation.open_without_proxy", side_effect=AssertionError("network called")):
+            with self.assertRaisesRegex(ConversationError, "numeric loopback"):
+                converse(
+                    "local:qwen", "private plan", [], effort="high", workspace=self.workspace,
+                    local_endpoint="https://example.com/v1",
+                )
+
     def test_claude_jsonl_chunks_are_streamed_before_final_reply(self):
         executable = self.workspace / "fake-claude"
         executable.write_text(

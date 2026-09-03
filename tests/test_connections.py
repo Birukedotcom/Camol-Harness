@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from camol.connections import ConnectionError, ConnectionRegistry
+from camol.connections import ConnectionError, ConnectionRegistry, _record
 
 
 class ConnectionRegistryTests(unittest.TestCase):
@@ -60,6 +60,25 @@ class ConnectionRegistryTests(unittest.TestCase):
         ):
             record = self.registry.probe_codex()
         self.assertEqual(record["status"], "auth_required")
+
+    def test_one_broken_runtime_does_not_hide_other_connections(self):
+        with patch.object(self.registry, "probe_claude", side_effect=ConnectionError("broken")), patch.object(
+            self.registry, "probe_codex", return_value=_record(
+                "codex-cli", "openai", "cli", status="ready", runtime="codex"
+            )
+        ), patch.object(
+            self.registry, "probe_openai_environment", return_value=_record(
+                "openai-api-env", "openai", "api", status="auth_required", runtime="https"
+            )
+        ), patch.object(
+            self.registry, "probe_local", return_value=_record(
+                "local-openai", "local", "openai_compatible", status="unavailable", runtime="loopback"
+            )
+        ):
+            records = self.registry.probe_all()
+        self.assertEqual(len(records), 4)
+        self.assertEqual(records[0]["status"], "error")
+        self.assertEqual(records[1]["status"], "ready")
 
 
 if __name__ == "__main__":

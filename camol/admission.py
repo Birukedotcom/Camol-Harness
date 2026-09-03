@@ -4,12 +4,10 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 from uuid import uuid4
 
 from .probes import (
-    AdapterBinaryProbe,
-    EvaluatorBundleProbe,
     Probe,
     ProbeContext,
     ProbeOutcome,
@@ -33,7 +31,7 @@ from .readiness import (
     assess_ready_to_lease,
 )
 from .sandbox import SandboxError, SandboxPolicy, select_backend, system_read_paths
-from .providers import ModelProfile, load_model_profile
+from .providers import ModelProfile, model_profile_for_adapter
 from .schema import canonical_digest, require_bool, require_digest
 from .workspace import WorkspaceHandle, WorkspaceManager
 
@@ -202,7 +200,7 @@ class AdmissionController:
         if agent["adapter"]["kind"] == "process":
             argv0 = agent["adapter"]["argv"][0]
         else:
-            profile = load_model_profile(handle.path, agent["adapter"]["profile"])
+            profile = model_profile_for_adapter(handle.path, agent["adapter"])
             if profile.adapter_kind != agent["adapter"]["kind"]:
                 raise AdmissionError("adapter kind does not match the frozen model profile")
             argv0 = profile.runtime_binary
@@ -289,7 +287,7 @@ class AdmissionController:
             concurrency_slots=1,
             max_tokens=self.runbook["run"]["token_policy"]["max_tokens_per_turn"],
             max_usd_cents=(
-                load_model_profile(handle.path, agent["adapter"]["profile"]).max_turn_usd_cents
+                model_profile_for_adapter(handle.path, agent["adapter"]).max_turn_usd_cents
                 if agent["adapter"]["kind"] != "process" else None
             ),
             status="reserved",
@@ -401,7 +399,7 @@ class AdmissionController:
             probe_policy_digest=probe_policy.digest(),
             adapter_kind=agent["adapter"]["kind"],
             requested_model=(
-                load_model_profile(handle.path, agent["adapter"]["profile"]).requested_model
+                model_profile_for_adapter(handle.path, agent["adapter"]).requested_model
                 if agent["adapter"]["kind"] != "process" else None
             ),
             credential_scopes=sandbox_policy.credential_refs,

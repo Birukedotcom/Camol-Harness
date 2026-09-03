@@ -22,7 +22,7 @@ from .orchestrator import Orchestrator, StateTransitionError
 from .readiness import WaitingReason
 from .sandbox import SandboxError, SandboxPolicy, select_backend, system_read_paths
 from .workspace import WorkspaceError, WorkspaceHandle, WorkspaceManager
-from .providers import ProviderError, load_model_profile
+from .providers import ProviderError, model_profile_for_adapter
 from .schema import canonical_digest
 
 
@@ -45,7 +45,7 @@ class HarnessRunner:
     def _provider_cost_remaining(state: Dict[str, Any], agent: Dict[str, Any], task_id: str, workspace: Path) -> Optional[int]:
         if agent["adapter"]["kind"] == "process":
             return None
-        profile = load_model_profile(workspace, agent["adapter"]["profile"])
+        profile = model_profile_for_adapter(workspace, agent["adapter"])
         run_used_micros = 0
         task_used_micros = 0
         for evidence in state.get("evidence", {}).values():
@@ -288,7 +288,6 @@ class HarnessRunner:
         bundle = self.evaluators.load(run_id, admission.evaluator_digest)
         if bundle.plan_digest != state["plan_digest"]:
             raise EvaluationError("frozen evaluator is bound to another plan")
-        execution_workspace = self._execution_workspace(run_id, assignment)
         source_handle = self._handles[(task["id"], agent["id"])]
         existing = next(
             (

@@ -288,15 +288,20 @@ class SandboxBackend:
             if invocation_record is not None:
                 try:
                     process_started = process_start_fingerprint(process.pid)
-                except SandboxError:
+                except SandboxError as fingerprint_error:
                     # A very short-lived command can be reaped before ``ps``
-                    # sees it. It cannot be a live orphan, so retain an explicit
-                    # marker; a running child without a fingerprint is unsafe.
-                    await asyncio.sleep(0)
-                    if process.returncode is None:
-                        os.killpg(process.pid, signal.SIGKILL)
+                    # sees it. Give asyncio one bounded chance to observe that
+                    # exit. A genuinely running child without a fingerprint is
+                    # unsafe and must be terminated.
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
                         await process.wait()
-                        raise
+                        raise fingerprint_error
                     process_started = "exited-before-os-observation"
                 try:
                     self._write_invocation(
@@ -313,7 +318,10 @@ class SandboxBackend:
                         },
                     )
                 except Exception:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     await process.wait()
                     raise
             stdout_task = asyncio.create_task(self._drain(process.stdout))
@@ -325,18 +333,27 @@ class SandboxBackend:
             try:
                 await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
             except asyncio.TimeoutError as error:
-                os.killpg(process.pid, signal.SIGKILL)
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 await process.wait()
                 await asyncio.gather(stdout_task, stderr_task)
                 if invocation_record is not None:
                     self._finish_invocation(invocation_record, "timed_out", process.returncode)
                 raise SandboxError("sandboxed process timed out") from error
             except asyncio.CancelledError:
-                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5)
                 except asyncio.TimeoutError:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     await process.wait()
                 await asyncio.gather(stdout_task, stderr_task)
                 if invocation_record is not None:

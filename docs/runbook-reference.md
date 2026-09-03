@@ -16,7 +16,7 @@ Four `schema_version` values are readable. Any other value is rejected with
 |---|---|---|
 | `1` | frozen; digests pinned in `tests/test_runbook.py` | Accepts the legacy `run.max_agents` alias, ignores unknown fields, and has no readiness fields. Normalization is byte-identical to the pre-M0 kernel, so existing frozen plans still resume. |
 | `2` | frozen | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, rejects booleans in integer fields, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
-| `3` | frozen | Preserves v2 semantics and adds a provider-neutral hosted-adapter shape: `kind`, workspace-relative `profile`, and `timeout_seconds`. Process adapters retain `kind`, `argv`, and `timeout_seconds`. |
+| `3` | frozen | Preserves v2 semantics and adds a provider-neutral hosted-adapter shape: `kind`, workspace-relative `profile`, optional strict `profile_snapshot`, and `timeout_seconds`. Process adapters retain `kind`, `argv`, and `timeout_seconds`. |
 | `4` | current | Preserves v3 semantics and requires an explicit `evaluator_assets` list on every task. Their canonical manifests and bytes are frozen outside builder authority; changed workspace copies cannot pass. |
 
 A v1 file that contains a v2 field (`readiness_policy` or `trust_tier`) is rejected
@@ -58,6 +58,11 @@ replace that worker's adapter only after migration:
 Hosted adapters cannot supply arbitrary `argv`; invocation authority lives in
 the versioned profile and adapter implementation. See
 [Provider and model adapters](provider-adapters.md).
+
+Product-generated executable plans include `profile_snapshot`, a complete
+digest-bound effective profile after approved effort and cost/token/turn ceilings
+have been applied. Hand-authored legacy runbooks may continue to reference only the
+profile path. Process adapters cannot carry a hosted profile snapshot.
 
 Migration from v3 to v4 requires an explicit choice for every task—even when a
 self-contained evaluator has no external assets:

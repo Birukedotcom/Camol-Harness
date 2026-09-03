@@ -82,10 +82,11 @@ Inside Camol, a first live-capable plan looks like this:
 /model claude:fable
 /effort max
 /grill Build the feature and prove it without deployment
-                               # answer each visible question; task lines define N
+                               # answer each visible question; use structured limits such as:
+                               # boxes=3 turns=6 tokens=48000 cost_cents=100 turn_timeout_seconds=1800
 /plan                          # inspect invariants, DAG, evaluator argv, and digests
 /approve yes                   # approval freezes only the exact visible digest
-/run --accept-spend --max-cents 10
+/run --accept-spend --worker-cents 100 --preflight-cents 10
 /status
 /boxes
 /box 1
@@ -93,8 +94,10 @@ Inside Camol, a first live-capable plan looks like this:
 /quit                          # detach; does not stop the supervisor
 ```
 
-`/run` refuses a dirty source checkout and runs one spend-capped, no-tools provider
-preflight before it starts a Claude supervisor. The supervisor then prepares isolated
+The exact plan embeds the effective provider effort, token limits, timeout, tool/network
+policy, and total worker cost ceiling. `/run` requires the human to repeat that worker
+ceiling exactly, refuses a dirty source checkout, and runs one separately capped,
+no-tools provider preflight before it starts a Claude supervisor. The supervisor then prepares isolated
 worktrees and will not issue a lease until its task-specific readiness predicate is
 green. Use `/drain`, `/resume`, or `/stop` for lifecycle control. Interactive state is
 kept outside the repository under the platform state directory; `/status` prints its
@@ -261,6 +264,8 @@ The executable Python slice currently provides:
 - durable private orchestrator sessions, a deterministic `/grill` question loop,
   human-readable N-task DAGs, exact plan/runbook digests, two-step approval, and
   automatic invalidation when frozen model or effort settings change;
+- structured box/turn/token/cost/timeout limits, approved exclusions copied into
+  worker rules, intermediate patch checks, and one DAG-final human-selected evaluator;
 - credential-safe connection discovery for Claude CLI, Codex CLI, an
   `OPENAI_API_KEY` environment reference, and a loopback OpenAI-compatible endpoint;
 - planning-only Claude/Codex/local conversations with no write tools, explicit

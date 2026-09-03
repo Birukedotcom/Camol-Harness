@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .connections import ConnectionError, open_without_proxy, validate_loopback_endpoint
 from .probes import Redactor
 
 
@@ -149,6 +150,10 @@ def _parse_cli_reply(provider: str, stdout: bytes) -> Tuple[str, Optional[str], 
 
 
 def _local_reply(endpoint: str, model: str, prompt: str, timeout: int) -> ConversationReply:
+    try:
+        endpoint = validate_loopback_endpoint(endpoint)
+    except ConnectionError as error:
+        raise ConversationError(str(error)) from error
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -161,7 +166,7 @@ def _local_reply(endpoint: str, model: str, prompt: str, timeout: int) -> Conver
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_without_proxy(request, timeout=timeout) as response:
             result = json.loads(response.read(8 << 20).decode("utf-8"))
         text = result["choices"][0]["message"]["content"]
         resolved = result.get("model")

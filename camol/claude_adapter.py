@@ -3,12 +3,11 @@
 import hashlib
 import json
 import re
-from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from .adapter import AdapterError, ProcessAgentAdapter, register_agent_adapter
-from .providers import ModelProfile, ProviderError, _resolved_model, _usage, load_model_profile
+from .providers import ModelProfile, ProviderError, _resolved_model, _usage, model_profile_for_adapter
 from .schema import canonical_digest
 
 
@@ -81,7 +80,7 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
 
     def _profile(self, agent: Dict[str, Any]) -> ModelProfile:
         try:
-            profile = load_model_profile(self.workspace, agent["adapter"]["profile"])
+            profile = model_profile_for_adapter(self.workspace, agent["adapter"])
         except ProviderError as error:
             raise AdapterError(str(error)) from error
         if profile.adapter_kind != "claude_cli" or profile.provider != "anthropic":

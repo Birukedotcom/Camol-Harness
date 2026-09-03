@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from camol.schema import canonical_digest
-from camol.session import SessionError, SessionStore, validate_session
+from camol.session import MAX_SESSION_BYTES, SessionError, SessionStore, validate_session
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -63,6 +63,25 @@ class SessionStoreTests(unittest.TestCase):
 
         with self.assertRaises(Exception):
             validate_session(session)
+
+    def test_save_trims_old_messages_to_its_reload_byte_limit(self):
+        store = SessionStore(self.workspace, self.state_root)
+        session = store.create()
+        session["messages"] = [
+            {
+                "message_id": "message-{}".format(index),
+                "role": "human",
+                "content": "{}:".format(index) + "x" * 200_000,
+                "created_at": "2026-09-03T00:00:00+00:00",
+                "kind": "conversation",
+            }
+            for index in range(15)
+        ]
+        session = store.save(session)
+        self.assertLessEqual(store.path.stat().st_size, MAX_SESSION_BYTES)
+        reloaded = store.load()
+        self.assertLess(len(reloaded["messages"]), 15)
+        self.assertTrue(reloaded["messages"][-1]["content"].startswith("14:"))
 
 
 if __name__ == "__main__":

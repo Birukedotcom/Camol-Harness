@@ -37,7 +37,8 @@ stored in the session transcript.
 
 Selecting a non-manual model warns that normal planning messages may consume account
 quota. Worker execution has a separate gate. `/run` for the packaged Claude/Fable
-profile requires `--accept-spend` and accepts an optional 1–100 cent preflight cap.
+profile requires `--accept-spend`, an exact repetition of the approved worker ceiling
+with `--worker-cents`, and accepts an optional 1–100 cent `--preflight-cents` cap.
 The no-tools preflight records requested and resolved model, runtime, token usage,
 cost, target, profile digest, and expiry. A fallback model outside the frozen
 allowlist is denied rather than relabeled.
@@ -45,3 +46,6 @@ allowlist is denied rather than relabeled.
 The packaged Fable profile is `SPECULATIVE`: its alias and allowlist are a request,
 not evidence of entitlement. Only a fresh owner-authorized receipt can make that
 dimension green. A connection glyph can never substitute for this receipt.
+Provider-reported billing is validated after each response, but an upstream provider
+can overrun a requested per-call ceiling. The plan and launch acknowledgement therefore
+show the requested ceiling as authority, not a guarantee about external billing.

@@ -48,7 +48,7 @@ _READINESS_POLICY_FIELDS = ("receipt_ttl_seconds",)
 _RULE_FIELDS = ("id", "text", "enforcement")
 _AGENT_FIELDS_V2 = ("id", "role", "box", "capabilities", "adapter", "trust_tier")
 _ADAPTER_FIELDS = ("kind", "argv", "timeout_seconds")
-_ADAPTER_FIELDS_V3 = ("kind", "argv", "profile", "timeout_seconds")
+_ADAPTER_FIELDS_V3 = ("kind", "argv", "profile", "profile_snapshot", "timeout_seconds")
 _TASK_FIELDS = (
     "id",
     "goal",
@@ -266,6 +266,8 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
         argv = None
         profile = None
         if kind == "process":
+            if "profile_snapshot" in adapter:
+                raise RunbookError("agents[{}].adapter.profile_snapshot is only valid for hosted adapters".format(index))
             if version >= 3 and "profile" in adapter:
                 raise RunbookError("agents[{}].adapter.profile is only valid for hosted adapters".format(index))
             argv = _string_list(adapter.get("argv"), "agents[{}].adapter.argv".format(index), allow_empty=False)
@@ -273,6 +275,17 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             if "argv" in adapter:
                 raise RunbookError("agents[{}].adapter.argv is not accepted for claude_cli; the profile owns invocation policy".format(index))
             profile = _relative_path(adapter.get("profile"), "agents[{}].adapter.profile".format(index))
+            profile_snapshot = None
+            if "profile_snapshot" in adapter:
+                try:
+                    from .providers import ModelProfile
+                    profile_snapshot = ModelProfile.from_dict(adapter["profile_snapshot"]).to_dict()
+                except Exception as error:
+                    raise RunbookError(
+                        "agents[{}].adapter.profile_snapshot is invalid: {}".format(index, error)
+                    ) from error
+                if profile_snapshot["adapter_kind"] != kind:
+                    raise RunbookError("agents[{}].adapter.profile_snapshot kind does not match".format(index))
         timeout_seconds = adapter.get("timeout_seconds", 1800)
         if strict:
             _strict_int(timeout_seconds, "agents[{}].adapter.timeout_seconds".format(index), minimum=1)
@@ -289,7 +302,14 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
                 ),
                 "adapter": dict(
                     {"kind": kind, "timeout_seconds": timeout_seconds},
-                    **({"argv": argv} if kind == "process" else {"profile": profile})
+                    **(
+                        {"argv": argv}
+                        if kind == "process"
+                        else dict(
+                            {"profile": profile},
+                            **({"profile_snapshot": profile_snapshot} if profile_snapshot is not None else {})
+                        )
+                    )
                 ),
         }
         if strict:

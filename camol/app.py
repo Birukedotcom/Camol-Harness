@@ -4,7 +4,7 @@ import asyncio
 import getpass
 import json
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
@@ -16,10 +16,16 @@ from .planning import (
     PlanningError,
     compile_runbook,
     proposal_from_grill,
+    reject_sensitive_text,
     validate_proposal,
 )
 from .probes import local_target_id
-from .providers import ProviderError, create_claude_capability, load_model_profile
+from .providers import (
+    ProviderError,
+    create_claude_capability,
+    load_model_profile,
+    model_profile_for_adapter,
+)
 from .runbook import RunbookError, runbook_digest, validate_runbook
 from .schema import canonical_digest
 from .session import EFFORTS, SessionError, SessionStore
@@ -42,7 +48,8 @@ HELP = """Commands
   /grill GOAL              question and freeze a candidate plan
   /plan                    show the full candidate plan and exact digest
   /approve yes|DIGEST      approve only that visible plan
-  /run --accept-spend      prove readiness and detach the approved run
+  /run --accept-spend --worker-cents N
+                            acknowledge the frozen worker ceiling, prove readiness, and detach
   /status                  current local session and supervisor state
   /boxes                   list the arbitrary-N worker pool
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
@@ -70,13 +77,30 @@ def _envelope(proposal: Mapping[str, Any]) -> Dict[str, Any]:
     execution_status = "planning_only"
     limitation = "Selected orchestrator cannot execute through the V0 worker kernel."
     if selection.provider == "claude" and selection.model in {None, "fable"}:
+        base_profile = load_model_profile(Path.cwd(), "@camol/claude-fable-5-1")
+        limits = proposal["resource_limits"]
+        requested_cost = limits["max_worker_cost_usd_cents"]
+        if requested_cost > base_profile.max_run_usd_cents:
+            raise PlanningError(
+                "cost_cents exceeds the packaged profile maximum of {}".format(base_profile.max_run_usd_cents)
+            )
+        effective_profile = replace(
+            base_profile,
+            effort=proposal["execution"]["effort"],
+            max_agent_turns=limits["max_turns_per_task"],
+            max_turn_tokens=min(base_profile.max_turn_tokens, limits["max_total_tokens"], 8_000),
+            max_turn_usd_cents=min(base_profile.max_turn_usd_cents, requested_cost),
+            max_task_usd_cents=min(base_profile.max_task_usd_cents, requested_cost),
+            max_run_usd_cents=requested_cost,
+        )
         runbook = compile_runbook(
             proposal,
             run_id=run_id,
             adapter={
                 "kind": "claude_cli",
                 "profile": "@camol/claude-fable-5-1",
-                "timeout_seconds": 1800,
+                "profile_snapshot": effective_profile.to_dict(),
+                "timeout_seconds": limits["turn_timeout_seconds"],
             },
         )
         execution_status = "preflight_required"
@@ -134,10 +158,13 @@ def render_plan(plan: Mapping[str, Any], digest: str) -> str:
         "execution: {} at effort {} ({})".format(
             proposal["execution"]["model"], proposal["execution"]["effort"], plan["execution_status"]
         ),
-        "limits: boxes={} turns/task={} total_tokens={}".format(
+        "limits: boxes={} concurrency={} turns/task={} total_tokens={} worker_cost={}c turn_timeout={}s".format(
+            proposal["resource_limits"]["box_pool_size"],
             proposal["resource_limits"]["max_concurrency"],
             proposal["resource_limits"]["max_turns_per_task"],
             proposal["resource_limits"]["max_total_tokens"],
+            proposal["resource_limits"]["max_worker_cost_usd_cents"],
+            proposal["resource_limits"]["turn_timeout_seconds"],
         ),
         "outcomes:",
     ]
@@ -196,6 +223,10 @@ class InteractiveController:
         text = raw.strip()
         if not text:
             return CommandResponse()
+        try:
+            reject_sensitive_text(text, "interactive input")
+        except PlanningError as error:
+            return self._respond("denied: {}".format(error), kind="error")
         self._persist_message("human", text, kind="command" if text.startswith("/") else "conversation")
         try:
             if text.startswith("/"):
@@ -327,6 +358,9 @@ class InteractiveController:
         )
         plan = validate_envelope(_envelope(proposal))
         digest = canonical_digest(plan)
+        rendered = render_plan(plan, digest)
+        if len(rendered) > 200_000:
+            raise PlanningError("the exact plan is too large to review safely; use smaller tasks and outcomes")
         self.session = self.store.update(
             self.session,
             grill=None,
@@ -338,7 +372,7 @@ class InteractiveController:
         )
         return self._respond(
             "Grill complete. Nothing has started.",
-            render_plan(plan, digest),
+            rendered,
         )
 
     def _approve(self, arguments: Sequence[str]) -> CommandResponse:
@@ -385,41 +419,72 @@ class InteractiveController:
         if plan["runbook"] is None:
             raise InteractiveError(plan["execution_limitation"])
         state_dir = Path(self.session["state_dir"])
+        paths = SupervisorPaths.under(state_dir)
+        if paths.socket.exists():
+            try:
+                remote_plan = self._control("plan")
+                remote_status = self._control("status")
+            except (SupervisorError, OSError):
+                # A crash can leave a stale socket. The replacement supervisor
+                # acquires the leader lock before removing it.
+                pass
+            else:
+                if remote_plan["plan_digest"] != runbook_digest(plan["runbook"]):
+                    raise InteractiveError("another supervisor owns this session state with a different plan")
+                self.session = self.store.update(self.session, status="running")
+                return self._respond(
+                    "Reattached to the existing supervisor without a new provider request or preflight.",
+                    "Supervisor reattached pid={}; closing this client will not stop it.".format(remote_status["pid"]),
+                )
         WorkspaceManager(self.workspace, state_dir).assert_source_ready()
         state_dir.mkdir(parents=True, exist_ok=True)
         adapter_kinds = {agent["adapter"]["kind"] for agent in plan["runbook"]["agents"]}
         if adapter_kinds == {"claude_cli"}:
             remaining = list(arguments)
             accept_spend = False
-            maximum = 10
+            preflight_cents = 10
+            worker_cents = None
             while remaining:
                 option = remaining.pop(0)
                 if option == "--accept-spend" and not accept_spend:
                     accept_spend = True
-                elif option == "--max-cents" and remaining:
+                elif option == "--preflight-cents" and remaining:
                     try:
-                        maximum = int(remaining.pop(0))
+                        preflight_cents = int(remaining.pop(0))
                     except ValueError as error:
-                        raise InteractiveError("--max-cents requires a positive integer") from error
+                        raise InteractiveError("--preflight-cents requires a positive integer") from error
+                elif option == "--worker-cents" and remaining:
+                    try:
+                        worker_cents = int(remaining.pop(0))
+                    except ValueError as error:
+                        raise InteractiveError("--worker-cents requires a positive integer") from error
                 else:
-                    raise InteractiveError("usage: /run --accept-spend [--max-cents N]")
-            if maximum <= 0 or maximum > 100:
-                raise InteractiveError("--max-cents must be between 1 and 100")
+                    raise InteractiveError(
+                        "usage: /run --accept-spend --worker-cents N [--preflight-cents N]"
+                    )
+            if preflight_cents <= 0 or preflight_cents > 100:
+                raise InteractiveError("--preflight-cents must be between 1 and 100")
             if not accept_spend:
                 raise InteractiveError(
-                    "provider capability is still speculative; use `/run --accept-spend` for one preflight capped at 10 cents"
+                    "provider capability is speculative; explicitly acknowledge both preflight and the frozen worker ceiling"
+                )
+            profile = model_profile_for_adapter(self.workspace, plan["runbook"]["agents"][0]["adapter"])
+            if worker_cents != profile.max_run_usd_cents:
+                raise InteractiveError(
+                    "--worker-cents must exactly match the approved {} cent run ceiling".format(
+                        profile.max_run_usd_cents
+                    )
                 )
             status = self.connections.probe_claude()
             if status["status"] != "ready":
                 raise InteractiveError("Claude connection is not authenticated; use /login claude")
-            profile = load_model_profile(self.workspace, "@camol/claude-fable-5-1")
             receipt = self.preflight_fn(
                 profile,
                 target_id=local_target_id(),
                 state_dir=state_dir,
                 cwd=self.workspace,
                 accept_spend=True,
-                spend_ceiling_cents=maximum,
+                spend_ceiling_cents=preflight_cents,
             )
             readiness_line = "Run accepted after provider preflight: requested={} resolved={} receipt={}.".format(
                 receipt.requested_model, receipt.resolved_model, receipt.digest()
@@ -431,19 +496,12 @@ class InteractiveController:
         else:
             raise InteractiveError("Product V0 cannot execute a mixed or unsupported adapter plan")
         runbook_path = self.store.write_runbook(self.session, plan["runbook"])
-        paths = SupervisorPaths.under(state_dir)
-        if paths.socket.exists():
-            remote_plan = self._control("plan")
-            if remote_plan["plan_digest"] != runbook_digest(plan["runbook"]):
-                raise InteractiveError("another supervisor owns this session state with a different plan")
-            started = {"pid": self._control("status")["pid"], "started": False}
-        else:
-            started = self.spawn_fn(
-                runbook_path,
-                self.workspace,
-                state_dir,
-                approve_by=getpass.getuser(),
-            )
+        started = self.spawn_fn(
+            runbook_path,
+            self.workspace,
+            state_dir,
+            approve_by=getpass.getuser(),
+        )
         self.session = self.store.update(self.session, status="running")
         return self._respond(
             readiness_line,
@@ -523,7 +581,9 @@ class InteractiveController:
             raise InteractiveError("unknown box")
         self.session = self.store.update(self.session, selected_box=target)
         try:
-            view = self._control("box", {"box_id": target, "after_seq": 0, "limit": 100})
+            view = self._control(
+                "box", {"box_id": target, "after_seq": 0, "limit": 100, "tail": True}
+            )
         except SupervisorError:
             return self._respond("BOX {} is dormant; no workspace, lease, commands, or evidence exist yet.".format(target))
         lines = [

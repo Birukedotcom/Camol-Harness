@@ -1,5 +1,8 @@
 # V0 verification and claim boundary
 
+The finding-by-finding independent review record is in
+[Product V0 adversarial review ledger](product-v0-review.md).
+
 Camol V0 has two deliberately separate claims.
 
 | Scope | Maturity | Evidence |
@@ -29,7 +32,7 @@ The repository includes the compact result at
 output rather than a checked-in fixture: it records execution-host paths and target
 identity. Re-running the command produces a fresh independently verifiable archive.
 
-The repository regression gate currently runs 281 tests with `python3 -m unittest
+The repository regression gate currently runs 291 tests with `python3 -m unittest
 discover -v`. Product-specific coverage includes terminal-size snapshots, a real PTY,
 arbitrary-N navigation, exact product-plan JSON and digest approval, provider failure
 and secret redaction, authenticated V2 control, macOS AF_UNIX path fallback, no work

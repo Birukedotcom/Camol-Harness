@@ -697,8 +697,8 @@ class AdapterBinaryProbe(Probe):
         else:
             config["profile"] = adapter.get("profile")
             try:
-                from .providers import load_model_profile
-                config["profile_digest"] = load_model_profile(context.workspace, adapter["profile"]).digest()
+                from .providers import model_profile_for_adapter
+                config["profile_digest"] = model_profile_for_adapter(context.workspace, adapter).digest()
             except Exception as error:
                 config["profile_error"] = error.__class__.__name__
         return config
@@ -708,8 +708,8 @@ class AdapterBinaryProbe(Probe):
         policy = adapter_policy(self.agent, context)
         if adapter.get("kind") == "claude_cli":
             try:
-                from .providers import load_model_profile
-                profile = load_model_profile(context.workspace, adapter["profile"])
+                from .providers import model_profile_for_adapter
+                profile = model_profile_for_adapter(context.workspace, adapter)
             except Exception as error:
                 return self.red(
                     context,
@@ -918,8 +918,8 @@ class ProviderConnectionProbe(Probe):
             item = {"agent_id": agent["id"], "adapter_kind": adapter["kind"], "profile": adapter.get("profile")}
             if adapter["kind"] == "claude_cli" and adapter.get("profile"):
                 try:
-                    from .providers import load_model_profile
-                    item["profile_digest"] = load_model_profile(context.workspace, adapter["profile"]).digest()
+                    from .providers import model_profile_for_adapter
+                    item["profile_digest"] = model_profile_for_adapter(context.workspace, adapter).digest()
                 except Exception as error:
                     item["profile_error"] = error.__class__.__name__
             profiles.append(item)
@@ -947,8 +947,8 @@ class ProviderConnectionProbe(Probe):
                 facts["agents"].append({"agent_id": agent["id"], "adapter_kind": adapter.get("kind"), "status": "unsupported"})
                 continue
             try:
-                from .providers import load_model_profile, read_capability
-                profile = load_model_profile(context.workspace, adapter["profile"])
+                from .providers import model_profile_for_adapter, read_capability
+                profile = model_profile_for_adapter(context.workspace, adapter)
                 resolved = context.path_binary(profile.runtime_binary)
                 if not resolved:
                     missing.append("runtime {} for {}".format(profile.runtime_binary, agent["id"]))

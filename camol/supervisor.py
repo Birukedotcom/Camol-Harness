@@ -35,6 +35,11 @@ class SupervisorError(RuntimeError):
 # client process. Popen otherwise warns during immediate garbage collection.
 _DETACHED_CHILDREN = []
 
+# Event and box responses include bounded transcript evidence and can exceed
+# asyncio's 64 KiB default reader limit. Keep a hard protocol ceiling so a
+# local peer cannot force unbounded buffering.
+CONTROL_RESPONSE_LIMIT = 8 * 1024 * 1024
+
 
 def _reap_or_detach_children() -> None:
     """Reap finished children and silence Popen cleanup for live daemons."""
@@ -325,7 +330,7 @@ class Supervisor:
                 return True
         return False
 
-    def _box(self, box_id: str, after_seq: int, limit: int) -> Dict[str, Any]:
+    def _box(self, box_id: str, after_seq: int, limit: int, *, tail: bool = False) -> Dict[str, Any]:
         state = self.orchestrator.state(self.run_id)
         worker = next((item for item in self.runbook["agents"] if item["id"] == box_id), None)
         if worker is None:
@@ -338,11 +343,29 @@ class Supervisor:
             task["id"] for task in self.runbook["tasks"]
             if set(task["capabilities"]).issubset(set(worker["capabilities"]))
         )
+        all_events = self.store.read(self.run_id, after_seq=after_seq)
+        historical_tasks = set(task_ids)
+        for event in all_events:
+            payload = event.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            if event.get("actor_id") == box_id or any(
+                payload.get(name) == box_id for name in ("agent_id", "worker_id", "box_id")
+            ):
+                task_id = payload.get("task_id")
+                if isinstance(task_id, str):
+                    historical_tasks.add(task_id)
         relevant = [
-            event for event in self.store.read(self.run_id, after_seq=after_seq)
+            event for event in all_events
             if event.get("actor_id") == box_id
-            or any(self._event_mentions_task(event, task_id) for task_id in set(task_ids + configured_tasks))
-        ][:limit]
+            or any(
+                isinstance(event.get("payload"), dict)
+                and event["payload"].get(name) == box_id
+                for name in ("agent_id", "worker_id", "box_id")
+            )
+            or any(self._event_mentions_task(event, task_id) for task_id in historical_tasks)
+        ]
+        relevant = relevant[-limit:] if tail else relevant[:limit]
         workspace = next(
             (item for item in self._boxes()["boxes"] if item.get("box_id") == box_id),
             None,
@@ -538,17 +561,20 @@ class Supervisor:
                 raise SupervisorError("events wait_ms must be between 0 and 30000")
             return {"ok": True, "result": await self._events(after_seq, limit, wait_ms)}
         if version == 2 and command == "box":
-            reject_unknown_fields(params, ("box_id", "after_seq", "limit"), "control box params")
+            reject_unknown_fields(params, ("box_id", "after_seq", "limit", "tail"), "control box params")
             box_id = params.get("box_id")
             after_seq = params.get("after_seq", 0)
             limit = params.get("limit", 100)
+            tail = params.get("tail", False)
             if not isinstance(box_id, str) or not box_id:
                 raise SupervisorError("box_id is required")
             if type(after_seq) is not int or after_seq < 0:
                 raise SupervisorError("box after_seq must be a non-negative integer")
             if type(limit) is not int or not 1 <= limit <= 500:
                 raise SupervisorError("box limit must be between 1 and 500")
-            return {"ok": True, "result": self._box(box_id, after_seq, limit)}
+            if type(tail) is not bool:
+                raise SupervisorError("box tail must be a boolean")
+            return {"ok": True, "result": self._box(box_id, after_seq, limit, tail=tail)}
         if command == "stop":
             if version == 2:
                 reject_unknown_fields(params, (), "control stop params")
@@ -641,7 +667,9 @@ async def send_control(state_dir: Path, command: str, *, requested_by: str = "op
     token = _read_control_token(paths.token)
     if not paths.socket.exists() or paths.socket.is_symlink():
         raise SupervisorError("Camol supervisor socket is not available")
-    reader, writer = await asyncio.open_unix_connection(str(paths.socket))
+    reader, writer = await asyncio.open_unix_connection(
+        str(paths.socket), limit=CONTROL_RESPONSE_LIMIT
+    )
     request = {
         "schema": "camol.control_request",
         "schema_version": 1,
@@ -649,11 +677,13 @@ async def send_control(state_dir: Path, command: str, *, requested_by: str = "op
         "command": command,
         "requested_by": requested_by,
     }
-    writer.write((json.dumps(request, sort_keys=True) + "\n").encode("utf-8"))
-    await writer.drain()
-    response = json.loads(await asyncio.wait_for(reader.readline(), timeout=10))
-    writer.close()
-    await writer.wait_closed()
+    try:
+        writer.write((json.dumps(request, sort_keys=True) + "\n").encode("utf-8"))
+        await writer.drain()
+        response = json.loads(await asyncio.wait_for(reader.readline(), timeout=10))
+    finally:
+        writer.close()
+        await writer.wait_closed()
     if not response.get("ok"):
         raise SupervisorError(response.get("error") or "control request failed")
     return response
@@ -672,7 +702,9 @@ async def send_control_v2(
     token = _read_control_token(paths.token)
     if not paths.socket.exists() or paths.socket.is_symlink():
         raise SupervisorError("Camol supervisor socket is not available")
-    reader, writer = await asyncio.open_unix_connection(str(paths.socket))
+    reader, writer = await asyncio.open_unix_connection(
+        str(paths.socket), limit=CONTROL_RESPONSE_LIMIT
+    )
     request_id = "request-" + uuid4().hex
     request = {
         "schema": "camol.control_request",
@@ -683,11 +715,13 @@ async def send_control_v2(
         "requested_by": requested_by,
         "params": dict(params or {}),
     }
-    writer.write((json.dumps(request, sort_keys=True) + "\n").encode("utf-8"))
-    await writer.drain()
-    response = json.loads(await asyncio.wait_for(reader.readline(), timeout=timeout))
-    writer.close()
-    await writer.wait_closed()
+    try:
+        writer.write((json.dumps(request, sort_keys=True) + "\n").encode("utf-8"))
+        await writer.drain()
+        response = json.loads(await asyncio.wait_for(reader.readline(), timeout=timeout))
+    finally:
+        writer.close()
+        await writer.wait_closed()
     if not response.get("ok"):
         raise SupervisorError(response.get("error") or "control request failed")
     response["request_id"] = request_id

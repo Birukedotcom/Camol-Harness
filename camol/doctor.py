@@ -52,7 +52,7 @@ from .readiness import (
 )
 from .runbook import load_runbook, runbook_digest
 from .schema import SchemaError, canonical_digest, parse_timestamp
-from .providers import ProviderError, load_model_profile
+from .providers import ProviderError, model_profile_for_adapter
 
 __all__ = ["DoctorOptions", "DoctorReport", "run_doctor", "EXIT_READY", "EXIT_NOT_READY", "EXIT_PROBE_FAILURE"]
 
@@ -298,7 +298,7 @@ def _candidate(
     profile = None
     if agent["adapter"]["kind"] != "process":
         try:
-            profile = load_model_profile(context.workspace, agent["adapter"]["profile"])
+            profile = model_profile_for_adapter(context.workspace, agent["adapter"])
         except ProviderError:
             profile = None
     capabilities = list(PROCESS_ADAPTER_CAPABILITIES)

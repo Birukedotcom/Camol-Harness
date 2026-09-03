@@ -36,6 +36,8 @@ SESSION_FIELDS = (
 SESSION_STATUSES = frozenset({"new", "planning", "plan_ready", "approved", "running", "terminal"})
 EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 MESSAGE_ROLES = frozenset({"human", "orchestrator", "system"})
+MAX_MESSAGE_CHARS = 256_000
+MAX_SESSION_BYTES = 2 * 1024 * 1024
 
 
 def _now() -> str:
@@ -79,7 +81,7 @@ def _message(value: Mapping[str, Any]) -> Dict[str, str]:
     for name in ("message_id", "content", "created_at"):
         if not isinstance(value[name], str) or not value[name]:
             raise SessionError("interactive message {} is required".format(name))
-    if len(value["content"]) > 20_000:
+    if len(value["content"]) > MAX_MESSAGE_CHARS:
         raise SessionError("interactive message is too large")
     return dict(value)
 
@@ -176,7 +178,7 @@ class SessionStore:
     def load(self) -> Dict[str, Any]:
         if not self.path.is_file() or self.path.is_symlink():
             return self.create()
-        if self.path.stat().st_size > 2 * 1024 * 1024:
+        if self.path.stat().st_size > MAX_SESSION_BYTES:
             raise SessionError("interactive session file is too large")
         try:
             return validate_session(json.loads(self.path.read_text(encoding="utf-8")))
@@ -190,12 +192,17 @@ class SessionStore:
         record = dict(value)
         record["updated_at"] = _now()
         record = validate_session(record)
+        serialized = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        while len(serialized) > MAX_SESSION_BYTES and record["messages"]:
+            record["messages"] = record["messages"][1:]
+            serialized = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        if len(serialized) > MAX_SESSION_BYTES:
+            raise SessionError("interactive plan and settings exceed the durable session limit")
         descriptor, temporary = tempfile.mkstemp(prefix="session.", dir=str(self.project_dir))
         temporary_path = Path(temporary)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(record, handle, indent=2, sort_keys=True)
-                handle.write("\n")
+                handle.write(serialized.decode("utf-8"))
                 handle.flush()
                 os.fsync(handle.fileno())
             os.chmod(temporary_path, 0o600)

@@ -19,8 +19,10 @@ writer and keeps running.
    product-plan JSON, and (when executable) the kernel runbook digest.
 6. Type `/approve yes` or the exact full product-plan digest. `/approve` by itself
    only prints the confirmation challenge.
-7. Run `/run --accept-spend [--max-cents N]` for the Claude profile. This validates a
-   clean immutable source input before the spend-capped no-tools preflight. Starting
+7. Run `/run --accept-spend --worker-cents N [--preflight-cents N]` for the Claude
+   profile. `--worker-cents` must exactly repeat the total ceiling in the approved
+   plan; the separately capped preflight accepts 1–100 cents. This validates a
+   clean immutable source input before the no-tools preflight. Starting
    the supervisor still does not bypass readiness: each task/box pair needs a fresh
    admission bundle, reservation, grant, and fence.
 8. Inspect `/status`, `/boxes`, `/box ID`, and `/events`. `Alt+0` returns to the
@@ -32,6 +34,13 @@ Changing `/model` or `/effort` after a proposal clears that proposal and its app
 `/btw` is durable context but intentionally cannot mutate a frozen plan. If a note
 changes scope, an invariant, a task, or an evaluator, run `/grill` again and approve
 the new digest.
+
+The resources answer is intentionally machine-readable rather than aspirational prose:
+`boxes=N turns=N tokens=N cost_cents=N turn_timeout_seconds=N`. Put no-deploy,
+no-network, provider, file-scope, and other behavioral boundaries in exclusions or
+invariants. Unrecognized resource prose is rejected instead of silently ignored.
+Intermediate tasks run a patch-integrity check; the exact human evaluator runs in a
+generated final stage only after every declared task has integrated.
 
 ## Connection versus readiness
 

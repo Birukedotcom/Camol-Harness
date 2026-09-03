@@ -7,13 +7,13 @@ import tempfile
 import unittest
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from camol.sandbox import (
     DeveloperTrustedBackend,
     MacOSSandboxBackend,
     SandboxError,
     SandboxPolicy,
-    select_backend,
     system_read_paths,
 )
 from camol.workspace import WorkspaceManager
@@ -132,6 +132,27 @@ class SandboxTests(unittest.TestCase):
         asyncio.run(cancel_running_process())
         cancelled = json.loads(cancelled_record.read_text(encoding="utf-8"))
         self.assertEqual(cancelled["state"], "terminated")
+
+    def test_fast_exit_is_recorded_when_os_fingerprint_misses_the_process(self):
+        policy = self.policy(trust_tier="developer_trusted")
+        record = self.workspace / "fast.invocation.json"
+        with patch(
+            "camol.sandbox.process_start_fingerprint",
+            side_effect=SandboxError("cannot establish process-start identity"),
+        ):
+            result = asyncio.run(
+                DeveloperTrustedBackend().run(
+                    [sys.executable, "-c", "pass"],
+                    cwd=self.workspace,
+                    policy=policy,
+                    timeout_seconds=10,
+                    invocation_record=record,
+                )
+            )
+        persisted = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(persisted["state"], "completed")
+        self.assertEqual(persisted["process_started"], "exited-before-os-observation")
 
     def test_process_streams_are_drained_but_retention_is_bounded(self):
         policy = self.policy(trust_tier="developer_trusted")

@@ -5,6 +5,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .probes import Redactor
 from .runbook import validate_runbook
 from .schema import canonical_digest
 
@@ -26,9 +27,41 @@ QUESTIONS: Tuple[Tuple[str, str], ...] = (
     ("verification", "What exact command should independently verify the result?"),
     (
         "resources",
-        "What limits should apply? You can specify `boxes=N`, `turns=N`, `tokens=N`; also name time/provider constraints.",
+        "Set only structured limits: `boxes=N turns=N tokens=N cost_cents=N turn_timeout_seconds=N`. Put scope constraints in exclusions.",
     ),
 )
+
+RESOURCE_DEFAULTS = {
+    "boxes": 1,
+    "turns": 6,
+    "tokens": 48_000,
+    "cost_cents": 100,
+    "turn_timeout_seconds": 1_800,
+}
+RESOURCE_BOUNDS = {
+    "boxes": (1, 64),
+    "turns": (1, 100),
+    "tokens": (1_000, 10_000_000),
+    "cost_cents": (1, 10_000),
+    "turn_timeout_seconds": (30, 86_400),
+}
+_RESOURCE_ASSIGNMENT = re.compile(
+    r"\b(boxes|turns|tokens|cost_cents|turn_timeout_seconds)\s*=\s*\d+\b",
+    re.IGNORECASE,
+)
+
+
+def reject_sensitive_text(value: str, label: str = "input") -> str:
+    """Reject secret-shaped material before it can enter a frozen plan."""
+    # `tokens=12000` is a resource control, not credential material. Replace
+    # only the complete approved resource assignments before using the shared
+    # secret detector.
+    probe = _RESOURCE_ASSIGNMENT.sub("limit=1", value)
+    if Redactor().text(probe) != probe:
+        raise PlanningError(
+            "{} appears to contain credential material; use an opaque credential reference instead".format(label)
+        )
+    return value
 
 
 def _required_text(value: Any, label: str, limit: int = 12_000) -> str:
@@ -37,11 +70,15 @@ def _required_text(value: Any, label: str, limit: int = 12_000) -> str:
     text = value.strip()
     if len(text) > limit:
         raise PlanningError("{} is too large".format(label))
+    reject_sensitive_text(text, label)
     return text
 
 
 def _items(text: str) -> List[str]:
-    values = [item.strip(" \t-*0123456789.") for item in re.split(r"[\n;]+", text)]
+    values = [
+        re.sub(r"^\s*(?:[-*]\s+|\d+[.)]\s+)?", "", item).strip()
+        for item in re.split(r"[\n;]+", text)
+    ]
     return [item for item in values if item]
 
 
@@ -85,19 +122,26 @@ def _task_lines(text: str, acceptance: Sequence[str]) -> List[Dict[str, Any]]:
             "id": task_id,
             "goal": goal,
             "depends_on": depends_on,
-            "acceptance": list(acceptance),
+            "acceptance": ["Complete the bounded task with observed evidence: " + goal],
         })
     if not tasks:
         raise PlanningError("topology must contain at least one task")
     ids = [task["id"] for task in tasks]
     if len(ids) != len(set(ids)):
         raise PlanningError("task ids must be unique")
+    seen = set()
     for task in tasks:
         unknown = sorted(set(task["depends_on"]) - set(ids))
         if unknown:
             raise PlanningError("task {} has unknown dependencies: {}".format(task["id"], ", ".join(unknown)))
         if task["id"] in task["depends_on"]:
             raise PlanningError("task {} cannot depend on itself".format(task["id"]))
+        forward = sorted(set(task["depends_on"]) - seen)
+        if forward:
+            raise PlanningError(
+                "task {} dependencies must be declared earlier: {}".format(task["id"], ", ".join(forward))
+            )
+        seen.add(task["id"])
     # A small DFS rejects cycles before the kernel sees the proposal.
     dependencies = {task["id"]: task["depends_on"] for task in tasks}
     visiting = set()
@@ -119,12 +163,26 @@ def _task_lines(text: str, acceptance: Sequence[str]) -> List[Dict[str, Any]]:
     return tasks
 
 
-def _resource_limit(text: str, name: str, default: int, *, minimum: int, maximum: int) -> int:
-    match = re.search(r"(?:^|[\s,;]){}\s*=\s*(\d+)(?:$|[\s,;])".format(re.escape(name)), text, re.I)
-    value = int(match.group(1)) if match else default
-    if not minimum <= value <= maximum:
-        raise PlanningError("{} must be between {} and {}".format(name, minimum, maximum))
-    return value
+def _resource_limits(text: str) -> Dict[str, int]:
+    matches = list(_RESOURCE_ASSIGNMENT.finditer(text))
+    remainder = _RESOURCE_ASSIGNMENT.sub("", text).strip(" \t\r\n,;")
+    if remainder:
+        raise PlanningError(
+            "resource limits accept only boxes=N, turns=N, tokens=N, cost_cents=N, and turn_timeout_seconds=N; put prose in exclusions"
+        )
+    values = dict(RESOURCE_DEFAULTS)
+    seen = set()
+    for match in matches:
+        name = match.group(1).lower()
+        if name in seen:
+            raise PlanningError("resource limit {} was specified more than once".format(name))
+        seen.add(name)
+        value = int(match.group(0).split("=", 1)[1].strip())
+        minimum, maximum = RESOURCE_BOUNDS[name]
+        if not minimum <= value <= maximum:
+            raise PlanningError("{} must be between {} and {}".format(name, minimum, maximum))
+        values[name] = value
+    return values
 
 
 def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
@@ -142,7 +200,10 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
         if not isinstance(value[name], list) or not value[name] or any(not isinstance(item, str) or not item for item in value[name]):
             raise PlanningError("plan {} must contain non-empty strings".format(name))
     limits = value["resource_limits"]
-    if not isinstance(limits, dict) or set(limits) != {"max_concurrency", "max_turns_per_task", "max_total_tokens"}:
+    if not isinstance(limits, dict) or set(limits) != {
+        "box_pool_size", "max_concurrency", "max_turns_per_task", "max_total_tokens",
+        "max_worker_cost_usd_cents", "turn_timeout_seconds",
+    }:
         raise PlanningError("plan resource_limits has the wrong fields")
     for name, number in limits.items():
         if type(number) is not int or number <= 0:
@@ -174,22 +235,14 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
         normalized_tasks.append(dict(task))
     if not ids or len(ids) != len(set(ids)):
         raise PlanningError("plan must have unique tasks")
-    visiting = set()
-    visited = set()
-    def visit(task_id: str) -> None:
-        if task_id in visiting:
-            raise PlanningError("task dependency graph contains a cycle")
-        if task_id in visited:
-            return
-        if task_id not in dependencies:
-            raise PlanningError("task dependency is unknown")
-        visiting.add(task_id)
-        for dependency in dependencies[task_id]:
-            visit(dependency)
-        visiting.remove(task_id)
-        visited.add(task_id)
+    seen = set()
     for task_id in ids:
-        visit(task_id)
+        unknown = sorted(set(dependencies[task_id]) - seen)
+        if unknown:
+            raise PlanningError(
+                "task {} dependencies must be declared earlier: {}".format(task_id, ", ".join(unknown))
+            )
+        seen.add(task_id)
     normalized = dict(value)
     normalized["tasks"] = normalized_tasks
     normalized["resource_limits"] = dict(limits)
@@ -277,6 +330,7 @@ def proposal_from_grill(grill: GrillState, *, model: str = "manual", effort: str
     outcomes = _items(answers["outcome"])
     tasks = _task_lines(answers["topology"], outcomes)
     resource_statement = answers["resources"]
+    parsed_limits = _resource_limits(resource_statement)
     proposal = {
         "schema": "camol.plan_proposal",
         "schema_version": 1,
@@ -287,11 +341,12 @@ def proposal_from_grill(grill: GrillState, *, model: str = "manual", effort: str
         "verification_argv": _verification_argv(answers["verification"]),
         "resource_statement": resource_statement,
         "resource_limits": {
-            "max_concurrency": min(
-                len(tasks), _resource_limit(resource_statement, "boxes", len(tasks), minimum=1, maximum=64)
-            ),
-            "max_turns_per_task": _resource_limit(resource_statement, "turns", 6, minimum=1, maximum=100),
-            "max_total_tokens": _resource_limit(resource_statement, "tokens", 48_000, minimum=1_000, maximum=10_000_000),
+            "box_pool_size": parsed_limits["boxes"],
+            "max_concurrency": min(len(tasks), parsed_limits["boxes"]),
+            "max_turns_per_task": parsed_limits["turns"],
+            "max_total_tokens": parsed_limits["tokens"],
+            "max_worker_cost_usd_cents": parsed_limits["cost_cents"],
+            "turn_timeout_seconds": parsed_limits["turn_timeout_seconds"],
         },
         "execution": {"model": _required_text(model, "execution model"), "effort": effort},
         "tasks": tasks,
@@ -315,6 +370,59 @@ def compile_runbook(
     ]
     for index, invariant in enumerate(proposal["invariants"][3:], 1):
         rules.append({"id": "human-invariant-{}".format(index), "text": invariant, "enforcement": "hard"})
+    for index, exclusion in enumerate(proposal["exclusions"], 1):
+        rules.append({
+            "id": "human-exclusion-{}".format(index),
+            "text": "The worker must not: {}".format(exclusion),
+            "enforcement": "hard",
+        })
+    task_ids = [task["id"] for task in proposal["tasks"]]
+    final_task_id = "camol-final-verification"
+    while final_task_id in task_ids:
+        final_task_id += "-stage"
+    ordinary_tasks = [
+        {
+            "id": task["id"],
+            "goal": task["goal"],
+            "depends_on": list(task["depends_on"]),
+            "capabilities": list(model_capabilities),
+            "acceptance": ["Complete the bounded task with observed evidence: " + task["goal"]],
+            "required_evidence": ["command", "artifact", "claim", "test_result"],
+            "max_attempts": 3,
+            "steps": [{
+                "id": "build",
+                "instruction": task["goal"],
+                "commands": [],
+                "completion": ["Complete the bounded task with observed evidence: " + task["goal"]],
+            }],
+            "verification": [{
+                "purpose": "Reject a malformed intermediate patch before integration",
+                "argv": ["git", "diff", "--check", "HEAD"],
+            }],
+            "evaluator_assets": [],
+        }
+        for task in proposal["tasks"]
+    ]
+    final_task = {
+        "id": final_task_id,
+        "goal": "Run the human-selected evaluator against the fully integrated task graph",
+        "depends_on": task_ids,
+        "capabilities": list(model_capabilities),
+        "acceptance": list(proposal["outcomes"]),
+        "required_evidence": ["command", "artifact", "claim", "test_result"],
+        "max_attempts": 3,
+        "steps": [{
+            "id": "verify-final",
+            "instruction": "Inspect the integrated result without expanding scope, then return evidence for final evaluation.",
+            "commands": [],
+            "completion": list(proposal["outcomes"]),
+        }],
+        "verification": [{
+            "purpose": "Run the human-selected evaluator after every planned task is integrated",
+            "argv": list(proposal["verification_argv"]),
+        }],
+        "evaluator_assets": [],
+    }
     runbook = {
         "schema_version": 4,
         "run": {
@@ -326,7 +434,7 @@ def compile_runbook(
                 "all_verifications_green", "no_open_blockers", "no_open_debug_cases",
             ],
             "token_policy": {
-                "max_tokens_per_turn": 8_000,
+                "max_tokens_per_turn": min(8_000, proposal["resource_limits"]["max_total_tokens"]),
                 "checkpoint_reserve": 600,
                 "max_total_tokens": proposal["resource_limits"]["max_total_tokens"],
                 "max_turns_per_task": proposal["resource_limits"]["max_turns_per_task"],
@@ -343,32 +451,9 @@ def compile_runbook(
                 "adapter": dict(adapter),
                 "trust_tier": "developer_trusted",
             }
-            for index in range(proposal["resource_limits"]["max_concurrency"])
+            for index in range(proposal["resource_limits"]["box_pool_size"])
         ],
-        "tasks": [
-            {
-                "id": task["id"],
-                "goal": task["goal"],
-                "depends_on": list(task["depends_on"]),
-                "capabilities": list(model_capabilities),
-                "acceptance": list(task["acceptance"]),
-                "required_evidence": ["command", "artifact", "claim", "test_result"],
-                "max_attempts": 3,
-                "steps": [
-                    {
-                        "id": "build",
-                        "instruction": task["goal"],
-                        "commands": [],
-                        "completion": list(task["acceptance"]),
-                    }
-                ],
-                "verification": [
-                    {"purpose": "Run the human-selected evaluator", "argv": list(proposal["verification_argv"])}
-                ],
-                "evaluator_assets": [],
-            }
-            for task in proposal["tasks"]
-        ],
+        "tasks": ordinary_tasks + [final_task],
     }
     return validate_runbook(runbook)
 

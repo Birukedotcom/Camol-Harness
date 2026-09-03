@@ -2,7 +2,9 @@
 
 Camol keeps provider behavior outside the state-machine kernel. A schema-v3
 runbook selects an adapter kind and a workspace-relative or packaged, versioned model
-profile. Packaged references use `@camol/PROFILE`. The profile freezes the runtime name, requested alias, allowed resolved
+profile. Packaged references use `@camol/PROFILE`. Product plans also embed a strict
+effective `profile_snapshot`, so selected effort and approved worker ceilings remain
+digest-bound even if the installed profile template later changes. The profile freezes the runtime name, requested alias, allowed resolved
 model identities, tool policy, credential references, network authority, and
 turn/task/run ceilings. Its digest is part of the provider probe definition and
 therefore part of the lease's probe-policy fence.

@@ -13,7 +13,7 @@ class PlanningTests(unittest.TestCase):
             "No secrets in logs; preserve existing behavior",
             "core | implement core\ntests | add tests | after=core",
             "python3 -m unittest discover -v",
-            "boxes=2; turns=6; tokens=48000; no paid preflight",
+            "boxes=2; turns=6; tokens=48000; cost_cents=100; turn_timeout_seconds=600",
         ):
             grill = grill.answer(answer)
         return grill
@@ -31,10 +31,16 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(runbook["run"]["id"], "feature-123")
         self.assertEqual(len(runbook["agents"]), 2)
         self.assertEqual(runbook["tasks"][1]["depends_on"], ["core"])
+        self.assertEqual(runbook["tasks"][-1]["depends_on"], ["core", "tests"])
         self.assertEqual(
             runbook["tasks"][0]["verification"][0]["argv"],
+            ["git", "diff", "--check", "HEAD"],
+        )
+        self.assertEqual(
+            runbook["tasks"][-1]["verification"][0]["argv"],
             ["python3", "-m", "unittest", "discover", "-v"],
         )
+        self.assertTrue(any(rule["id"] == "human-exclusion-1" for rule in runbook["rules"]))
         self.assertEqual(canonical_digest(proposal), canonical_digest(proposal_from_grill(grill)))
 
     def test_shell_verification_pipeline_is_rejected(self):
@@ -47,6 +53,42 @@ class PlanningTests(unittest.TestCase):
     def test_incomplete_grill_cannot_produce_plan(self):
         with self.assertRaisesRegex(PlanningError, "every"):
             proposal_from_grill(GrillState.start("test"))
+
+    def test_resource_prose_and_forward_dependencies_are_rejected(self):
+        grill = GrillState.start("test")
+        answers = (
+            "Return HTTP 200", "no deploy", "Preserve Python 3.9",
+            "tests | test it | after=core\ncore | build it",
+            "python3 -m unittest", "boxes=2 tokens=1000 local only",
+        )
+        for answer in answers:
+            grill = grill.answer(answer)
+        with self.assertRaisesRegex(PlanningError, "declared earlier"):
+            proposal_from_grill(grill)
+
+        grill = GrillState.start("test")
+        for answer in (
+            "Return HTTP 200", "no deploy", "Preserve Python 3.9",
+            "core | build it", "python3 -m unittest", "boxes=1 local only",
+        ):
+            grill = grill.answer(answer)
+        with self.assertRaisesRegex(PlanningError, "only boxes"):
+            proposal_from_grill(grill)
+
+    def test_numeric_suffixes_and_total_turn_cap_are_preserved(self):
+        grill = GrillState.start("test")
+        for answer in (
+            "Return HTTP 200", "no deploy", "Preserve Python 3.9",
+            "core | build it", "python3 -m unittest", "boxes=1 tokens=1000",
+        ):
+            grill = grill.answer(answer)
+        proposal = proposal_from_grill(grill)
+        runbook = compile_runbook(
+            proposal, run_id="numbers", adapter={"kind": "process", "argv": ["python3", "agent.py"]}
+        )
+        self.assertEqual(proposal["outcomes"], ["Return HTTP 200"])
+        self.assertIn("Preserve Python 3.9", proposal["invariants"])
+        self.assertEqual(runbook["run"]["token_policy"]["max_tokens_per_turn"], 1000)
 
 
 if __name__ == "__main__":

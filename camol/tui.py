@@ -14,6 +14,7 @@ from textual.widgets import Footer, RichLog, Static, TextArea
 
 from .app import CommandResponse, InteractiveController
 from .boot import compose_boot
+from .probes import Redactor
 
 
 class BootScreen(Screen):
@@ -167,10 +168,11 @@ class CamolApp(App):
         if not text:
             return
         prompt.clear()
-        self.history.append(text)
+        visible_text = Redactor().text(text)
+        self.history.append(visible_text)
         self.history = self.history[-200:]
         self.history_index = len(self.history)
-        self.query_one("#transcript", RichLog).write("you > " + text)
+        self.query_one("#transcript", RichLog).write("you > " + visible_text)
         self._submit(text)
 
     @work(thread=True, group="commands", exclusive=True)

@@ -15,7 +15,7 @@ from importlib import resources
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .probes import Redactor, sanitize_identifier
 from .schema import canonical_digest, reject_unknown_fields, require_schema_header
@@ -207,6 +207,17 @@ def load_model_profile(workspace: Path, relative: str) -> ModelProfile:
         return ModelProfile.from_dict(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError) as error:
         raise ProviderError("model profile is not valid JSON-compatible YAML") from error
+
+
+def model_profile_for_adapter(workspace: Path, adapter: Mapping[str, Any]) -> ModelProfile:
+    """Resolve the exact effective policy frozen into a hosted adapter."""
+    snapshot = adapter.get("profile_snapshot")
+    if snapshot is not None:
+        profile = ModelProfile.from_dict(snapshot)
+        if profile.adapter_kind != adapter.get("kind"):
+            raise ProviderError("frozen model profile kind does not match the adapter")
+        return profile
+    return load_model_profile(workspace, adapter["profile"])
 
 
 @dataclass(frozen=True)
