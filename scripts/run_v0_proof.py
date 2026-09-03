@@ -18,7 +18,11 @@ def command(argv, *, cwd, env=None):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     if result.returncode != 0:
-        raise SystemExit("command failed ({}):\n{}".format(" ".join(argv), result.stderr))
+        raise SystemExit(
+            "command failed ({}):\nstdout:\n{}\nstderr:\n{}".format(
+                " ".join(argv), result.stdout, result.stderr
+            )
+        )
     return result.stdout
 
 

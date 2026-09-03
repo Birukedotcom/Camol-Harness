@@ -188,6 +188,16 @@ class EvaluationLoopTests(unittest.TestCase):
             sum(event["type"] == "AGENT_TURN_RECORDED" for event in events), 1,
             "a mismatched evaluator must deny readmission before another builder turn",
         )
+        last_admission = [
+            event["payload"]["bundle"] for event in events if event["type"] == "ADMISSION_RECORDED"
+        ][-1]
+        self.assertFalse(last_admission["evaluator_ready"])
+        evaluator_probe = next(
+            probe for probe in last_admission["receipt"]["probes"]
+            if probe["probe_id"] == "evaluator.bundle"
+        )
+        self.assertEqual(evaluator_probe["status"], "red")
+        self.assertIn("differ from the run's frozen evaluator", evaluator_probe["summary"])
 
     def test_bundle_is_outside_builder_and_asset_bytes_are_content_addressed(self):
         (self.source / "oracle.txt").write_text("strict\n", encoding="utf-8")
