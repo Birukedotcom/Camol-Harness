@@ -131,9 +131,35 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
         packet_dir = self.state_dir / "packets" / self.run_id / assignment["task_id"]
         packet_dir.mkdir(parents=True, exist_ok=True)
         packet_path = packet_dir / "turn-{:03d}.packet.json".format(turn_number)
-        packet_bytes = (json.dumps(packet, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        packet_path.write_bytes(packet_bytes)
+        result_path = packet_dir / "turn-{:03d}.provider-result.json".format(turn_number)
+        desired_packet = (json.dumps(packet, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        packet_bytes = desired_packet
+        if packet_path.is_file():
+            try:
+                existing_bytes = packet_path.read_bytes()
+                existing = json.loads(existing_bytes)
+                if existing.get("lease") == packet.get("lease") and existing.get("run", {}).get("id") == self.run_id:
+                    packet_bytes = existing_bytes
+                else:
+                    packet_path.write_bytes(desired_packet)
+                    result_path.unlink(missing_ok=True)
+            except (OSError, json.JSONDecodeError):
+                packet_path.write_bytes(desired_packet)
+                result_path.unlink(missing_ok=True)
+        else:
+            packet_path.write_bytes(packet_bytes)
         packet_sha256 = hashlib.sha256(packet_bytes).hexdigest()
+        if result_path.is_file():
+            try:
+                recovered = json.loads(result_path.read_text(encoding="utf-8"))
+                observed = recovered.pop("_camol_observed_evidence")
+                self.validate_result(recovered, packet_sha256)
+                if not isinstance(observed, list):
+                    raise AdapterError("recovered provider evidence is malformed")
+                recovered["_camol_observed_evidence"] = observed
+                return recovered
+            except (KeyError, OSError, json.JSONDecodeError, AdapterError):
+                result_path.unlink()
         prompt = self._prompt(packet, packet_sha256)
         invocation_id = str(uuid4())
         argv = [
@@ -164,6 +190,7 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
             policy=self.sandbox_policy,
             timeout_seconds=agent["adapter"]["timeout_seconds"],
             stdin_bytes=prompt,
+            invocation_record=packet_dir / "turn-{:03d}.invocation.json".format(turn_number),
         )
         references = []
         for channel, content, digest, size, truncated in (
@@ -199,6 +226,8 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
                 "stderr_bytes": sandboxed.stderr_bytes,
                 "sandbox_backend": sandboxed.backend,
                 "sandbox_policy_digest": sandboxed.policy_digest,
+                "process_id": sandboxed.process_id,
+                "process_group_id": sandboxed.process_group_id,
                 "stdin_sha256": "sha256:" + hashlib.sha256(prompt).hexdigest(),
             },
         }
@@ -271,6 +300,10 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
                 "artifact_refs": [], "data": self.redactor.value(activity),
             })
         result["_camol_observed_evidence"] = observed
+        persisted = self.redactor.value(result)
+        temporary = result_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(persisted, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(result_path)
         return result
 
 

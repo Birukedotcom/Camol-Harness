@@ -239,11 +239,11 @@ The implementation sequence is deliberately narrow:
 |---|---|
 | M0 (implemented; `SPECULATIVE` maturity) | Versioned readiness, workspace, reservation, grant, and lease-fence schemas |
 | M1 (implemented for the local process adapter only; `SPECULATIVE` maturity) | Read-only probe registry and `camol doctor` |
-| M2 | External state directory, isolated worktrees, integration workspace, sandbox boundary |
-| M3 | Task-specific readiness gates, reservations, fenced leases, typed waits |
-| M4 | Complete redacted event and content-addressed artifact capture |
-| M5 | First real Claude CLI / Fable 5.1 adapter profile |
-| M6 | Detachable client, supervised daemon, recovery, drain, and effect reconciliation |
+| M2 (implemented) | External state directory, isolated worktrees, integration workspace, sandbox boundary |
+| M3 (implemented) | Task-specific readiness gates, reservations, fenced leases, typed waits |
+| M4 (implemented) | Complete redacted event and content-addressed artifact capture |
+| M5 (implemented; live proof pending) | Modular Claude CLI adapter and speculative Fable profile |
+| M6 (implemented locally) | Detachable client, supervised daemon, recovery, drain, and effect reconciliation |
 | M7 | Frozen evaluator, controlled failure injection, and first Camol-on-Camol dogfood proof |
 
 The [v0 build plan](docs/v0-build-plan.md) gives each milestone its expected files,

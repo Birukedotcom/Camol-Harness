@@ -347,6 +347,11 @@ changes, usage, and result. Revoked auth or exhausted budget prevents launch.
 
 ### M6 — Supervised daemon, recovery, and remote-effect reconciliation
 
+Implementation status: complete for the V0 local Unix-domain control boundary. See
+`docs/supervision.md`. The exit-gate tests cover a detached process, single leadership,
+authenticated inspection/control, graceful drain, forced salvage, live-orphan refusal,
+process-group termination, packet result reuse, and digest-bound effect reconciliation.
+
 Goal: make the run independent of a terminal window and safe across interruption.
 
 Work:

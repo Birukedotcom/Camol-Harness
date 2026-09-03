@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -81,6 +82,51 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.stdout.strip(), b"True False")
         self.assertEqual(result.backend, "developer_trusted")
+
+    def test_invocation_record_is_completed_and_cancellation_kills_process_group(self):
+        policy = self.policy(trust_tier="developer_trusted")
+        completed_record = self.workspace / "completed.invocation.json"
+        result = asyncio.run(
+            DeveloperTrustedBackend().run(
+                [sys.executable, "-c", "print('done')"],
+                cwd=self.workspace,
+                policy=policy,
+                timeout_seconds=10,
+                invocation_record=completed_record,
+            )
+        )
+        completed = json.loads(completed_record.read_text(encoding="utf-8"))
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(completed["pid"], result.process_id)
+        self.assertTrue(completed["process_started"])
+
+        cancelled_record = self.workspace / "cancelled.invocation.json"
+
+        async def cancel_running_process():
+            task = asyncio.create_task(
+                DeveloperTrustedBackend().run(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    cwd=self.workspace,
+                    policy=policy,
+                    timeout_seconds=60,
+                    invocation_record=cancelled_record,
+                )
+            )
+            for _ in range(100):
+                if cancelled_record.exists():
+                    break
+                await asyncio.sleep(0.02)
+            self.assertTrue(cancelled_record.exists())
+            active = json.loads(cancelled_record.read_text(encoding="utf-8"))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            with self.assertRaises(ProcessLookupError):
+                os.kill(active["pid"], 0)
+
+        asyncio.run(cancel_running_process())
+        cancelled = json.loads(cancelled_record.read_text(encoding="utf-8"))
+        self.assertEqual(cancelled["state"], "terminated")
 
     def test_process_streams_are_drained_but_retention_is_bounded(self):
         policy = self.policy(trust_tier="developer_trusted")

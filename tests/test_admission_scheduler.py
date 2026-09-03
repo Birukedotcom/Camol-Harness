@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ from camol.runbook import load_runbook
 from camol.runner import HarnessRunner
 from camol.store import SQLiteEventStore
 from camol.workspace import WorkspaceManager
+from camol.schema import canonical_digest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -351,6 +353,105 @@ class AdmissionSchedulerTests(unittest.TestCase):
             self.assertEqual(state["tasks"]["frame"]["waiting"]["code"], "WORKSPACE_CONFLICT")
 
         asyncio.run(scenario())
+
+    def test_external_effect_intent_is_idempotent_and_unknown_requires_readback(self):
+        self.admit()
+        assignment = self.frame_assignment()
+        self.assertTrue(self.orchestrator.start_task(self.run_id, assignment))
+        approval = canonical_digest({"approved_by": "human", "operation": "deploy"})
+        request = {"revision": "abc123", "region": "us-central1"}
+        effect, execute = self.orchestrator.begin_effect(
+            self.run_id, assignment, idempotency_key="deploy-frame-abc123",
+            provider="gcp", operation="deploy", target="service:test",
+            request=request, approval_digest=approval, requested_by="test-owner",
+        )
+        self.assertTrue(execute)
+        repeated, execute_again = self.orchestrator.begin_effect(
+            self.run_id, assignment, idempotency_key="deploy-frame-abc123",
+            provider="gcp", operation="deploy", target="service:test",
+            request=request, approval_digest=approval, requested_by="test-owner",
+        )
+        self.assertFalse(execute_again)
+        self.assertEqual(repeated.effect_id, effect.effect_id)
+        self.assertEqual(
+            len([event for event in self.store.read(self.run_id) if event["type"] == "EFFECT_REQUESTED"]),
+            1,
+        )
+        self.orchestrator.resolve_effect(self.run_id, effect.effect_id, "EFFECT_UNKNOWN")
+        with self.assertRaisesRegex(StateTransitionError, "requires provider readback"):
+            self.orchestrator.resolve_effect(
+                self.run_id, effect.effect_id, "EFFECT_CONFIRMED", outcome={"revision": "abc123"},
+            )
+        self.orchestrator.resolve_effect(
+            self.run_id, effect.effect_id, "EFFECT_CONFIRMED",
+            outcome={"revision": "abc123"}, readback={"active_revision": "abc123"}, reconciled=True,
+        )
+        projected = self.orchestrator.state(self.run_id)["effects"][effect.effect_id]
+        self.assertEqual(projected["state"], "EFFECT_CONFIRMED")
+        self.assertTrue(projected["reconciled"])
+        self.assertTrue(projected["readback_digest"].startswith("sha256:"))
+
+    def test_idempotency_binding_distinguishes_secret_request_values(self):
+        self.admit()
+        assignment = self.frame_assignment()
+        self.orchestrator.start_task(self.run_id, assignment)
+        arguments = dict(
+            run_id=self.run_id,
+            assignment=assignment,
+            idempotency_key="deploy-secret-bearing-request",
+            provider="gcp",
+            operation="deploy",
+            target="service:test",
+            approval_digest=canonical_digest({"human": True}),
+            requested_by="test-owner",
+        )
+        self.orchestrator.begin_effect(request={"api_key": "secret-one"}, **arguments)
+        with self.assertRaisesRegex(StateTransitionError, "different effect"):
+            self.orchestrator.begin_effect(request={"api_key": "secret-two"}, **arguments)
+        serialized = json.dumps(self.store.read(self.run_id), sort_keys=True)
+        self.assertNotIn("secret-one", serialized)
+        self.assertNotIn("secret-two", serialized)
+
+    def test_recovery_marks_unresolved_effect_unknown_before_any_retry(self):
+        self.admit()
+        assignment = self.frame_assignment()
+        self.orchestrator.start_task(self.run_id, assignment)
+        effect, _ = self.orchestrator.begin_effect(
+            self.run_id, assignment, idempotency_key="message-once",
+            provider="fixture", operation="send", target="sink:test",
+            request={"payload": "one"}, approval_digest=canonical_digest({"human": True}),
+            requested_by="test-owner",
+        )
+        changed = self.orchestrator.mark_interrupted_effects_unknown(self.run_id)
+        self.assertEqual(changed, [effect.effect_id])
+        self.assertEqual(self.orchestrator.state(self.run_id)["effects"][effect.effect_id]["state"], "EFFECT_UNKNOWN")
+        _, execute = self.orchestrator.begin_effect(
+            self.run_id, assignment, idempotency_key="message-once",
+            provider="fixture", operation="send", target="sink:test",
+            request={"payload": "one"}, approval_digest=canonical_digest({"human": True}),
+            requested_by="test-owner",
+        )
+        self.assertFalse(execute)
+
+    def test_forced_interrupt_salvages_changes_before_revoking_the_fence(self):
+        runner = HarnessRunner(self.orchestrator, self.source, state_dir=self.state_dir)
+        runner.workspaces.prepare_integration(self.run_id)
+        runner._ensure_admissions(self.run_id)
+        assignment = self.frame_assignment()
+        self.orchestrator.start_task(self.run_id, assignment)
+        handle = runner._handles[("frame", assignment["agent_id"])]
+        (handle.path / "interrupted.txt").write_text("must survive\n", encoding="utf-8")
+        result = runner.force_interrupt(self.run_id, requested_by="test-owner")
+        state = self.orchestrator.state(self.run_id)
+        self.assertEqual(state["tasks"]["frame"]["status"], "waiting")
+        self.assertEqual(len(state["salvages"]), len(result["salvaged"]))
+        self.assertIn("frame", {item["task_id"] for item in result["salvaged"]})
+        salvage = next(item["salvage"] for item in state["salvages"] if item["task_id"] == "frame")
+        self.assertEqual(salvage["untracked"][0]["path"], "interrupted.txt")
+        self.assertLess(
+            next(event["seq"] for event in self.store.read(self.run_id) if event["type"] == "WORKSPACE_SALVAGED"),
+            next(event["seq"] for event in self.store.read(self.run_id) if event["type"] == "LEASE_REVOKED"),
+        )
 
 
 if __name__ == "__main__":

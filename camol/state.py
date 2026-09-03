@@ -4,8 +4,11 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable
 
 from .admission import AdmissionBundle
+from .effects import EffectOutcome, EffectRequest
 from .evidence import EvidenceRecord
 from .readiness import LeaseFence, ReadinessReceipt, WaitingReason
+from .schema import reject_unknown_fields, require_digest, require_string
+from .workspace import SalvageReceipt
 
 
 def empty_state() -> Dict[str, Any]:
@@ -28,6 +31,8 @@ def empty_state() -> Dict[str, Any]:
         "released_reservation_ids": [],
         "lease_epochs": {},
         "heartbeats": {},
+        "effects": {},
+        "salvages": [],
         "total_tokens": 0,
         "last_seq": 0,
     }
@@ -347,6 +352,80 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError("LEASE_RENEWED does not match the active fence")
         task["lease_fence"] = fence.to_dict()
         task["fence_digest"] = fence.digest()
+    elif event_type == "EFFECT_REQUESTED":
+        record = EffectRequest.from_dict(payload)
+        if record.run_id != event["run_id"]:
+            raise ValueError("EFFECT_REQUESTED belongs to another run")
+        task = next_state["tasks"].get(record.task_id)
+        if (
+            task is None
+            or task["status"] != "running"
+            or task["lease_id"] != record.lease_id
+            or task["fence_digest"] != record.fence_digest
+        ):
+            raise ValueError("EFFECT_REQUESTED does not match the active fenced lease")
+        normalized = record.to_dict()
+        effect_id = record.effect_id
+        if effect_id in next_state["effects"]:
+            raise ValueError("EFFECT_REQUESTED effect id already exists")
+        if any(
+            item["idempotency_key"] == record.idempotency_key
+            for item in next_state["effects"].values()
+        ):
+            raise ValueError("EFFECT_REQUESTED idempotency key already exists")
+        next_state["effects"][effect_id] = normalized
+    elif event_type in {"EFFECT_CONFIRMED", "EFFECT_REJECTED", "EFFECT_UNKNOWN"}:
+        outcome = EffectOutcome.from_dict(payload)
+        if outcome.state != event_type:
+            raise ValueError("effect outcome state does not match its event type")
+        effect = next_state["effects"].get(outcome.effect_id)
+        if effect is None:
+            raise ValueError("{} names an unknown effect".format(event_type))
+        if effect["state"] not in {"EFFECT_REQUESTED", "EFFECT_UNKNOWN"}:
+            raise ValueError("{} cannot transition a terminal effect".format(event_type))
+        if effect["state"] == "EFFECT_UNKNOWN" and event_type != "EFFECT_UNKNOWN" and not outcome.reconciled:
+            raise ValueError("an unknown effect requires provider readback reconciliation")
+        effect.update(
+            state=event_type,
+            outcome_digest=outcome.outcome_digest,
+            readback_digest=outcome.readback_digest,
+            reconciled=outcome.reconciled,
+            resolved_at=outcome.resolved_at,
+        )
+    elif event_type == "WORKSPACE_SALVAGED":
+        fields = (
+            "run_id", "task_id", "agent_id", "lease_id", "fence_digest",
+            "reason", "salvage", "salvage_digest",
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("WORKSPACE_SALVAGED payload must be an object")
+        reject_unknown_fields(payload, fields, "workspace salvaged event")
+        missing = sorted(set(fields) - set(payload))
+        if missing:
+            raise ValueError("WORKSPACE_SALVAGED is missing fields: {}".format(", ".join(missing)))
+        if payload["run_id"] != event["run_id"]:
+            raise ValueError("WORKSPACE_SALVAGED belongs to another run")
+        task = next_state["tasks"].get(payload["task_id"])
+        if (
+            task is None
+            or task["status"] not in {"leased", "running", "verifying"}
+            or task["agent_id"] != payload["agent_id"]
+            or task["lease_id"] != payload["lease_id"]
+            or task["fence_digest"] != require_digest(payload["fence_digest"], "salvage fence digest")
+        ):
+            raise ValueError("WORKSPACE_SALVAGED does not match the active fenced lease")
+        require_string(payload["reason"], "salvage reason")
+        salvage = SalvageReceipt.from_dict(payload["salvage"])
+        if salvage.digest() != require_digest(payload["salvage_digest"], "salvage digest"):
+            raise ValueError("WORKSPACE_SALVAGED salvage digest is invalid")
+        admission = AdmissionBundle.from_dict(
+            next_state["admissions"]["{}:{}".format(payload["task_id"], payload["agent_id"])]
+        )
+        if salvage.workspace_digest != admission.workspace.digest():
+            raise ValueError("WORKSPACE_SALVAGED does not bind the admitted workspace")
+        normalized = dict(payload)
+        normalized["salvage"] = salvage.to_dict()
+        next_state["salvages"].append(normalized)
     else:
         raise ValueError("projection does not handle {}".format(event_type))
 

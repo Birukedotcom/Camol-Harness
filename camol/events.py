@@ -37,6 +37,12 @@ EVENT_TYPES = frozenset(
         "LEASE_HEARTBEAT",
         "LEASE_RENEWED",
         "LEASE_REVOKED",
+        # External mutation intent and reconciled outcome.
+        "EFFECT_REQUESTED",
+        "EFFECT_CONFIRMED",
+        "EFFECT_REJECTED",
+        "EFFECT_UNKNOWN",
+        "WORKSPACE_SALVAGED",
     }
 )
 
@@ -54,6 +60,11 @@ LEGACY_EVENT_TYPES = frozenset(
         "LEASE_HEARTBEAT",
         "LEASE_RENEWED",
         "LEASE_REVOKED",
+        "EFFECT_REQUESTED",
+        "EFFECT_CONFIRMED",
+        "EFFECT_REJECTED",
+        "EFFECT_UNKNOWN",
+        "WORKSPACE_SALVAGED",
     }
 )
 

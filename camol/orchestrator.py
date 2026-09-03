@@ -7,14 +7,16 @@ from uuid import uuid4
 from .admission import AdmissionBundle
 from .artifacts import ArtifactRef
 from .evidence import EvidenceRecord
+from .effects import EffectRequest, outcome_payload
 from .events import EVIDENCE_KINDS, new_event
 from .hillclimb import agent_efficiency_vector, compare_vectors
 from .readiness import CapacityReservation, LeaseFence, ReadinessDecision, WaitingReason
 from .probes import Redactor
 from .runbook import runbook_digest, validate_runbook
-from .schema import parse_timestamp
+from .schema import canonical_digest, parse_timestamp
 from .state import project
 from .store import ConcurrentAppendError, SQLiteEventStore
+from .workspace import SalvageReceipt
 
 
 class StateTransitionError(RuntimeError):
@@ -768,6 +770,167 @@ class Orchestrator:
                 task_id=assignment["task_id"],
                 box_id=assignment["agent_id"],
             ),
+        )
+
+    def begin_effect(
+        self,
+        run_id: str,
+        assignment: Dict[str, str],
+        *,
+        idempotency_key: str,
+        provider: str,
+        operation: str,
+        target: str,
+        request: Dict[str, Any],
+        approval_digest: str,
+        requested_by: str,
+    ) -> tuple:
+        """Persist remote-mutation intent before execution.
+
+        Returns ``(record, True)`` only for a newly committed intent. Replaying
+        the same key returns ``False`` and therefore never authorizes a blind
+        duplicate call.
+        """
+        state, task = self._require_lease(
+            run_id,
+            assignment["task_id"],
+            assignment["agent_id"],
+            assignment["lease_id"],
+            "running",
+            fence_digest=assignment.get("fence_digest"),
+        )
+        # The request body is never persisted, but its identity must be hashed
+        # before redaction: two different secret-bearing mutations must not
+        # collapse to the same idempotency binding.
+        request_digest = canonical_digest(request)
+        for existing in state.get("effects", {}).values():
+            if existing["idempotency_key"] != idempotency_key:
+                continue
+            same = all(existing.get(name) == value for name, value in {
+                "run_id": run_id,
+                "task_id": task["id"],
+                "lease_id": assignment["lease_id"],
+                "fence_digest": assignment["fence_digest"],
+                "provider": provider,
+                "operation": operation,
+                "target": target,
+                "request_digest": request_digest,
+                "approval_digest": approval_digest,
+            }.items())
+            if not same:
+                raise StateTransitionError("idempotency key is already bound to a different effect")
+            record_data = {key: existing[key] for key in EffectRequest.FIELDS if key in existing}
+            record_data["state"] = "EFFECT_REQUESTED"
+            return EffectRequest.from_dict(record_data), False
+        record = EffectRequest(
+            effect_id="effect-" + uuid4().hex,
+            run_id=run_id,
+            task_id=task["id"],
+            lease_id=assignment["lease_id"],
+            fence_digest=assignment["fence_digest"],
+            idempotency_key=idempotency_key,
+            provider=provider,
+            operation=operation,
+            target=self.redactor.text(target),
+            request_digest=request_digest,
+            approval_digest=approval_digest,
+            requested_by=requested_by,
+            requested_at=self._now(),
+        )
+        try:
+            self._emit(
+                run_id,
+                "EFFECT_REQUESTED",
+                record.to_dict(),
+                actor_id=requested_by,
+                expected_seq=state["last_seq"],
+            )
+        except ConcurrentAppendError as error:
+            raise StateTransitionError("run state changed while requesting an external effect; retry") from error
+        return record, True
+
+    def resolve_effect(
+        self,
+        run_id: str,
+        effect_id: str,
+        state_name: str,
+        *,
+        outcome: Optional[Dict[str, Any]] = None,
+        readback: Optional[Dict[str, Any]] = None,
+        reconciled: bool = False,
+    ) -> None:
+        """Record an effect result; UNKNOWN can only resolve through readback."""
+        state = self._require_status(run_id, "running")
+        effect = state.get("effects", {}).get(effect_id)
+        if effect is None:
+            raise StateTransitionError("unknown external effect: {}".format(effect_id))
+        if effect["state"] in {"EFFECT_CONFIRMED", "EFFECT_REJECTED"}:
+            raise StateTransitionError("external effect already has a terminal outcome")
+        if effect["state"] == "EFFECT_UNKNOWN" and state_name in {"EFFECT_CONFIRMED", "EFFECT_REJECTED"}:
+            if not reconciled or readback is None:
+                raise StateTransitionError("EFFECT_UNKNOWN requires provider readback before resolution")
+        payload = outcome_payload(
+            effect_id,
+            state_name,
+            resolved_at=self._now(),
+            outcome=self.redactor.value(outcome) if outcome is not None else None,
+            readback=self.redactor.value(readback) if readback is not None else None,
+            reconciled=reconciled,
+        )
+        self._emit(run_id, state_name, payload, expected_seq=state["last_seq"])
+
+    def mark_interrupted_effects_unknown(self, run_id: str) -> List[str]:
+        """On daemon recovery, refuse to infer that an in-flight call failed."""
+        changed = []
+        while True:
+            state = self._require_status(run_id, "running")
+            pending = next(
+                (effect for effect in state.get("effects", {}).values() if effect["state"] == "EFFECT_REQUESTED"),
+                None,
+            )
+            if pending is None:
+                return changed
+            self._emit(
+                run_id,
+                "EFFECT_UNKNOWN",
+                outcome_payload(pending["effect_id"], "EFFECT_UNKNOWN", resolved_at=self._now()),
+                expected_seq=state["last_seq"],
+            )
+            changed.append(pending["effect_id"])
+
+    def record_salvage(
+        self,
+        run_id: str,
+        assignment: Dict[str, str],
+        salvage: SalvageReceipt,
+        *,
+        reason: str,
+    ) -> None:
+        state, task = self._require_lease(
+            run_id,
+            assignment["task_id"],
+            assignment["agent_id"],
+            assignment["lease_id"],
+            "leased", "running", "verifying",
+            fence_digest=assignment.get("fence_digest"),
+            require_fresh=False,
+        )
+        if not isinstance(salvage, SalvageReceipt):
+            raise ValueError("salvage must be a SalvageReceipt")
+        self._emit(
+            run_id,
+            "WORKSPACE_SALVAGED",
+            {
+                "run_id": run_id,
+                "task_id": task["id"],
+                "agent_id": assignment["agent_id"],
+                "lease_id": assignment["lease_id"],
+                "fence_digest": assignment["fence_digest"],
+                "reason": self.redactor.text(reason),
+                "salvage": salvage.to_dict(),
+                "salvage_digest": salvage.digest(),
+            },
+            expected_seq=state["last_seq"],
         )
 
     def context_packet(self, run_id: str, assignment: Dict[str, str]) -> Dict[str, Any]:

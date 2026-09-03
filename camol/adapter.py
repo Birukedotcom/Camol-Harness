@@ -161,6 +161,7 @@ class ProcessAgentAdapter:
                 cwd=box,
                 policy=self.sandbox_policy,
                 timeout_seconds=agent["adapter"]["timeout_seconds"],
+                invocation_record=packet_dir / "turn-{:03d}.invocation.json".format(turn_number),
             )
             return_code = sandboxed.exit_code
             stdout_bytes = sandboxed.stdout
@@ -175,6 +176,8 @@ class ProcessAgentAdapter:
             sandbox_policy_digest = sandboxed.policy_digest
             started_at = sandboxed.started_at
             finished_at = sandboxed.finished_at
+            process_id = sandboxed.process_id
+            process_group_id = sandboxed.process_group_id
         else:
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -200,6 +203,7 @@ class ProcessAgentAdapter:
             backend = "legacy-unsandboxed"
             sandbox_policy_digest = None
             started_at = finished_at = "1970-01-01T00:00:00+00:00"
+            process_id = process_group_id = None
         stdout_reference = self._store_content(
             stdout_bytes,
             assignment,
@@ -248,6 +252,8 @@ class ProcessAgentAdapter:
                     "stderr_truncated": stderr_truncated,
                     "sandbox_backend": backend,
                     "sandbox_policy_digest": sandbox_policy_digest,
+                    "process_id": process_id,
+                    "process_group_id": process_group_id,
                     "environment_names": list(self.sandbox_policy.environment_names) if self.sandbox_policy else [],
                 },
             },

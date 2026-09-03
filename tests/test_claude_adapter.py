@@ -105,6 +105,18 @@ for event in events: print(json.dumps(event))
             )
         self.assertFalse((self.workspace / "built.txt").exists())
 
+    async def test_written_provider_result_is_consumed_after_restart_without_second_call(self):
+        with patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", "")}):
+            first = await self.adapter().execute_turn(
+                self.agent, self.assignment, self.packet, 1, cost_budget_cents=5,
+            )
+            self.executable.rename(self.executable.with_suffix(".disabled"))
+            recovered = await self.adapter().execute_turn(
+                self.agent, self.assignment, self.packet, 1, cost_budget_cents=5,
+            )
+        self.assertEqual(recovered["summary"], first["summary"])
+        self.assertTrue(recovered["_camol_observed_evidence"])
+
     def test_registry_selects_adapter_without_kernel_vendor_logic(self):
         adapter = create_agent_adapter(
             "claude_cli", self.workspace, "run-1", state_dir=self.state,

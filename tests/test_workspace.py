@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from camol.schema import canonical_digest
-from camol.workspace import WorkspaceError, WorkspaceManager
+from camol.workspace import SalvageReceipt, WorkspaceError, WorkspaceManager
 
 
 def git(repo, *args):
@@ -96,6 +96,11 @@ class WorkspaceManagerTests(unittest.TestCase):
         salvage = manager.salvage(handle, created_at="2026-09-03T00:00:00Z")
         self.assertGreater(salvage.patch_bytes, 0)
         self.assertEqual([item["path"] for item in salvage.untracked], ["new.txt"])
+        self.assertEqual(SalvageReceipt.from_dict(salvage.to_dict()), salvage)
+        corrupt = salvage.to_dict()
+        corrupt["untracked"][0]["path"] = "../escape"
+        with self.assertRaisesRegex(WorkspaceError, "workspace-relative"):
+            SalvageReceipt.from_dict(corrupt)
         manager.cleanup(handle, salvage)
         self.assertFalse(handle.path.exists())
         self.assertEqual((self.source / "tracked.txt").read_text(), "source\n")

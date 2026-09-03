@@ -22,7 +22,16 @@ from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 
 from .probes import GIT_SAFETY_ARGS, Redactor, sanitized_environment
 from .readiness import WorkspaceReceipt
-from .schema import canonical_digest
+from .schema import (
+    canonical_digest,
+    reject_unknown_fields,
+    require_digest,
+    require_identifier,
+    require_non_negative_int,
+    require_schema_header,
+    require_string,
+    require_timestamp,
+)
 
 
 class WorkspaceError(RuntimeError):
@@ -55,7 +64,10 @@ def _nested(left: Path, right: Path) -> bool:
 
 
 def _timestamp(value: Optional[str] = None) -> str:
-    return value or datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return require_timestamp(
+        value or datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        "workspace timestamp",
+    )
 
 
 @dataclass(frozen=True)
@@ -86,6 +98,46 @@ class SalvageReceipt:
     untracked: Tuple[Dict[str, Any], ...]
     created_at: str
 
+    FIELDS = (
+        "schema", "schema_version", "salvage_id", "workspace_id", "workspace_digest",
+        "base_revision", "head_revision", "patch_digest", "patch_bytes", "untracked", "created_at",
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "salvage_id", require_identifier(self.salvage_id, "salvage id"))
+        object.__setattr__(self, "workspace_id", require_identifier(self.workspace_id, "salvage workspace id"))
+        object.__setattr__(
+            self, "workspace_digest", require_digest(self.workspace_digest, "salvage workspace digest")
+        )
+        object.__setattr__(self, "base_revision", require_string(self.base_revision, "salvage base revision"))
+        object.__setattr__(self, "head_revision", require_string(self.head_revision, "salvage head revision"))
+        object.__setattr__(self, "patch_digest", require_digest(self.patch_digest, "salvage patch digest"))
+        object.__setattr__(self, "patch_bytes", require_non_negative_int(self.patch_bytes, "salvage patch bytes"))
+        if not isinstance(self.untracked, tuple):
+            raise WorkspaceError("salvage untracked must be a tuple")
+        normalized = []
+        seen = set()
+        for index, item in enumerate(self.untracked):
+            if not isinstance(item, dict):
+                raise WorkspaceError("salvage untracked item must be an object")
+            reject_unknown_fields(item, ("path", "digest", "bytes"), "salvage untracked item")
+            if set(item) != {"path", "digest", "bytes"}:
+                raise WorkspaceError("salvage untracked item is missing fields")
+            path = require_string(item["path"], "salvage untracked path")
+            relative = Path(path)
+            if relative.is_absolute() or ".." in relative.parts or path in seen:
+                raise WorkspaceError("salvage untracked path must be unique and workspace-relative")
+            seen.add(path)
+            normalized.append({
+                "path": path,
+                "digest": require_digest(item["digest"], "salvage untracked digest"),
+                "bytes": require_non_negative_int(item["bytes"], "salvage untracked bytes"),
+            })
+        if tuple(item["path"] for item in normalized) != tuple(sorted(seen)):
+            raise WorkspaceError("salvage untracked entries must be sorted by path")
+        object.__setattr__(self, "untracked", tuple(normalized))
+        object.__setattr__(self, "created_at", require_timestamp(self.created_at, "salvage created_at"))
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "schema": self.SCHEMA,
@@ -103,6 +155,29 @@ class SalvageReceipt:
 
     def digest(self) -> str:
         return canonical_digest(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "SalvageReceipt":
+        if not isinstance(payload, dict):
+            raise WorkspaceError("salvage receipt must be an object")
+        require_schema_header(payload, cls.SCHEMA, cls.SCHEMA_VERSION, "salvage receipt")
+        reject_unknown_fields(payload, cls.FIELDS, "salvage receipt")
+        missing = sorted(set(cls.FIELDS) - set(payload))
+        if missing:
+            raise WorkspaceError("salvage receipt is missing fields: {}".format(", ".join(missing)))
+        if not isinstance(payload["untracked"], list):
+            raise WorkspaceError("salvage untracked must be an array")
+        return cls(
+            salvage_id=payload["salvage_id"],
+            workspace_id=payload["workspace_id"],
+            workspace_digest=payload["workspace_digest"],
+            base_revision=payload["base_revision"],
+            head_revision=payload["head_revision"],
+            patch_digest=payload["patch_digest"],
+            patch_bytes=payload["patch_bytes"],
+            untracked=tuple(payload["untracked"]),
+            created_at=payload["created_at"],
+        )
 
 
 class WorkspaceManager:

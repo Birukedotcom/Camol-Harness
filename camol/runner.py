@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from .admission import AdmissionBundle, AdmissionController, AdmissionError
 from .adapter import AdapterError, create_agent_adapter
@@ -584,7 +584,31 @@ class HarnessRunner:
             }
         return details
 
-    async def run_until_terminal(self, run_id: str) -> Dict[str, Any]:
+    def force_interrupt(self, run_id: str, *, requested_by: str) -> Dict[str, Any]:
+        """Salvage every active box before revoking its fence."""
+        salvaged = []
+        revoked = 0
+        for assignment in self._active_assignments(run_id):
+            if self.workspaces is not None:
+                handle = self._handles.get((assignment["task_id"], assignment["agent_id"]))
+                if handle is None:
+                    handle = self.workspaces.prepare_task(run_id, assignment["task_id"], assignment["agent_id"])
+                    self._handles[(assignment["task_id"], assignment["agent_id"])] = handle
+                receipt = self.workspaces.salvage(handle)
+                self.orchestrator.record_salvage(
+                    run_id, assignment, receipt, reason="forced interruption by {}".format(requested_by)
+                )
+                salvaged.append({"task_id": assignment["task_id"], "salvage_digest": receipt.digest()})
+            self.orchestrator.cancel_lease(run_id, assignment, requested_by)
+            revoked += 1
+        return {"salvaged": salvaged, "revoked": revoked}
+
+    async def run_until_terminal(
+        self,
+        run_id: str,
+        *,
+        should_drain: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
         self.orchestrator.start(run_id)
         if self.workspaces is not None:
             self.workspaces.prepare_integration(run_id)
@@ -606,6 +630,9 @@ class HarnessRunner:
                     )
                 )
                 continue
+
+            if should_drain is not None and should_drain():
+                return self.orchestrator.state(run_id)
 
             try:
                 self._ensure_admissions(run_id)
