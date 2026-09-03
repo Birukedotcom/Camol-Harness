@@ -27,3 +27,13 @@ The reviewer disclosed that its pass was targeted, not an independent line-by-li
 derivation of every large kernel module. The full 245-test release gate and the
 replay-verified dogfood archive are separate evidence, not substitutes for that
 review limitation.
+
+## Remediation follow-up
+
+Reviewed remediation head: `b849409`
+
+The same read-only reviewer inspected the focused remediation diff, ran all five
+`RedactorTests`, checked that no references to the replaced classifiers remained,
+and verified the delimiter behavior for environment, key/value, and argv forms. It
+returned `RESOLVED`, found no new blocker, and upgraded the verdict to **PASS within
+the disclosed targeted-review scope**. The original scope limitation remains.
