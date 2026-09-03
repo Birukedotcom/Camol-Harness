@@ -1,8 +1,10 @@
 # Readiness contracts and `camol doctor`
 
-Status: `BACKED` for the deterministic fixture in `tests/test_doctor.py`
-(clean local Git checkout, process adapter, no hosted model). Everything a probe
-cannot observe safely is reported as a typed `unknown`, never assumed.
+Status: tested deterministic slice (unit and CLI fixtures in `tests/test_doctor.py`:
+clean local Git checkout, process adapter, no hosted model). Its maturity is still
+`SPECULATIVE` under SPEC §2, because `BACKED` requires replayable evidence of a
+real run with a controlled failure and recovery, which only M7 produces. Everything
+a probe cannot observe safely is reported as a typed `unknown`, never assumed.
 
 This document describes what the code in `camol/readiness.py`, `camol/probes.py`,
 and `camol/doctor.py` actually enforces. Where the product specification asks
