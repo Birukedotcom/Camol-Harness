@@ -31,6 +31,7 @@ SESSION_FIELDS = (
     "schema", "schema_version", "session_id", "workspace", "state_dir",
     "status", "model", "effort", "goal", "grill", "plan", "plan_digest",
     "approved_digest", "run_id", "messages", "created_at", "updated_at",
+    "selected_box", "event_cursor",
 )
 SESSION_STATUSES = frozenset({"new", "planning", "plan_ready", "approved", "running", "terminal"})
 EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
@@ -104,6 +105,10 @@ def validate_session(value: Mapping[str, Any]) -> Dict[str, Any]:
     for name in ("goal", "plan_digest", "approved_digest", "run_id"):
         if value[name] is not None and not isinstance(value[name], str):
             raise SessionError("interactive session {} must be text or null".format(name))
+    if value["selected_box"] is not None and not isinstance(value["selected_box"], str):
+        raise SessionError("interactive selected_box must be text or null")
+    if type(value["event_cursor"]) is not int or value["event_cursor"] < 0:
+        raise SessionError("interactive event_cursor must be a non-negative integer")
     if value["plan"] is not None and not isinstance(value["plan"], dict):
         raise SessionError("interactive plan must be an object or null")
     if value["grill"] is not None and not isinstance(value["grill"], dict):
@@ -159,6 +164,8 @@ class SessionStore:
             "plan_digest": None,
             "approved_digest": None,
             "run_id": None,
+            "selected_box": None,
+            "event_cursor": 0,
             "messages": [],
             "created_at": timestamp,
             "updated_at": timestamp,

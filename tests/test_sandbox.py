@@ -57,6 +57,11 @@ class SandboxTests(unittest.TestCase):
         with self.assertRaisesRegex(SandboxError, "only denied or explicitly unrestricted"):
             self.policy(network=("api.example.com:443",))
 
+    def test_macos_profile_allows_only_metadata_on_runtime_ancestors(self):
+        profile = MacOSSandboxBackend.profile(self.policy())
+        self.assertIn("file-read-metadata", profile)
+        self.assertNotIn('(allow file-read* (subpath "{}"))'.format(self.root), profile)
+
     def test_unsandboxed_backend_cannot_claim_sandboxed_trust(self):
         with self.assertRaisesRegex(SandboxError, "cannot satisfy"):
             asyncio.run(

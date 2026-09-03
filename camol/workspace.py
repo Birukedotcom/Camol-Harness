@@ -231,6 +231,11 @@ class WorkspaceManager:
         if dirty:
             raise WorkspaceError("source checkout is dirty; Camol will not copy uncommitted state implicitly")
 
+    def assert_source_ready(self) -> None:
+        """Prove the immutable source input before any provider spend or worker launch."""
+        self._assert_clean_source()
+        self._git("-C", str(self.source), "rev-parse", "HEAD^{commit}")
+
     def _repository_id(self) -> str:
         remote = self._git("-C", str(self.source), "remote", "get-url", "origin", check=False)
         return self.redactor.text(remote) if remote else "local:" + self.source.name

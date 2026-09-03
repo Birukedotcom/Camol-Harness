@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+from importlib import resources
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -171,6 +172,20 @@ class ModelProfile:
 
 
 def load_model_profile(workspace: Path, relative: str) -> ModelProfile:
+    if relative.startswith("@camol/"):
+        profile_id = relative[len("@camol/"):]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile_id):
+            raise ProviderError("built-in model profile id is invalid")
+        try:
+            payload = resources.files("camol").joinpath(
+                "assets", "profiles", profile_id + ".json"
+            ).read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError) as error:
+            raise ProviderError("built-in model profile is unavailable") from error
+        try:
+            return ModelProfile.from_dict(json.loads(payload))
+        except json.JSONDecodeError as error:
+            raise ProviderError("built-in model profile is malformed") from error
     root = Path(workspace).resolve()
     raw = Path(relative)
     if raw.is_absolute() or ".." in raw.parts:

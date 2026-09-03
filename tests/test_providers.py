@@ -90,6 +90,13 @@ class ProviderContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "turn <= task <= run"):
             ModelProfile.from_dict(bad)
 
+    def test_packaged_profile_is_available_from_any_workspace(self):
+        profile = load_model_profile(self.workspace, "@camol/claude-fable-5-1")
+        self.assertEqual(profile.profile_id, "claude-fable-5-1-request")
+        self.assertEqual(profile.requested_model, "fable")
+        with self.assertRaisesRegex(ProviderError, "unavailable"):
+            load_model_profile(self.workspace, "@camol/missing")
+
     def test_profile_path_may_not_escape_or_traverse_symlink(self):
         outside = self.root / "outside.json"
         outside.write_text(json.dumps(profile_payload()), encoding="utf-8")

@@ -19,8 +19,15 @@ QUESTIONS: Tuple[Tuple[str, str], ...] = (
     ("outcome", "What observable outcome would make this finished?"),
     ("exclusions", "What must this work not change or attempt?"),
     ("invariants", "Which properties must remain true at every step?"),
+    (
+        "topology",
+        "Break the work into task lines as `id | goal | after=id,id` (use one line if it should not split).",
+    ),
     ("verification", "What exact command should independently verify the result?"),
-    ("resources", "What box, token, time, and provider limits should the plan respect?"),
+    (
+        "resources",
+        "What limits should apply? You can specify `boxes=N`, `turns=N`, `tokens=N`; also name time/provider constraints.",
+    ),
 )
 
 
@@ -49,6 +56,144 @@ def _verification_argv(text: str) -> List[str]:
     if any(item in forbidden for item in argv):
         raise PlanningError("verification command must be argv, not a shell pipeline")
     return argv
+
+
+def _task_lines(text: str, acceptance: Sequence[str]) -> List[Dict[str, Any]]:
+    tasks: List[Dict[str, Any]] = []
+    for index, raw_line in enumerate(text.splitlines(), 1):
+        line = raw_line.strip(" \t-*")
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) == 1:
+            task_id = "task-{}".format(index)
+            goal = parts[0]
+            depends_on: List[str] = []
+        elif len(parts) in {2, 3}:
+            task_id, goal = parts[:2]
+            depends_on = []
+            if len(parts) == 3:
+                if not parts[2].startswith("after="):
+                    raise PlanningError("task dependency must use after=id,id")
+                depends_on = [item.strip() for item in parts[2][len("after="):].split(",") if item.strip()]
+        else:
+            raise PlanningError("each task line must have id | goal | after=id,id")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id):
+            raise PlanningError("task id {!r} is invalid".format(task_id))
+        _required_text(goal, "task goal", limit=2_000)
+        tasks.append({
+            "id": task_id,
+            "goal": goal,
+            "depends_on": depends_on,
+            "acceptance": list(acceptance),
+        })
+    if not tasks:
+        raise PlanningError("topology must contain at least one task")
+    ids = [task["id"] for task in tasks]
+    if len(ids) != len(set(ids)):
+        raise PlanningError("task ids must be unique")
+    for task in tasks:
+        unknown = sorted(set(task["depends_on"]) - set(ids))
+        if unknown:
+            raise PlanningError("task {} has unknown dependencies: {}".format(task["id"], ", ".join(unknown)))
+        if task["id"] in task["depends_on"]:
+            raise PlanningError("task {} cannot depend on itself".format(task["id"]))
+    # A small DFS rejects cycles before the kernel sees the proposal.
+    dependencies = {task["id"]: task["depends_on"] for task in tasks}
+    visiting = set()
+    visited = set()
+
+    def visit(task_id: str) -> None:
+        if task_id in visiting:
+            raise PlanningError("task dependency graph contains a cycle")
+        if task_id in visited:
+            return
+        visiting.add(task_id)
+        for dependency in dependencies[task_id]:
+            visit(dependency)
+        visiting.remove(task_id)
+        visited.add(task_id)
+
+    for task_id in ids:
+        visit(task_id)
+    return tasks
+
+
+def _resource_limit(text: str, name: str, default: int, *, minimum: int, maximum: int) -> int:
+    match = re.search(r"(?:^|[\s,;]){}\s*=\s*(\d+)(?:$|[\s,;])".format(re.escape(name)), text, re.I)
+    value = int(match.group(1)) if match else default
+    if not minimum <= value <= maximum:
+        raise PlanningError("{} must be between {} and {}".format(name, minimum, maximum))
+    return value
+
+
+def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
+    fields = {
+        "schema", "schema_version", "goal", "outcomes", "exclusions", "invariants",
+        "verification_argv", "resource_statement", "resource_limits", "execution", "tasks", "maturity",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise PlanningError("plan proposal has the wrong fields")
+    if value["schema"] != "camol.plan_proposal" or value["schema_version"] != 1:
+        raise PlanningError("plan proposal schema is unsupported")
+    for name in ("goal", "resource_statement", "maturity"):
+        _required_text(value[name], "plan " + name)
+    for name in ("outcomes", "exclusions", "invariants", "verification_argv"):
+        if not isinstance(value[name], list) or not value[name] or any(not isinstance(item, str) or not item for item in value[name]):
+            raise PlanningError("plan {} must contain non-empty strings".format(name))
+    limits = value["resource_limits"]
+    if not isinstance(limits, dict) or set(limits) != {"max_concurrency", "max_turns_per_task", "max_total_tokens"}:
+        raise PlanningError("plan resource_limits has the wrong fields")
+    for name, number in limits.items():
+        if type(number) is not int or number <= 0:
+            raise PlanningError("plan resource limit {} must be positive".format(name))
+    execution = value["execution"]
+    if not isinstance(execution, dict) or set(execution) != {"model", "effort"}:
+        raise PlanningError("plan execution has the wrong fields")
+    _required_text(execution["model"], "plan execution model")
+    if execution["effort"] not in {"low", "medium", "high", "xhigh", "max"}:
+        raise PlanningError("plan execution effort is unsupported")
+    if not isinstance(value["tasks"], list):
+        raise PlanningError("plan tasks must be an array")
+    # Reuse the topology validator's graph checks without accepting alternate shapes.
+    ids = []
+    dependencies = {}
+    normalized_tasks = []
+    for task in value["tasks"]:
+        if not isinstance(task, dict) or set(task) != {"id", "goal", "depends_on", "acceptance"}:
+            raise PlanningError("plan task has the wrong fields")
+        task_id = _required_text(task["id"], "task id")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id):
+            raise PlanningError("task id is invalid")
+        if not isinstance(task["depends_on"], list) or any(not isinstance(item, str) for item in task["depends_on"]):
+            raise PlanningError("task dependencies must be strings")
+        if not isinstance(task["acceptance"], list) or not task["acceptance"] or any(not isinstance(item, str) or not item for item in task["acceptance"]):
+            raise PlanningError("task acceptance must contain non-empty strings")
+        ids.append(task_id)
+        dependencies[task_id] = list(task["depends_on"])
+        normalized_tasks.append(dict(task))
+    if not ids or len(ids) != len(set(ids)):
+        raise PlanningError("plan must have unique tasks")
+    visiting = set()
+    visited = set()
+    def visit(task_id: str) -> None:
+        if task_id in visiting:
+            raise PlanningError("task dependency graph contains a cycle")
+        if task_id in visited:
+            return
+        if task_id not in dependencies:
+            raise PlanningError("task dependency is unknown")
+        visiting.add(task_id)
+        for dependency in dependencies[task_id]:
+            visit(dependency)
+        visiting.remove(task_id)
+        visited.add(task_id)
+    for task_id in ids:
+        visit(task_id)
+    normalized = dict(value)
+    normalized["tasks"] = normalized_tasks
+    normalized["resource_limits"] = dict(limits)
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -120,7 +265,7 @@ class GrillState:
         )
 
 
-def proposal_from_grill(grill: GrillState) -> Dict[str, Any]:
+def proposal_from_grill(grill: GrillState, *, model: str = "manual", effort: str = "high") -> Dict[str, Any]:
     if grill.status != "complete":
         raise PlanningError("finish every grill question before proposing a plan")
     answers = dict(grill.answers)
@@ -129,28 +274,32 @@ def proposal_from_grill(grill: GrillState) -> Dict[str, Any]:
         "The source checkout is not modified directly by a worker.",
         "Completion requires independent evaluator evidence.",
     ] + _items(answers["invariants"])
+    outcomes = _items(answers["outcome"])
+    tasks = _task_lines(answers["topology"], outcomes)
+    resource_statement = answers["resources"]
     proposal = {
         "schema": "camol.plan_proposal",
         "schema_version": 1,
         "goal": grill.goal,
-        "outcomes": _items(answers["outcome"]),
+        "outcomes": outcomes,
         "exclusions": _items(answers["exclusions"]),
         "invariants": list(dict.fromkeys(invariants)),
         "verification_argv": _verification_argv(answers["verification"]),
-        "resource_statement": answers["resources"],
-        "tasks": [
-            {
-                "id": "implement",
-                "goal": grill.goal,
-                "depends_on": [],
-                "acceptance": _items(answers["outcome"]),
-            }
-        ],
+        "resource_statement": resource_statement,
+        "resource_limits": {
+            "max_concurrency": min(
+                len(tasks), _resource_limit(resource_statement, "boxes", len(tasks), minimum=1, maximum=64)
+            ),
+            "max_turns_per_task": _resource_limit(resource_statement, "turns", 6, minimum=1, maximum=100),
+            "max_total_tokens": _resource_limit(resource_statement, "tokens", 48_000, minimum=1_000, maximum=10_000_000),
+        },
+        "execution": {"model": _required_text(model, "execution model"), "effort": effort},
+        "tasks": tasks,
         "maturity": "PROPOSED_MANUAL_GRILL",
     }
     if not proposal["outcomes"] or not proposal["exclusions"]:
         raise PlanningError("outcome and exclusion answers must contain at least one item")
-    return proposal
+    return validate_proposal(proposal)
 
 
 def compile_runbook(
@@ -158,9 +307,7 @@ def compile_runbook(
     worker_id: str = "builder", model_capabilities: Sequence[str] = ("inspect", "code", "test"),
 ) -> Dict[str, Any]:
     """Compile a reviewed proposal to the kernel's current executable contract."""
-    if proposal.get("schema") != "camol.plan_proposal" or proposal.get("schema_version") != 1:
-        raise PlanningError("plan proposal schema is unsupported")
-    task = proposal["tasks"][0]
+    proposal = validate_proposal(proposal)
     rules = [
         {"id": "approval-gate", "text": proposal["invariants"][0], "enforcement": "hard"},
         {"id": "source-isolation", "text": proposal["invariants"][1], "enforcement": "hard"},
@@ -173,7 +320,7 @@ def compile_runbook(
         "run": {
             "id": run_id,
             "objective": proposal["goal"],
-            "max_concurrency": 1,
+            "max_concurrency": proposal["resource_limits"]["max_concurrency"],
             "completion": [
                 "all_tasks_succeeded", "all_required_evidence_present",
                 "all_verifications_green", "no_open_blockers", "no_open_debug_cases",
@@ -181,21 +328,22 @@ def compile_runbook(
             "token_policy": {
                 "max_tokens_per_turn": 8_000,
                 "checkpoint_reserve": 600,
-                "max_total_tokens": 48_000,
-                "max_turns_per_task": 6,
+                "max_total_tokens": proposal["resource_limits"]["max_total_tokens"],
+                "max_turns_per_task": proposal["resource_limits"]["max_turns_per_task"],
             },
             "readiness_policy": {"receipt_ttl_seconds": 300},
         },
         "rules": rules,
         "agents": [
             {
-                "id": worker_id,
+                "id": worker_id if index == 0 else "{}-{}".format(worker_id, index + 1),
                 "role": "Implement and evidence the approved task",
-                "box": "camol-boxes/{}".format(worker_id),
+                "box": "camol-boxes/{}".format(worker_id if index == 0 else "{}-{}".format(worker_id, index + 1)),
                 "capabilities": list(model_capabilities),
                 "adapter": dict(adapter),
                 "trust_tier": "developer_trusted",
             }
+            for index in range(proposal["resource_limits"]["max_concurrency"])
         ],
         "tasks": [
             {
@@ -219,6 +367,7 @@ def compile_runbook(
                 ],
                 "evaluator_assets": [],
             }
+            for task in proposal["tasks"]
         ],
     }
     return validate_runbook(runbook)

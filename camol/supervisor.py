@@ -2,12 +2,16 @@
 
 import asyncio
 import fcntl
+import hashlib
 import hmac
 import json
 import os
 import secrets
 import signal
+import subprocess
+import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,6 +30,11 @@ class SupervisorError(RuntimeError):
     """Supervisor ownership or control protocol failed."""
 
 
+# Keep intentional detached children referenced for the lifetime of this
+# client process. Popen otherwise warns during immediate garbage collection.
+_DETACHED_CHILDREN = []
+
+
 @dataclass(frozen=True)
 class SupervisorPaths:
     state_dir: Path
@@ -41,10 +50,18 @@ class SupervisorPaths:
     def under(cls, state_dir: Path, database: Optional[Path] = None) -> "SupervisorPaths":
         root = Path(state_dir).resolve()
         control = root / "control"
+        socket = control / "camol.sock"
+        # Darwin and several BSDs cap AF_UNIX paths near 104 bytes. Product
+        # sessions live under a descriptive private state path, so use a
+        # private hashed runtime directory only when the direct path is unsafe.
+        if len(os.fsencode(str(socket))) >= 100:
+            digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:24]
+            runtime_root = Path("/tmp") if os.name == "posix" and Path("/tmp").is_dir() else Path(tempfile.gettempdir())
+            socket = runtime_root / "camol-{}-{}".format(os.getuid(), digest) / "camol.sock"
         return cls(
             state_dir=root,
             control_dir=control,
-            socket=control / "camol.sock",
+            socket=socket,
             token=control / "control.token",
             lock=control / "leader.lock",
             pid=control / "leader.pid",
@@ -143,6 +160,14 @@ class Supervisor:
         for path in (self.paths.socket, self.paths.token, self.paths.lock, self.paths.pid, self.paths.log):
             if path.is_symlink():
                 raise SupervisorError("supervisor control files must not be symlinks")
+        if self.paths.socket.parent != self.paths.control_dir:
+            runtime_dir = self.paths.socket.parent
+            if runtime_dir.exists() and (runtime_dir.is_symlink() or not runtime_dir.is_dir()):
+                raise SupervisorError("supervisor runtime directory is unsafe")
+            runtime_dir.mkdir(parents=False, exist_ok=True, mode=0o700)
+            metadata = runtime_dir.stat()
+            if metadata.st_uid != os.getuid() or (metadata.st_mode & 0o777) != 0o700:
+                raise SupervisorError("supervisor runtime directory must be owner-only")
         self.approve_by = approve_by
         self.lock = LeaderLock(self.paths.lock)
         self.token = ""
@@ -343,15 +368,18 @@ class Supervisor:
                 self._wake.clear()
                 await self._wake.wait()
                 continue
-            if state["status"] in {"completed", "blocked"}:
-                self.mode = "terminal"
-                self._shutdown.set()
-                return
             if self.draining:
                 self.mode = "drained"
                 if self.stop_after_drain:
                     self._shutdown.set()
                     return
+                self._wake.clear()
+                await self._wake.wait()
+                continue
+            if state["status"] in {"completed", "blocked"}:
+                # A terminal daemon remains inspectable and reattachable until
+                # the owner explicitly stops it.
+                self.mode = "terminal"
                 self._wake.clear()
                 await self._wake.wait()
                 continue
@@ -445,14 +473,22 @@ class Supervisor:
         elif "requested_by" not in request:
             request["requested_by"] = "operator"
         if command == "ping":
+            if version == 2:
+                reject_unknown_fields(params, (), "control ping params")
             return {"ok": True, "pid": os.getpid()}
         if command in {"status", "boxes"}:
+            if version == 2:
+                reject_unknown_fields(params, (), "control {} params".format(command))
             return {"ok": True, "result": self.status() if command == "status" else self._boxes()}
         if command == "drain":
+            if version == 2:
+                reject_unknown_fields(params, (), "control drain params")
             self.draining = True
             self.mode = "draining"
             return {"ok": True, "result": {"mode": self.mode}}
         if command == "resume":
+            if version == 2:
+                reject_unknown_fields(params, (), "control resume params")
             if self.orphans:
                 raise SupervisorError("live orphan invocation requires explicit force-stop or operator reconciliation")
             self.draining = False
@@ -461,6 +497,8 @@ class Supervisor:
             self._wake.set()
             return {"ok": True, "result": {"mode": self.mode}}
         if command == "approve":
+            if version == 2:
+                reject_unknown_fields(params, (), "control approve params")
             state = self.orchestrator.state(self.run_id)
             if state["status"] != "draft":
                 raise SupervisorError("run is not awaiting plan approval")
@@ -498,12 +536,16 @@ class Supervisor:
                 raise SupervisorError("box limit must be between 1 and 500")
             return {"ok": True, "result": self._box(box_id, after_seq, limit)}
         if command == "stop":
+            if version == 2:
+                reject_unknown_fields(params, (), "control stop params")
             self.draining = True
             self.stop_after_drain = True
             self.mode = "draining"
             self._wake.set()
             return {"ok": True, "result": {"mode": self.mode}}
         if command == "force-stop":
+            if version == 2:
+                reject_unknown_fields(params, (), "control force-stop params")
             if self._force_task is None:
                 self._force_task = asyncio.create_task(self._force_shutdown(str(request.get("requested_by") or "operator")))
             return {"ok": True, "result": {"mode": "stopping"}}
@@ -636,3 +678,78 @@ async def send_control_v2(
         raise SupervisorError(response.get("error") or "control request failed")
     response["request_id"] = request_id
     return response
+
+
+def spawn_supervisor(
+    runbook: Path,
+    workspace: Path,
+    state_dir: Path,
+    *,
+    database: Optional[Path] = None,
+    approve_by: Optional[str] = None,
+    timeout: float = 10,
+) -> Dict[str, Any]:
+    """Start one detached authoritative supervisor and prove its socket is live."""
+    workspace = Path(workspace).resolve()
+    state_dir = Path(state_dir).resolve()
+    WorkspaceManager(workspace, state_dir)
+    paths = SupervisorPaths.under(state_dir, database)
+    if paths.control_dir.is_symlink() or paths.log.is_symlink():
+        raise SupervisorError("supervisor control/log path must not be a symlink")
+    try:
+        paths.database.relative_to(state_dir)
+    except ValueError as error:
+        raise SupervisorError("supervisor database must stay inside the state directory") from error
+    paths.control_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-m",
+        "camol",
+        "serve",
+        str(Path(runbook).resolve()),
+        "--workspace",
+        str(workspace),
+        "--state-dir",
+        str(state_dir),
+    ]
+    if database:
+        command.extend(["--db", str(Path(database).resolve())])
+    if approve_by:
+        command.extend(["--approve-by", approve_by])
+    child_environment = {
+        name: os.environ[name]
+        for name in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH")
+        if name in os.environ
+    }
+    package_root = str(Path(__file__).resolve().parents[1])
+    child_environment["PYTHONPATH"] = os.pathsep.join(
+        item for item in (package_root, child_environment.get("PYTHONPATH", "")) if item
+    )
+    with paths.log.open("ab", buffering=0) as log:
+        process = subprocess.Popen(
+            command,
+            cwd=str(workspace),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            close_fds=True,
+            env=child_environment,
+        )
+    _DETACHED_CHILDREN[:] = [child for child in _DETACHED_CHILDREN if child.poll() is None]
+    _DETACHED_CHILDREN.append(process)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise SupervisorError("supervisor exited during startup; inspect {}".format(paths.log))
+        if paths.socket.exists() and paths.token.exists():
+            response = asyncio.run(send_control(state_dir, "ping"))
+            return {
+                "started": True,
+                "pid": response["pid"],
+                "socket": str(paths.socket),
+                "log": str(paths.log),
+            }
+        time.sleep(0.05)
+    process.terminate()
+    raise SupervisorError("supervisor did not become ready within {} seconds".format(timeout))

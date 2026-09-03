@@ -459,6 +459,17 @@ class MacOSSandboxBackend(SandboxBackend):
         # and network behavior.  It is materially narrower than ``allow
         # default`` and lets the following roots be the only content access.
         rules = ["(version 1)", '(import "system.sb")', "(allow process*)"]
+        # Runtime launchers commonly realpath their own executable. Permit
+        # metadata-only traversal of ancestors without granting content reads
+        # outside the explicit roots (notably for venvs below /private/tmp).
+        ancestors = set()
+        for item in policy.read_paths + policy.write_paths:
+            cursor = Path(item).parent
+            while str(cursor) not in {"", "/"}:
+                ancestors.add(str(cursor))
+                cursor = cursor.parent
+        for path in sorted(ancestors):
+            rules.append('(allow file-read-metadata (literal "{}"))'.format(_escape_profile(path)))
         for path in policy.read_paths:
             rules.append('(allow file-read* (subpath "{}"))'.format(_escape_profile(path)))
         for path in policy.write_paths:

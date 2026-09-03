@@ -11,7 +11,7 @@ from pathlib import Path
 
 from camol.sandbox import process_start_fingerprint
 from camol.schema import canonical_digest
-from camol.supervisor import LeaderLock, Supervisor, SupervisorError, send_control, send_control_v2
+from camol.supervisor import LeaderLock, Supervisor, SupervisorError, SupervisorPaths, send_control, send_control_v2
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +87,13 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(SupervisorError, "control token"):
             await send_control(self.state, "status")
         self.assertFalse((self.state / "control/control.token").exists())
+
+    async def test_long_state_path_uses_private_hashed_runtime_socket(self):
+        state = Path(self.temporary.name) / ("nested-" + "x" * 90) / "state"
+        paths = SupervisorPaths.under(state)
+        self.assertLess(len(os.fsencode(str(paths.socket))), 100)
+        self.assertNotEqual(paths.socket, paths.control_dir / "camol.sock")
+        self.assertIn("camol-{}-".format(os.getuid()), paths.socket.parent.name)
 
     async def test_v2_plan_events_and_box_views_are_typed_and_reattachable(self):
         supervisor = Supervisor(

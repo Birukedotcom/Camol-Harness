@@ -17,3 +17,6 @@ camol = "camol.cli:main"
 
 [tool.setuptools]
 packages = ["camol"]
+
+[tool.setuptools.package-data]
+camol = ["assets/*.txt", "assets/profiles/*.json"]

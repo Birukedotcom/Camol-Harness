@@ -3,10 +3,7 @@
 import argparse
 import asyncio
 import json
-import os
-import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -21,7 +18,7 @@ from .store import SQLiteEventStore
 from .workspace import WorkspaceError, WorkspaceManager
 from .providers import ProviderError, create_claude_capability, load_model_profile
 from .probes import local_target_id
-from .supervisor import Supervisor, SupervisorError, SupervisorPaths, send_control
+from .supervisor import Supervisor, SupervisorError, send_control, spawn_supervisor
 
 
 def _write_json(value: Any) -> None:
@@ -194,54 +191,12 @@ def command_serve(args: argparse.Namespace) -> int:
 
 
 def command_start(args: argparse.Namespace) -> int:
-    workspace = Path(args.workspace).resolve()
-    state_dir = Path(args.state_dir).resolve()
-    WorkspaceManager(workspace, state_dir)
-    paths = SupervisorPaths.under(state_dir, Path(args.db) if args.db else None)
-    if paths.control_dir.is_symlink() or paths.log.is_symlink():
-        raise SupervisorError("supervisor control/log path must not be a symlink")
-    try:
-        paths.database.relative_to(state_dir)
-    except ValueError as error:
-        raise SupervisorError("supervisor database must stay inside the state directory") from error
-    paths.control_dir.mkdir(parents=True, exist_ok=True)
-    command = [
-        sys.executable, "-m", "camol", "serve", args.runbook,
-        "--workspace", str(workspace), "--state-dir", str(state_dir),
-    ]
-    if args.db:
-        command.extend(["--db", str(Path(args.db).resolve())])
-    if args.approve_by:
-        command.extend(["--approve-by", args.approve_by])
-    child_environment = {
-        name: os.environ[name]
-        for name in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH")
-        if name in os.environ
-    }
-    # Source checkouts must detach just as installed wheels do.  The child
-    # changes cwd to the target repository, so explicitly carry the package
-    # root instead of accidentally depending on the caller's cwd.
-    package_root = str(Path(__file__).resolve().parents[1])
-    child_environment["PYTHONPATH"] = os.pathsep.join(
-        item for item in (package_root, child_environment.get("PYTHONPATH", "")) if item
-    )
-    with paths.log.open("ab", buffering=0) as log:
-        process = subprocess.Popen(
-            command, cwd=str(workspace), stdin=subprocess.DEVNULL,
-            stdout=log, stderr=log, start_new_session=True, close_fds=True,
-            env=child_environment,
-        )
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise SupervisorError("supervisor exited during startup; inspect {}".format(paths.log))
-        if paths.socket.exists() and paths.token.exists():
-            response = asyncio.run(send_control(state_dir, "ping"))
-            _write_json({"started": True, "pid": response["pid"], "socket": str(paths.socket), "log": str(paths.log)})
-            return 0
-        time.sleep(0.05)
-    process.terminate()
-    raise SupervisorError("supervisor did not become ready within 10 seconds")
+    _write_json(spawn_supervisor(
+        Path(args.runbook), Path(args.workspace), Path(args.state_dir),
+        database=Path(args.db) if args.db else None,
+        approve_by=args.approve_by,
+    ))
+    return 0
 
 
 def command_control(args: argparse.Namespace) -> int:
@@ -257,11 +212,30 @@ def command_bench_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_interactive(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    state_root = Path(args.state_home).expanduser().resolve() if args.state_home else None
+    if not args.no_tui:
+        try:
+            from .tui import run_tui
+        except ImportError:
+            pass
+        else:
+            return run_tui(workspace, state_root=state_root, show_boot=not args.no_boot)
+    from .line_ui import run_line_ui
+    return run_line_ui(workspace, state_root=state_root, show_boot=not args.no_boot)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="camol", description="Persistent plan-driven agent orchestration harness"
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--workspace", default=".", help="workspace for the interactive client")
+    parser.add_argument("--state-home", help="override the private interactive state root")
+    parser.add_argument("--no-tui", action="store_true", help="use dependency-light line mode")
+    parser.add_argument("--no-boot", action="store_true", help="skip branded boot art")
+    parser.set_defaults(handler=command_interactive)
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     validate = subparsers.add_parser("validate", help="validate an executable runbook")
     validate.add_argument("runbook")
