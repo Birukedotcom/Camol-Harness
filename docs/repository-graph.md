@@ -26,8 +26,43 @@ The main view reserves the upper-right for a compact dependency rail:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The rail is deliberately small. It shows capabilities the active plan cares about,
-not every installed package. Selecting an item opens its readiness vector:
+The main viewport is followed by a persistent workspace switcher:
+
+```text
+── WORKSPACES ─────────────────────────────────────────────────────
+[0 ORCH]  [1 ■ BUILD]  ▸[2 ■ VERIFY]  [3 □ WATCH]
+Alt+0..3 direct · left/right or [/] cycle · click supported
+```
+
+The switcher remains visible while the graph is focused. Connection and selection
+are separate signals: `■` means the box is connected and task-ready, while `▸`
+(plus inverse-video styling where available) marks the workspace currently being
+viewed. A box does not become ready merely because the user selects it.
+
+Direct selection uses `Alt+0` for the orchestrator and `Alt+1` through `Alt+3` for
+the boxes. Left/right or `[`/`]` cycles through all four workspaces; mouse-capable
+terminals may click a label. Focus movement is local UI state and emits no command to
+the worker. Attention badges for unread output, a pending question, or an approval
+may decorate a label without replacing its readiness glyph.
+
+When a box is selected, the center workspace changes to a peer inspector:
+
+```text
+BOX 2 / VERIFIER · READ-ONLY · EVALUATING
+────────────────────────────────────────────────────────────────────
+live terminal output or selected evidence stream
+────────────────────────────────────────────────────────────────────
+terminal  context  tools  diff  evals  events  evidence
+```
+
+Peering is read-only by default. The inspector can copy output, follow a stream, and
+open evidence, but it cannot send keystrokes into the worker. Interactive control is
+an explicit takeover transition with an event-ledger entry and any required approval.
+If a box disconnects, its tab remains traversable and the inspector renders the last
+durable screen/checkpoint with a `STALE / DISCONNECTED` banner and observation time.
+
+The dependency rail is deliberately small. It shows capabilities the active plan
+cares about, not every installed package. Selecting an item opens its readiness vector:
 
 ```text
 docker

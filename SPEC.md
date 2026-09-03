@@ -118,6 +118,27 @@ action is required; and `↻` means Camol is probing or refreshing it. The glyph
 text detail carry status independently of color. Worker boxes use the same solid-box
 language so a glance across the header and box list is consistent.
 
+The bottom edge is a persistent workspace switcher for the orchestrator and the three
+execution boxes:
+
+```text
+[0 ORCH]  [1 ■ BUILDER]  ▸[2 ■ VERIFIER]  [3 □ WATCHER]    Alt+0..3
+```
+
+The `■` and `□` glyphs continue to report connection readiness; they never mean
+"selected." The `▸` cursor, reinforced by inverse-video styling when supported,
+identifies the workspace being viewed. `Alt+0` through `Alt+3` select directly,
+left/right or `[`/`]` cycle, and mouse-capable terminals may select a workspace by
+clicking it. The switcher remains visible in orchestrator, repository-graph, eval,
+and box-detail views.
+
+Selecting a box enters a read-only peer view without changing or interrupting its
+execution. That view exposes live terminal output plus `context`, `tools`, `diff`,
+`evals`, `events`, and `evidence` subviews. A disconnected box remains selectable and
+shows its last durable screen/checkpoint as explicitly stale. Sending input, attaching
+an interactive shell, or taking control is a separate, logged takeover action governed
+by the frozen plan and its approval policy.
+
 Camol also has a repository graph view backed by a read-only Python crawler. It keeps
 three graph layers distinct:
 
@@ -143,6 +164,7 @@ Initial interactive commands include:
 /invariants        inspect invariant ownership, gates, and evidence
 /boxes             view all worker boxes
 /box <id>          inspect one box
+/box next|previous cycle through box workspaces
 /evals             inspect every visible evaluator and result
 /events            inspect or stream the event ledger
 /tools             inspect tool invocations and results
