@@ -100,6 +100,34 @@ medium, and compact plaintext derivatives for terminals that cannot display imag
 After boot, the main view shows the orchestrator, global plan, obligation progress,
 box states, latest evidence, cost, and command prompt.
 
+The upper-right contains a compact dependency rail. It answers whether a capability
+is usable now, rather than merely whether a binary exists:
+
+```text
+docker READY   git READY   gcp AUTH_REQUIRED   models 2 READY / 1 DOWNLOADABLE
+```
+
+Selecting a dependency opens its layered readiness evidence, such as CLI presence,
+version, daemon reachability, authentication, target scope, required artifacts, and
+freshness. Secret values and account identifiers are never rendered there.
+
+Camol also has a repository graph view backed by a read-only Python crawler. It keeps
+three graph layers distinct:
+
+- environment dependencies: tools, daemons, credentials, runtimes, SDKs, and model
+  artifacts available to each box;
+- source dependencies: repositories, workspaces, packages, modules, build targets,
+  tests, containers, services, and deployments; and
+- execution overlays: tasks, agents, invariants, evidence, failures, and affected
+  deployment identities.
+
+The view supports overview, focused-neighborhood, change-impact, cycle, path-explain,
+and graph-diff modes. Large repositories are clustered by workspace/package/service,
+cycles are collapsed into explicit strongly connected components, and transitive
+noise is hidden by default without deleting the underlying edges. Every node and edge
+links back to the crawl receipt or runtime probe that established it. The full crawler
+and rendering contract lives in `docs/repository-graph.md`.
+
 Initial interactive commands include:
 
 ```text
@@ -111,6 +139,11 @@ Initial interactive commands include:
 /evals             inspect every visible evaluator and result
 /events            inspect or stream the event ledger
 /tools             inspect tool invocations and results
+/deps              inspect tools, daemons, auth, runtimes, and downloaded models
+/repo crawl         create or refresh the current repository graph snapshot
+/repo graph         inspect repository dependencies and execution overlays
+/repo impact        show what a selected node can affect downstream
+/repo why           explain the evidence-backed path between two nodes
 /model             inspect or select a model adapter
 /effort            set reasoning effort within policy
 /login              configure a supported provider connection
@@ -622,7 +655,8 @@ The following specification areas are not yet implemented and remain speculative
 - real Codex, Claude, local-model, cmux, SSH, and GCP adapters;
 - adaptive differential evaluation;
 - read-only box attachment and explicit takeover;
-- voice-agent evidence ingestion; and
+- voice-agent evidence ingestion;
+- dependency readiness inventory and repository graph crawling/rendering; and
 - Homebrew distribution.
 
 ## 16. Build sequence
@@ -640,15 +674,17 @@ The following specification areas are not yet implemented and remain speculative
    leases, and salvage-gated teardown.
 6. Prepare three isolated Git worktrees and real local agent adapters.
 7. Add read-only box inspection and replayable terminal/model/tool streams.
-8. Implement cursor-based watchers, plan migration, reconciliation, evidence
+8. Add dependency readiness probes, repository crawl snapshots, impact queries, and
+   the first terminal graph view.
+9. Implement cursor-based watchers, plan migration, reconciliation, evidence
    invalidation, and liveness heartbeats.
-9. Wrap cmux/SSH and the actual GCP deployment/observation path, including
+10. Wrap cmux/SSH and the actual GCP deployment/observation path, including
    deployment identities, effect reconciliation, and expiring waivers.
-10. Implement the evaluator compiler, observation contracts, statistical voice
+11. Implement the evaluator compiler, observation contracts, statistical voice
     campaigns, and adaptive counterexample loop.
-11. Run the vertical slice in section 20, force failures, recover, and promote the
+12. Run the vertical slice in section 20, force failures, recover, and promote the
     milestone from `MAPPED` to `BACKED`.
-12. Add the polished TUI, supplied Camol branding, packaging, and Homebrew formula.
+13. Add the polished TUI, supplied Camol branding, packaging, and Homebrew formula.
 
 ## 17. Decisions frozen for the initial build
 

@@ -60,7 +60,9 @@ and completion. Agents work inside separate boxes and cannot declare themselves 
 The current executable architecture is in
 [docs/architecture.md](docs/architecture.md), the runbook fields and command flow are
 in [docs/runbook-reference.md](docs/runbook-reference.md), and the debug ratchet is in
-[docs/debugger-protocol.md](docs/debugger-protocol.md).
+[docs/debugger-protocol.md](docs/debugger-protocol.md). The planned dependency rail,
+repository crawler, graph model, and terminal graph interactions are specified in
+[docs/repository-graph.md](docs/repository-graph.md).
 
 ## Run the deterministic three-agent proof
 
