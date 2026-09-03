@@ -112,6 +112,14 @@ fresh status probe; failure leaves the model unchanged, success is persisted and
 rendered in the orchestrator, and an existing frozen plan cannot be rewritten by a
 login confirmation.
 
+A second hands-on interaction pass removed the connected-account shortcut because
+it hid the provider URL and prevented deliberate reauthentication. `/login` now
+always enters the native provider flow; a nonzero exit cannot promote a previously
+green record. Enter sends, Shift+Enter inserts a line, `/` opens the command palette,
+and `/skills`, `/history`, and `/clear` make the terminal discoverable without adding
+their rendered output to model context. Reattachment retains durable state while
+presenting a fresh, explicit boundary instead of replaying the old terminal surface.
+
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python
 compilation, focused static checks, and `git diff --check`. Live Fable performance,

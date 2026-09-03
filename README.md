@@ -94,6 +94,13 @@ Inside Camol, a first live-capable plan looks like this:
 /quit                          # detach; does not stop the supervisor
 ```
 
+The composer follows chat-CLI conventions: Enter sends, Shift+Enter (or Ctrl+J)
+adds a line, and typing `/` opens an arrow-key command palette. `/skills` shows the
+small set of durable Camol protocols—grill, debugger, evidence, refinement, and
+readiness—rather than pretending every prompt fragment is a skill. On reattach,
+Camol shows a fresh session summary instead of replaying old output; `/history`
+retrieves retained entries and `/clear` clears only the current terminal view.
+
 The exact plan embeds the effective provider effort, token limits, timeout, tool/network
 policy, and total worker cost ceiling. `/run` requires the human to repeat that worker
 ceiling exactly, refuses a dirty source checkout, and runs one separately capped,
@@ -142,11 +149,13 @@ installed CLI is still being inspected; it changes to `■` only after the provi
 own status command confirms authentication. Camol preserves the non-secret local
 identity variables those CLIs require while filtering unrelated environment values,
 and it refreshes the rail automatically after `/login`. The V0 picker intentionally
-contains only Claude Code and Codex CLI. Choosing a disconnected entry hands the
-terminal to that provider's native browser-login flow; choosing an already connected
-entry skips reauthentication. A verified login lights the provider glyph, records the
-result in the orchestrator transcript, and selects `claude:fable` or `codex` when no
-plan is frozen or running.
+contains only Claude Code and Codex CLI. Choosing either entry always hands the
+terminal to that provider's native browser-login flow—even if discovery is already
+green—so reconnecting or switching accounts predictably exposes the provider-owned
+URL and prompt. A newly verified login lights the provider glyph, records the result
+in the orchestrator transcript, and selects `claude:fable` or `codex` when no plan is
+frozen or running. Cancelling the provider flow never promotes an older green record
+into a new login confirmation.
 
 Selecting a box opens a read-only peer view of its terminal stream, bounded context,
 tool calls, diff, evaluations, events, and evidence. Sending input or taking over is

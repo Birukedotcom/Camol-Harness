@@ -14,7 +14,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
-from .app import CommandResponse, InteractiveController
+from .app import SLASH_COMMANDS, CommandResponse, InteractiveController, SlashCommand
 from .boot import compose_boot
 from .connections import ConnectionError
 from .probes import Redactor
@@ -50,7 +50,18 @@ class BootScreen(Screen):
 
 
 class PromptArea(TextArea):
-    """A multiline editor whose submission chord belongs to the app."""
+    """Composer with chat-style Enter-to-send behavior."""
+
+    BINDINGS = [
+        Binding("enter", "send", "Send", priority=True),
+        Binding("shift+enter,ctrl+j", "newline", "New line", priority=True),
+    ]
+
+    def action_send(self) -> None:
+        self.app.action_submit()
+
+    def action_newline(self) -> None:
+        self.insert("\n")
 
 
 class LoginProviderScreen(ModalScreen):
@@ -84,14 +95,14 @@ class LoginProviderScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="login-dialog"):
-            yield Static("CONNECT AN ACCOUNT", id="login-title")
-            yield Static("Use ↑/↓ and Enter. The provider owns the browser sign-in.", id="login-help")
+            yield Static("SIGN IN / RECONNECT", id="login-title")
+            yield Static("Enter launches the provider login and URL. Escape cancels.", id="login-help")
             yield OptionList(
                 *(
                     Option(
                         "{}  [{}]".format(
                             self.LABELS.get(provider, provider),
-                            "connected" if self.statuses.get(provider) == "ready" else "sign in",
+                            "connected — reconnect" if self.statuses.get(provider) == "ready" else "sign in",
                         ),
                         id=provider,
                     )
@@ -102,6 +113,57 @@ class LoginProviderScreen(ModalScreen):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class SlashCommandScreen(ModalScreen):
+    """Discoverable slash-command palette opened by typing `/`."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    CSS = """
+    SlashCommandScreen {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.72);
+    }
+    #command-dialog {
+        width: 78;
+        height: 24;
+        max-height: 90%;
+        border: round #6e7d79;
+        background: #121819;
+        padding: 1 2;
+    }
+    #command-title { height: 1; color: #eef2f1; text-style: bold; }
+    #command-help { height: 2; color: #9ca9a6; margin-bottom: 1; }
+    #command-options { height: 1fr; background: #121819; border: none; }
+    """
+
+    def __init__(self, commands: Sequence[SlashCommand]):
+        super().__init__()
+        self.commands = tuple(commands)
+        self.command_by_id = {
+            "command-{}".format(index): command for index, command in enumerate(self.commands)
+        }
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="command-dialog"):
+            yield Static("COMMANDS & BUILT-IN PROTOCOLS", id="command-title")
+            yield Static("Use ↑/↓ and Enter. Commands needing a value return to the prompt.", id="command-help")
+            yield OptionList(
+                *(
+                    Option(
+                        "{:<14} {}".format(command.command, command.description),
+                        id=command_id,
+                    )
+                    for command_id, command in self.command_by_id.items()
+                ),
+                id="command-options",
+            )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(self.command_by_id[event.option.id])
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -134,7 +196,7 @@ class CamolApp(App):
     Footer { background: #182022; }
     """
     BINDINGS = [
-        Binding("ctrl+enter", "submit", "Send", priority=True),
+        Binding("ctrl+enter", "submit", "Send", show=False, priority=True),
         Binding("alt+enter", "submit", "Send", show=False, priority=True),
         Binding("alt+0", "orchestrator", "Orchestrator", show=False),
         Binding("alt+1", "box(1)", "Box 1", show=False),
@@ -173,6 +235,8 @@ class CamolApp(App):
         self.boxes = []
         self.stream_text = ""
         self._connection_probe_lock = threading.Lock()
+        self._slash_palette_open = False
+        self._slash_palette_timer = None
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -182,7 +246,7 @@ class CamolApp(App):
             yield Static("", id="stream")
             yield PromptArea(
                 "", id="prompt", soft_wrap=True, show_line_numbers=False,
-                placeholder="Message the orchestrator or type /help — Ctrl+Enter sends",
+                placeholder="Message the orchestrator · Enter sends · Shift+Enter adds a line · / opens commands",
             )
             yield Static("orchestrator [Alt+0]", id="fleet")
             yield Footer()
@@ -200,13 +264,22 @@ class CamolApp(App):
 
     def _render_existing_messages(self) -> None:
         log = self.query_one("#transcript", RichLog)
+        log.write("CAMOL PRODUCT V0")
         if not self.controller.session["messages"]:
-            log.write("CAMOL PRODUCT V0")
-            log.write("No work starts from conversation alone. Type /help or /grill GOAL.")
+            log.write("No work starts from conversation alone. Type / for commands or /grill GOAL.")
             return
-        for item in self.controller.session["messages"][-100:]:
-            label = {"human": "you", "orchestrator": "orchestrator", "system": "camol"}[item["role"]]
-            log.write("{} > {}".format(label, item["content"]))
+        log.write(
+            "REATTACHED — status={} · model={} · effort={}".format(
+                self.controller.session["status"],
+                self.controller.session["model"],
+                self.controller.session["effort"],
+            )
+        )
+        log.write(
+            "{} durable transcript entries retained but not replayed. Use /history to inspect them or /clear to reset this view.".format(
+                len(self.controller.session["messages"])
+            )
+        )
 
     def _render_dependency_rail(self) -> None:
         records = {record["connection_id"]: record for record in self.controller.connections.load()}
@@ -313,6 +386,9 @@ class CamolApp(App):
         if not text:
             return
         prompt.clear()
+        self._dispatch_input(text)
+
+    def _dispatch_input(self, text: str) -> None:
         redactor = Redactor()
         visible_text = redactor.text(text) if redactor.contains_sensitive(text) else text
         self.history.append(visible_text)
@@ -320,6 +396,41 @@ class CamolApp(App):
         self.history_index = len(self.history)
         self.query_one("#transcript", RichLog).write("you > " + visible_text)
         self._submit(text)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id != "prompt":
+            return
+        if event.text_area.text == "/" and not self._slash_palette_open:
+            # Delay just long enough to distinguish an intentional bare slash
+            # from a pasted or quickly typed `/login claude` command. Opening a
+            # modal between bytes would split the command across two widgets.
+            self._slash_palette_timer = self.set_timer(0.12, self._open_slash_palette_if_still_bare)
+        elif self._slash_palette_timer is not None:
+            self._slash_palette_timer.stop()
+            self._slash_palette_timer = None
+
+    def _open_slash_palette_if_still_bare(self) -> None:
+        self._slash_palette_timer = None
+        prompt = self.query_one("#prompt", PromptArea)
+        if prompt.text != "/" or self._slash_palette_open:
+            return
+        self._slash_palette_open = True
+        self.push_screen(SlashCommandScreen(SLASH_COMMANDS), self._slash_command_selected)
+
+    def _slash_command_selected(self, command: Optional[SlashCommand]) -> None:
+        self._slash_palette_open = False
+        prompt = self.query_one("#prompt", PromptArea)
+        if command is None:
+            prompt.focus()
+            return
+        if command.run_from_palette:
+            prompt.clear()
+            self._dispatch_input(command.command)
+            return
+        value = command.command + (" " if command.takes_value else "")
+        prompt.load_text(value)
+        prompt.move_cursor((0, len(value)))
+        prompt.focus()
 
     @work(thread=True, group="commands", exclusive=True)
     def _submit(self, text: str) -> None:
@@ -337,6 +448,8 @@ class CamolApp(App):
     def _apply_response(self, response: CommandResponse) -> None:
         self.query_one("#stream", Static).update("")
         log = self.query_one("#transcript", RichLog)
+        if response.clear_transcript:
+            log.clear()
         for message in response.messages:
             log.write("camol > " + message)
         if response.login_choices:
@@ -380,22 +493,10 @@ class CamolApp(App):
             self.query_one("#prompt", PromptArea).focus()
             return
         self.query_one("#transcript", RichLog).write("you > /login " + provider)
-        connection_id = {"claude": "claude-cli", "codex": "codex-cli"}[provider]
-        try:
-            records = self.controller.connections.load()
-        except ConnectionError:
-            records = []
-        record = next(
-            (
-                item
-                for item in records
-                if item["connection_id"] == connection_id
-            ),
-            None,
-        )
-        if record is not None and record["status"] == "ready":
-            self._apply_response(self.controller.confirm_provider_connection(provider, login_returncode=0))
-            return
+        # /login is an explicit request to enter the provider's native account
+        # flow, even if an earlier discovery record is green. This makes account
+        # switching and reconnecting predictable and guarantees that the user can
+        # see the provider-owned URL/prompt.
         self._submit("/login " + provider)
 
     def action_orchestrator(self) -> None:

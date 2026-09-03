@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from camol.app import InteractiveController
 from camol.connections import _record
+from camol.conversation import ConversationReply
 from camol.planning import compile_runbook
 from camol.schema import canonical_digest
 from camol.supervisor import SupervisorPaths
@@ -95,6 +96,25 @@ class InteractiveControllerTests(unittest.TestCase):
         self.assertIsNone(response.login_argv)
         self.assertIn("Choose a provider", response.messages[0])
 
+    def test_named_login_always_launches_native_provider_flow(self):
+        self.controller.connections.save([
+            _record(
+                "claude-cli",
+                "anthropic",
+                "cli",
+                status="ready",
+                runtime="claude",
+                detail="Authenticated Claude CLI",
+            )
+        ])
+        self.controller.connections.login_argv = Mock(return_value=["/provider/claude", "auth", "login"])
+
+        response = self.controller.handle("/login claude")
+
+        self.assertEqual(response.login_argv, ("/provider/claude", "auth", "login"))
+        self.assertEqual(response.login_provider, "claude")
+        self.controller.connections.login_argv.assert_called_once_with("claude")
+
     def test_confirmed_provider_becomes_active_planning_model(self):
         self.controller.connections.save([
             _record(
@@ -129,7 +149,55 @@ class InteractiveControllerTests(unittest.TestCase):
         response = self.controller.confirm_provider_connection("claude", login_returncode=1)
 
         self.assertEqual(self.controller.session["model"], "manual")
-        self.assertIn("not confirmed", response.messages[0])
+        self.assertIn("did not complete", response.messages[0])
+
+    def test_cancelled_reconnect_does_not_promote_an_older_green_record(self):
+        self.controller.connections.save([
+            _record(
+                "claude-cli",
+                "anthropic",
+                "cli",
+                status="ready",
+                runtime="claude",
+                detail="Authenticated Claude CLI",
+            )
+        ])
+
+        response = self.controller.confirm_provider_connection("claude", login_returncode=1)
+
+        self.assertEqual(self.controller.session["model"], "manual")
+        self.assertIn("active model was not changed", response.messages[0])
+
+    def test_skills_and_history_are_inspectable_without_persisting_the_rendered_dump(self):
+        self.controller.handle("a retained note")
+        before = len(self.controller.session["messages"])
+
+        skills = self.controller.handle("/skills")
+        history = self.controller.handle("/history 10")
+
+        self.assertIn("debugger", skills.messages[0])
+        self.assertIn("refine", skills.messages[0])
+        self.assertIn("a retained note", history.messages[0])
+        self.assertNotIn("BUILT-IN PROTOCOLS", history.messages[0])
+        self.assertEqual(len(self.controller.session["messages"]), before + 2)
+
+    def test_normal_message_persists_dialogue_separately_from_model_identity(self):
+        controller = InteractiveController(
+            self.workspace,
+            state_root=self.state_root,
+            converse_fn=lambda *args, **kwargs: ConversationReply(
+                "What must remain invariant?", "codex", None, "gpt-5.6", 10, 5
+            ),
+        )
+        controller.handle("/model codex")
+
+        response = controller.handle("Help me plan this")
+
+        self.assertIn("What must remain invariant?", response.messages[0])
+        self.assertEqual(controller.session["messages"][-2]["role"], "orchestrator")
+        self.assertEqual(controller.session["messages"][-2]["kind"], "conversation")
+        self.assertEqual(controller.session["messages"][-1]["role"], "system")
+        self.assertEqual(controller.session["messages"][-1]["kind"], "notice")
 
     def test_confirmed_provider_does_not_mutate_a_frozen_plan(self):
         self.complete_grill()

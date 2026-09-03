@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from camol.app import InteractiveController
 from camol.connections import _record
-from camol.tui import CamolApp, LoginProviderScreen, PromptArea
+from camol.tui import CamolApp, LoginProviderScreen, PromptArea, SlashCommandScreen
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
@@ -121,6 +121,43 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app._submit.assert_called_once_with("/login codex")
 
+    async def test_typing_slash_opens_command_palette_and_enter_runs_safe_command(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        app._submit = Mock()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause(0.2)
+            self.assertIsInstance(app.screen, SlashCommandScreen)
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            app._submit.assert_called_once_with("/skills")
+
+    async def test_enter_sends_and_shift_enter_adds_a_line(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        app._submit = Mock()
+        async with app.run_test(size=(100, 30)) as pilot:
+            prompt = app.query_one("#prompt", PromptArea)
+            prompt.load_text("first")
+            prompt.move_cursor((0, len(prompt.text)))
+            await pilot.press("shift+enter")
+            await pilot.press("s", "e", "c", "o", "n", "d")
+            self.assertEqual(prompt.text, "first\nsecond")
+            await pilot.press("enter")
+            await pilot.pause()
+            app._submit.assert_called_once_with("first\nsecond")
+
+    async def test_reopen_shows_a_reattach_boundary_without_replaying_old_output(self):
+        self.controller.handle("/btw retained context")
+        reopened = InteractiveController(self.workspace, state_root=Path(self.temporary.name) / "state")
+        app = CamolApp(reopened, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+            self.assertIn("REATTACHED", rendered)
+            self.assertIn("durable transcript entries retained", rendered)
+            self.assertNotIn("retained context", rendered)
+
     async def test_confirmed_login_activates_model_and_populates_orchestrator(self):
         record = _record(
             "claude-cli",
@@ -142,7 +179,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Claude connection confirmed", rendered)
             self.assertIn("model set to claude:fable", rendered)
 
-    async def test_picker_reuses_a_connected_account_without_reauthentication(self):
+    async def test_picker_reconnects_even_when_discovery_already_reports_connected(self):
         self.controller.connections.save([
             _record(
                 "codex-cli",
@@ -161,9 +198,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("down", "enter")
             await pilot.pause()
-            app._submit.assert_not_called()
-            self.assertEqual(self.controller.session["model"], "codex")
-            self.assertIn("connected", str(app.query_one("#context").render()))
+            app._submit.assert_called_once_with("/login codex")
 
 
 if __name__ == "__main__":

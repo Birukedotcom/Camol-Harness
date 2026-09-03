@@ -45,6 +45,51 @@ class CommandResponse:
     login_argv: Optional[Tuple[str, ...]] = None
     login_provider: Optional[str] = None
     login_choices: Tuple[str, ...] = ()
+    clear_transcript: bool = False
+
+
+@dataclass(frozen=True)
+class SlashCommand:
+    command: str
+    description: str
+    takes_value: bool = False
+    run_from_palette: bool = False
+
+
+SLASH_COMMANDS = (
+    SlashCommand("/login", "Connect or reconnect Claude/Codex", run_from_palette=True),
+    SlashCommand("/skills", "Show built-in Camol protocols", run_from_palette=True),
+    SlashCommand("/help", "Show command reference", run_from_palette=True),
+    SlashCommand("/connections", "Refresh provider connection status", run_from_palette=True),
+    SlashCommand("/model", "Choose the planning model", takes_value=True),
+    SlashCommand("/effort", "Set provider reasoning effort", takes_value=True),
+    SlashCommand("/grill", "Turn a goal into a gated plan", takes_value=True),
+    SlashCommand("/plan", "Inspect the exact candidate plan", run_from_palette=True),
+    SlashCommand("/approve", "Confirm the exact visible plan", takes_value=True),
+    SlashCommand("/run", "Start an approved ready run", takes_value=True),
+    SlashCommand("/status", "Inspect session and supervisor", run_from_palette=True),
+    SlashCommand("/boxes", "List the N-box worker pool", run_from_palette=True),
+    SlashCommand("/box", "Open one read-only box view", takes_value=True),
+    SlashCommand("/events", "Read new durable run events", run_from_palette=True),
+    SlashCommand("/history", "Show retained conversation history", run_from_palette=True),
+    SlashCommand("/clear", "Clear only this terminal view", run_from_palette=True),
+    SlashCommand("/btw", "Attach durable out-of-band context", takes_value=True),
+    SlashCommand("/drain", "Pause new task admission"),
+    SlashCommand("/resume", "Resume a waiting supervisor"),
+    SlashCommand("/stop", "Drain and stop the supervisor"),
+    SlashCommand("/quit", "Detach this terminal client"),
+)
+
+
+BUILTIN_PROTOCOLS = """BUILT-IN PROTOCOLS
+  ■ grill       goal → constraints → invariants → task graph → evaluator → limits
+  ■ debugger    observed behavior → target behavior → counterexample → regression eval
+  ■ evidence    commands, tools, transcripts, diffs, usage, claims, and verification
+  ■ refine      bounded retry after a red evaluator; completion still requires green proof
+  ■ readiness   plan, workspace, authority, capacity, provider, evaluator, and freshness gates
+
+These are durable Camol protocols, not hidden provider prompts. Provider-native
+skills and slash commands are not imported into the planning-only orchestrator."""
 
 
 HELP = """Commands
@@ -60,6 +105,9 @@ HELP = """Commands
   /effort LEVEL            low | medium | high | xhigh | max
   /login [claude|codex]    choose an account with arrows, or name it directly
   /connections             read-only connection discovery (not task readiness)
+  /skills                  show built-in planning/debug/evidence protocols
+  /history                 show retained conversation history
+  /clear                   clear this terminal view; durable state is preserved
   /btw NOTE                durable out-of-band note; never mutates a frozen plan
   /events                  show new append-only events since this client cursor
   /drain | /resume         pause admission or resume a waiting supervisor
@@ -221,6 +269,7 @@ class InteractiveController:
         login_argv: Optional[Sequence[str]] = None,
         login_provider: Optional[str] = None,
         login_choices: Sequence[str] = (),
+        clear_transcript: bool = False,
         kind: str = "notice",
     ) -> CommandResponse:
         for message in messages:
@@ -231,6 +280,7 @@ class InteractiveController:
             login_argv=tuple(login_argv) if login_argv else None,
             login_provider=login_provider,
             login_choices=tuple(login_choices),
+            clear_transcript=clear_transcript,
         )
 
     def handle(self, raw: str, *, on_chunk: Optional[Callable[[str], None]] = None) -> CommandResponse:
@@ -252,7 +302,10 @@ class InteractiveController:
                 effort=self.session["effort"], workspace=self.workspace, on_chunk=on_chunk,
             )
             identity = "{} -> {}".format(reply.requested_model or "default", reply.resolved_model or "unreported")
-            return self._respond(reply.text, "model identity: {} ({})".format(identity, reply.provider), kind="conversation")
+            identity_message = "model identity: {} ({})".format(identity, reply.provider)
+            self._persist_message("orchestrator", reply.text, kind="conversation")
+            self._persist_message("system", identity_message, kind="notice")
+            return CommandResponse(messages=(reply.text, identity_message))
         except (
             InteractiveError, PlanningError, ConversationError, ConnectionError, ProviderError,
             SupervisorError, SessionError, WorkspaceError, RunbookError, OSError, ValueError,
@@ -267,7 +320,7 @@ class InteractiveController:
         command = parts[0].lower()
         arguments = parts[1:]
         if command == "/help":
-            return self._respond(HELP)
+            return CommandResponse(messages=(HELP,))
         if command == "/quit":
             return self._respond("Client detached. The supervisor, if running, was not stopped.", exit_client=True)
         if command == "/grill":
@@ -314,6 +367,19 @@ class InteractiveController:
             return self._respond("effort set to {}".format(arguments[0]))
         if command == "/connections":
             return self._connections()
+        if command == "/skills":
+            if arguments:
+                raise InteractiveError("usage: /skills")
+            return CommandResponse(messages=(BUILTIN_PROTOCOLS,))
+        if command == "/history":
+            return self._history(arguments)
+        if command == "/clear":
+            if arguments:
+                raise InteractiveError("usage: /clear")
+            return CommandResponse(
+                messages=("Terminal view cleared. Durable conversation, plan, run, and evidence state were preserved.",),
+                clear_transcript=True,
+            )
         if command == "/login":
             if not arguments:
                 return self._respond(
@@ -439,6 +505,13 @@ class InteractiveController:
         connection_id = {"claude": "claude-cli", "codex": "codex-cli"}.get(provider)
         if connection_id is None:
             raise InteractiveError("login confirmation supports claude or codex")
+        if login_returncode != 0:
+            return self._respond(
+                "{} login did not complete (exit={}); the active model was not changed.".format(
+                    provider.title(), login_returncode
+                ),
+                kind="error",
+            )
         record = next(
             (item for item in self.connections.load() if item["connection_id"] == connection_id),
             None,
@@ -465,6 +538,30 @@ class InteractiveController:
             "{} connection confirmed.".format(provider.title()),
             "Active planning model set to {}.".format(selection),
         )
+
+    def _history(self, arguments: Sequence[str]) -> CommandResponse:
+        if len(arguments) > 1:
+            raise InteractiveError("usage: /history [COUNT]")
+        count = 20
+        if arguments:
+            try:
+                count = int(arguments[0])
+            except ValueError as error:
+                raise InteractiveError("history count must be an integer from 1 to 100") from error
+            if not 1 <= count <= 100:
+                raise InteractiveError("history count must be an integer from 1 to 100")
+        # The current /history command was persisted before dispatch. Exclude it
+        # so asking to inspect history does not make itself the newest result.
+        retained = self.session["messages"][:-1][-count:]
+        if not retained:
+            return CommandResponse(messages=("No earlier durable transcript entries.",))
+        labels = {"human": "you", "orchestrator": "orchestrator", "system": "camol"}
+        lines = ["DURABLE HISTORY — latest {} entr{}".format(
+            len(retained), "y" if len(retained) == 1 else "ies"
+        )]
+        for item in retained:
+            lines.append("{} > {}".format(labels[item["role"]], item["content"][:4_000]))
+        return CommandResponse(messages=("\n".join(lines),))
 
     def _control(self, command: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return asyncio.run(send_control_v2(

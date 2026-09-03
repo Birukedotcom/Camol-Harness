@@ -34,6 +34,13 @@ writer and keeps running.
 9. `/quit` detaches. Running `camol` again in the same repository reloads the session
    and reconnects. `/stop` drains and stops the supervisor without deleting evidence.
 
+Enter sends the composer. Shift+Enter or Ctrl+J inserts a newline. Typing `/` opens
+the keyboard command palette; safe inspection commands execute when selected, while
+commands needing values return to the composer. `/skills` shows the built-in Camol
+protocols. `/history [COUNT]` displays retained transcript entries, and `/clear`
+clears only the current terminal surface. A reopened client starts with an explicit
+reattach summary and does not flood the new terminal with old output.
+
 Changing `/model` or `/effort` after a proposal clears that proposal and its approval.
 `/btw` is durable context but intentionally cannot mutate a frozen plan. If a note
 changes scope, an invariant, a task, or an evaluator, run `/grill` again and approve
@@ -71,12 +78,18 @@ lease authority. `/connections` records only:
 It does not read, copy, parse, or store provider credential caches. On startup, the
 TUI refreshes this inventory in a disposable background thread; `↻` means probing,
 not ready. `/login` opens a keyboard picker containing Claude Code and Codex CLI in
-V0. A disconnected selection suspends the TUI and gives the terminal directly to
-`claude auth login` or `codex login`, so the provider can print/open its own URL and
-own the browser session. Camol then runs the provider's status probe, writes the
-result to the orchestrator transcript, refreshes the filled connection glyph, and
-shows the active model in the top rail. An already connected selection skips the
-browser flow. A login never changes the model embedded in a frozen or running plan.
+V0. Every selection suspends the TUI and gives the terminal directly to
+`claude auth login` or `codex login`, even when an earlier discovery record is green,
+so the provider can print/open its own URL and own the browser session. Camol then
+runs the provider's status probe, writes the result to the orchestrator transcript,
+refreshes the filled connection glyph, and shows the active model in the top rail.
+A cancelled or failed native flow cannot reuse an older green record as a new login
+confirmation. A login never changes the model embedded in a frozen or running plan.
+
+Normal messages are sent to the selected planning-only provider and streamed into
+the orchestrator pane. Camol retains real human/orchestrator dialogue for continuity,
+but slash commands, status dumps, and model-identity notices are excluded from the
+provider context so operational UI traffic cannot crowd out the planning exchange.
 
 Task readiness is established later by the kernel and includes the exact plan,
 workspace revision, evaluator bundle, authority, capacity reservation, sandbox,

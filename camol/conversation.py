@@ -59,7 +59,13 @@ def parse_selection(value: str) -> ProviderSelection:
 
 def _prompt(message: str, history: Sequence[Mapping[str, str]]) -> str:
     transcript = []
-    for item in history[-20:]:
+    conversation = [
+        item
+        for item in history
+        if item.get("kind", "conversation") == "conversation"
+        and not str(item.get("content", "")).startswith("model identity:")
+    ]
+    for item in conversation[-20:]:
         role = item.get("role")
         content = item.get("content")
         if role in {"human", "orchestrator"} and isinstance(content, str):

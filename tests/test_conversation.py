@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from camol.conversation import ConversationError, _environment, converse, parse_selection, provider_argv
+from camol.conversation import ConversationError, _environment, _prompt, converse, parse_selection, provider_argv
 
 
 class ConversationTests(unittest.TestCase):
@@ -22,6 +22,23 @@ class ConversationTests(unittest.TestCase):
         for value in ("claude:--dangerous", "unknown:model", "local"):
             with self.subTest(value=value), self.assertRaises(ConversationError):
                 parse_selection(value)
+
+    def test_provider_context_contains_dialogue_but_not_slash_command_noise(self):
+        prompt = _prompt(
+            "next question",
+            [
+                {"role": "human", "content": "/connections", "kind": "command"},
+                {"role": "system", "content": "connection details", "kind": "notice"},
+                {"role": "human", "content": "design the API", "kind": "conversation"},
+                {"role": "orchestrator", "content": "Which invariant?", "kind": "conversation"},
+                {"role": "orchestrator", "content": "model identity: default -> old", "kind": "conversation"},
+            ],
+        )
+        self.assertNotIn("/connections", prompt)
+        self.assertNotIn("connection details", prompt)
+        self.assertNotIn("model identity", prompt)
+        self.assertIn("design the API", prompt)
+        self.assertIn("Which invariant?", prompt)
 
     def test_claude_conversation_is_planning_only_and_parses_identity(self):
         payload = {
