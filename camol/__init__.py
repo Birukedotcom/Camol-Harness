@@ -16,7 +16,13 @@ from .readiness import (
     WorkspaceReceipt,
     assess_ready_to_lease,
 )
-from .runbook import RunbookError, load_runbook, migrate_runbook_v1_to_v2, validate_runbook
+from .runbook import (
+    RunbookError,
+    load_runbook,
+    migrate_runbook_v1_to_v2,
+    migrate_runbook_v2_to_v3,
+    validate_runbook,
+)
 from .schema import SchemaError, canonical_digest, canonical_json_bytes
 from .store import SQLiteEventStore
 
@@ -42,5 +48,6 @@ __all__ = [
     "compare_vectors",
     "load_runbook",
     "migrate_runbook_v1_to_v2",
+    "migrate_runbook_v2_to_v3",
     "validate_runbook",
 ]

@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from .admission import AdmissionBundle, AdmissionController, AdmissionError
-from .adapter import AdapterError, ProcessAgentAdapter
+from .adapter import AdapterError, create_agent_adapter
 from .artifacts import ArtifactError, ArtifactRef, ArtifactStore
 from .orchestrator import Orchestrator, StateTransitionError
 from .readiness import WaitingReason
 from .sandbox import SandboxError, select_backend
 from .workspace import WorkspaceError, WorkspaceHandle, WorkspaceManager
+from .providers import ProviderError, load_model_profile
 
 
 class HarnessRunner:
@@ -25,6 +26,26 @@ class HarnessRunner:
 
     def _agent_for(self, state: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
         return state["agents"][agent_id]
+
+    @staticmethod
+    def _provider_cost_remaining(state: Dict[str, Any], agent: Dict[str, Any], task_id: str, workspace: Path) -> Optional[int]:
+        if agent["adapter"]["kind"] == "process":
+            return None
+        profile = load_model_profile(workspace, agent["adapter"]["profile"])
+        run_used_micros = 0
+        task_used_micros = 0
+        for evidence in state.get("evidence", {}).values():
+            if evidence.get("kind") != "model_usage":
+                continue
+            amount = evidence.get("data", {}).get("cost_usd_micros", 0)
+            if type(amount) is not int or amount < 0:
+                continue
+            run_used_micros += amount
+            if evidence.get("task_id") == task_id:
+                task_used_micros += amount
+        run_remaining = max(0, profile.max_run_usd_cents - (run_used_micros + 9_999) // 10_000)
+        task_remaining = max(0, profile.max_task_usd_cents - (task_used_micros + 9_999) // 10_000)
+        return min(profile.max_turn_usd_cents, task_remaining, run_remaining)
 
     async def _bounded_stream(self, stream: asyncio.StreamReader, limit: int = 1 << 20):
         retained = bytearray()
@@ -305,7 +326,8 @@ class HarnessRunner:
         execution_workspace = self._execution_workspace(run_id, assignment)
         if self.state_dir is not None:
             bundle = self._admission_for(state, assignment)
-            adapter = ProcessAgentAdapter(
+            adapter = create_agent_adapter(
+                agent["adapter"]["kind"],
                 execution_workspace,
                 run_id,
                 state_dir=self.state_dir,
@@ -315,7 +337,7 @@ class HarnessRunner:
                 redactor=self.orchestrator.redactor,
             )
         else:
-            adapter = ProcessAgentAdapter(execution_workspace, run_id)
+            adapter = create_agent_adapter(agent["adapter"]["kind"], execution_workspace, run_id)
         task_status = state["tasks"][assignment["task_id"]]["status"]
         if task_status == "leased":
             if self.workspaces is not None:
@@ -351,8 +373,9 @@ class HarnessRunner:
                     assignment,
                     packet,
                     task["turn_count"] + 1,
+                    cost_budget_cents=self._provider_cost_remaining(state, agent, task["id"], execution_workspace),
                 )
-            except (AdapterError, SandboxError, ArtifactError, OSError) as error:
+            except (AdapterError, SandboxError, ArtifactError, ProviderError, OSError) as error:
                 for observed in getattr(error, "observed_evidence", ()):
                     self._record_observed(run_id, assignment, observed)
                 self.orchestrator.retry_or_block(run_id, assignment, "adapter_error: {}".format(error))

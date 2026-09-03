@@ -61,6 +61,8 @@ EVIDENCE_KINDS = frozenset(
     {
         "command",
         "tool_call",
+        "model_request",
+        "model_usage",
         "transcript",
         "environment",
         "artifact",

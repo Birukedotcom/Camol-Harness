@@ -9,13 +9,14 @@ complete runnable example.
 
 ## Schema versions
 
-Two `schema_version` values are readable. Any other value is rejected with
+Three `schema_version` values are readable. Any other value is rejected with
 `unsupported schema_version`.
 
 | Version | Status | Differences |
 |---|---|---|
 | `1` | frozen; digests pinned in `tests/test_runbook.py` | Accepts the legacy `run.max_agents` alias, ignores unknown fields, and has no readiness fields. Normalization is byte-identical to the pre-M0 kernel, so existing frozen plans still resume. |
-| `2` | current | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, rejects booleans in integer fields, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
+| `2` | frozen | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, rejects booleans in integer fields, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
+| `3` | current | Preserves v2 semantics and adds a provider-neutral hosted-adapter shape: `kind`, workspace-relative `profile`, and `timeout_seconds`. Process adapters retain `kind`, `argv`, and `timeout_seconds`. |
 
 A v1 file that contains a v2 field (`readiness_policy` or `trust_tier`) is rejected
 rather than partially reinterpreted. Upgrading is explicit:
@@ -33,6 +34,29 @@ v2 = migrate_runbook_v1_to_v2(
 Nothing is defaulted during migration; every agent needs a trust tier and the
 readiness policy must be supplied. The migrated plan has a different digest from its
 v1 source because it freezes more decisions.
+
+Migration from v2 to v3 is also explicit:
+
+```python
+from camol.runbook import migrate_runbook_v2_to_v3
+
+v3 = migrate_runbook_v2_to_v3(v2)
+```
+
+For existing process workers no new choices are defaulted. To use Claude CLI,
+replace that worker's adapter only after migration:
+
+```json
+{
+  "kind": "claude_cli",
+  "profile": "profiles/models/claude-fable-5-1.yaml",
+  "timeout_seconds": 1800
+}
+```
+
+Hosted adapters cannot supply arbitrary `argv`; invocation authority lives in
+the versioned profile and adapter implementation. See
+[Provider and model adapters](provider-adapters.md).
 
 The v2 additions look like this:
 

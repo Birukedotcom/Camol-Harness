@@ -2,9 +2,10 @@
 
 import asyncio
 import hashlib
+import importlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from .artifacts import ArtifactRef, ArtifactStore
@@ -64,6 +65,8 @@ class ProcessAgentAdapter:
         assignment: Dict[str, str],
         packet: Dict[str, Any],
         turn_number: int,
+        *,
+        cost_budget_cents: Optional[int] = None,
     ) -> Dict[str, Any]:
         box = self._inside_workspace(agent["box"])
         packet_dir = self.state_dir / "packets" / self.run_id / assignment["task_id"]
@@ -308,7 +311,6 @@ class ProcessAgentAdapter:
                 )
         result["_camol_observed_evidence"] = observed_evidence
         return result
-
     def _store_content(
         self,
         content: bytes,
@@ -385,3 +387,28 @@ class ProcessAgentAdapter:
             raise AdapterError("a complete result must contain a summary")
         if result["status"] == "blocked" and not isinstance(result.get("blocker"), dict):
             raise AdapterError("a blocked result must contain a blocker object")
+
+
+_ADAPTER_FACTORIES: Dict[str, Callable[..., ProcessAgentAdapter]] = {"process": ProcessAgentAdapter}
+_BUNDLED_ADAPTER_MODULES = ("camol.claude_adapter",)
+
+
+def register_agent_adapter(kind: str, factory: Callable[..., ProcessAgentAdapter]) -> None:
+    """Register an adapter without adding provider logic to the runner."""
+    if not kind or not callable(factory):
+        raise AdapterError("adapter registration requires a kind and callable factory")
+    existing = _ADAPTER_FACTORIES.get(kind)
+    if existing is not None and existing is not factory:
+        raise AdapterError("execution adapter {!r} is already registered".format(kind))
+    _ADAPTER_FACTORIES[kind] = factory
+
+
+def create_agent_adapter(kind: str, *args: Any, **kwargs: Any) -> ProcessAgentAdapter:
+    """Provider-neutral adapter registry boundary used by the runner."""
+    if kind not in _ADAPTER_FACTORIES:
+        for module in _BUNDLED_ADAPTER_MODULES:
+            importlib.import_module(module)
+    factory = _ADAPTER_FACTORIES.get(kind)
+    if factory is None:
+        raise AdapterError("no execution adapter registered for {!r}".format(kind))
+    return factory(*args, **kwargs)

@@ -9,6 +9,7 @@ from camol.runbook import (
     SUPPORTED_SCHEMA_VERSIONS,
     RunbookError,
     migrate_runbook_v1_to_v2,
+    migrate_runbook_v2_to_v3,
     runbook_digest,
     validate_runbook,
 )
@@ -136,9 +137,9 @@ class RunbookV1CompatibilityTests(unittest.TestCase):
             validate_runbook(leaked)
 
     def test_unknown_schema_versions_are_rejected_clearly(self):
-        self.assertEqual(SUPPORTED_SCHEMA_VERSIONS, (1, 2))
-        self.assertEqual(LATEST_SCHEMA_VERSION, 2)
-        for version in (0, 3, "1", None, True, 1.0):
+        self.assertEqual(SUPPORTED_SCHEMA_VERSIONS, (1, 2, 3))
+        self.assertEqual(LATEST_SCHEMA_VERSION, 3)
+        for version in (0, 4, "1", None, True, 1.0):
             invalid = copy.deepcopy(self.raw)
             invalid["schema_version"] = version
             with self.assertRaisesRegex(RunbookError, "unsupported schema_version"):
@@ -267,6 +268,43 @@ class RunbookV2Tests(unittest.TestCase):
         tolerant = copy.deepcopy(self.v1)
         tolerant["tasks"][0]["max_attempts"] = True
         self.assertEqual(validate_runbook(tolerant)["tasks"][0]["max_attempts"], True)
+
+
+class RunbookV3Tests(unittest.TestCase):
+    def setUp(self):
+        raw = json.loads((ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8"))
+        tiers = {agent["id"]: "developer_trusted" for agent in raw["agents"]}
+        self.v2 = migrate_runbook_v1_to_v2(
+            raw, readiness_policy={"receipt_ttl_seconds": 300}, trust_tiers=tiers,
+        )
+
+    def test_process_migration_is_explicit_deterministic_and_preserves_v2(self):
+        snapshot = copy.deepcopy(self.v2)
+        v3 = migrate_runbook_v2_to_v3(self.v2)
+        self.assertEqual(self.v2, snapshot)
+        self.assertEqual(v3["schema_version"], 3)
+        self.assertEqual(validate_runbook(copy.deepcopy(v3)), v3)
+        self.assertNotEqual(runbook_digest(v3), runbook_digest(self.v2))
+        with self.assertRaisesRegex(RunbookError, "requires a schema_version 2"):
+            migrate_runbook_v2_to_v3(v3)
+
+    def test_hosted_adapter_owns_only_a_profile_reference(self):
+        v3 = migrate_runbook_v2_to_v3(self.v2)
+        v3["agents"][0]["adapter"] = {
+            "kind": "claude_cli",
+            "profile": "profiles/models/claude-fable-5-1.yaml",
+            "timeout_seconds": 900,
+        }
+        normalized = validate_runbook(v3)
+        self.assertNotIn("argv", normalized["agents"][0]["adapter"])
+        with_argv = copy.deepcopy(v3)
+        with_argv["agents"][0]["adapter"]["argv"] = ["claude"]
+        with self.assertRaisesRegex(RunbookError, "argv is not accepted"):
+            validate_runbook(with_argv)
+        v2 = copy.deepcopy(self.v2)
+        v2["agents"][0]["adapter"] = copy.deepcopy(v3["agents"][0]["adapter"])
+        with self.assertRaisesRegex(RunbookError, "unknown fields: profile"):
+            validate_runbook(v2)
 
 
 if __name__ == "__main__":

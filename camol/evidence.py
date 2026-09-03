@@ -29,6 +29,8 @@ EPISTEMIC_STATUSES = frozenset(
 GATE_STATUSES = {
     "command": frozenset({"EXECUTED"}),
     "tool_call": frozenset({"EXECUTED"}),
+    "model_request": frozenset({"EXECUTED"}),
+    "model_usage": frozenset({"OBSERVED"}),
     "transcript": frozenset({"OBSERVED"}),
     "environment": frozenset({"OBSERVED"}),
     "artifact": frozenset({"OBSERVED", "DERIVED"}),

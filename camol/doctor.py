@@ -52,6 +52,7 @@ from .readiness import (
 )
 from .runbook import load_runbook, runbook_digest
 from .schema import SchemaError, canonical_digest, parse_timestamp
+from .providers import ProviderError, load_model_profile
 
 __all__ = ["DoctorOptions", "DoctorReport", "run_doctor", "EXIT_READY", "EXIT_NOT_READY", "EXIT_PROBE_FAILURE"]
 
@@ -292,11 +293,24 @@ def _candidate(
         workspace_digest=workspace.digest(),
         bound_at=context.observed_at(),
     )
+    profile = None
+    if agent["adapter"]["kind"] != "process":
+        try:
+            profile = load_model_profile(context.workspace, agent["adapter"]["profile"])
+        except ProviderError:
+            profile = None
+    capabilities = list(PROCESS_ADAPTER_CAPABILITIES)
+    if profile is not None and profile.network_destinations:
+        capabilities.append("network")
+    if profile is not None and profile.credential_refs:
+        capabilities.append("credential")
     authority = AuthorityPolicy(
         run_id=run_id,
         task_id=task["id"],
-        required_capabilities=PROCESS_ADAPTER_CAPABILITIES,
+        required_capabilities=capabilities,
         filesystem_paths=[agent["box"]],
+        network_destinations=profile.network_destinations if profile else (),
+        credential_refs=profile.credential_refs if profile else (),
         trust_tier=agent.get("trust_tier", PROCESS_ADAPTER_TRUST_TIER),
     )
     policy = adapter_policy(agent, context)
@@ -329,7 +343,9 @@ def _candidate(
     status = "green" if results and len(results) == len(required_probes) and all(result.status == "green" for result in results) else "red"
     adapter_outcome = outcomes.get("adapter." + sanitize_identifier(agent["id"]))
     adapter_facts = adapter_outcome.facts if adapter_outcome else {}
-    resolved_binary = adapter_facts.get("resolved_binary") or adapter_facts.get("binary_path") or agent["adapter"]["argv"][0]
+    resolved_binary = adapter_facts.get("resolved_binary") or adapter_facts.get("binary_path") or (
+        agent["adapter"]["argv"][0] if "argv" in agent["adapter"] else agent["adapter"]["kind"]
+    )
     runtime_id = sanitize_identifier("{}@{}".format(Path(str(resolved_binary)).name, adapter_facts.get("version") or "unverified"), "runtime-unverified")
     receipt = ReadinessReceipt(
         receipt_id="doctor-{}-{}".format(sanitize_identifier(task["id"]), sanitize_identifier(agent["id"])),
@@ -339,7 +355,7 @@ def _candidate(
         box_id=box_id,
         worker_id=agent["id"],
         target_id=context.target_id,
-        transport_id="local-process",
+        transport_id="local-process" if agent["adapter"]["kind"] == "process" else "local-provider-cli",
         runtime_id=runtime_id,
         box_binding_digest=binding.digest(),
         workspace_digest=workspace.digest(),
@@ -347,7 +363,8 @@ def _candidate(
         authority_digest=authority.digest(),
         probe_policy_digest=probe_policy.digest(),
         adapter_kind=agent["adapter"]["kind"],
-        requested_model=None,
+        requested_model=profile.requested_model if profile else None,
+        credential_scopes=profile.credential_refs if profile else (),
         reservation_id=None,
         probes=results,
         status=status,

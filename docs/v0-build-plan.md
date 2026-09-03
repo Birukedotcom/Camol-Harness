@@ -305,6 +305,14 @@ terminal scrollback, and seeded secrets do not appear in exported evidence.
 Goal: execute the first real bounded agent turn without teaching the kernel about a
 specific vendor.
 
+Status (`codex/v0-complete`): deterministic implementation complete. Schema v3,
+strict model profiles and capability receipts, explicit spend-capped preflight,
+Claude CLI stream adapter, cumulative budget enforcement, requested/resolved model
+evidence, tool/transcript capture, and fake-provider tests are implemented. The
+shipped profile stays `SPECULATIVE`: current CLI/provider evidence names Fable 5,
+not a distinct Fable 5.1 identifier. The billable live smoke is deliberately
+operator opt-in and is not part of release-test determinism.
+
 Work:
 
 - Implement the versioned Claude CLI adapter on top of the sandbox and packet/result

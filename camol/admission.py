@@ -33,6 +33,7 @@ from .readiness import (
     assess_ready_to_lease,
 )
 from .sandbox import SandboxError, SandboxPolicy, select_backend, system_read_paths
+from .providers import ModelProfile, load_model_profile
 from .schema import canonical_digest, require_bool, require_digest
 from .workspace import WorkspaceHandle, WorkspaceManager
 
@@ -197,20 +198,32 @@ class AdmissionController:
     def _sandbox_policy(self, handle: WorkspaceHandle, task: Dict[str, Any], agent: Dict[str, Any]) -> SandboxPolicy:
         packet_dir = self.state_dir / "packets" / _safe(self.runbook["run"]["id"]) / _safe(task["id"])
         packet_dir.mkdir(parents=True, exist_ok=True)
-        argv0 = agent["adapter"]["argv"][0]
+        profile: Optional[ModelProfile] = None
+        if agent["adapter"]["kind"] == "process":
+            argv0 = agent["adapter"]["argv"][0]
+        else:
+            profile = load_model_profile(handle.path, agent["adapter"]["profile"])
+            if profile.adapter_kind != agent["adapter"]["kind"]:
+                raise AdmissionError("adapter kind does not match the frozen model profile")
+            argv0 = profile.runtime_binary
         executable = shutil.which(argv0) if "/" not in argv0 else str(handle.path / argv0)
         trust_tier = agent.get("trust_tier", "developer_trusted")
-        # v0 local interpreters require no network. Hosted adapters add an
-        # explicit unrestricted network grant only through their M5 profile.
-        network: Tuple[str, ...] = ()
+        network: Tuple[str, ...] = profile.network_destinations if profile else ()
+        credential_refs: Tuple[str, ...] = profile.credential_refs if profile else ()
+        credential_reads = ()
+        if profile:
+            home = str(Path.home())
+            credential_reads = tuple(
+                item.replace("{home}", home) for item in profile.credential_read_paths
+            )
         return SandboxPolicy(
             policy_id="sandbox-{}-{}-{}".format(_safe(self.runbook["run"]["id"]), _safe(task["id"]), _safe(agent["id"])),
             workspace=str(handle.path),
-            read_paths=(str(handle.path), str(packet_dir)) + system_read_paths(executable),
+            read_paths=(str(handle.path), str(packet_dir)) + system_read_paths(executable) + credential_reads,
             write_paths=(str(handle.path), str(packet_dir)),
             environment_names=("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"),
             network_destinations=network,
-            credential_refs=(),
+            credential_refs=credential_refs,
             trust_tier=trust_tier,
         )
 
@@ -242,6 +255,8 @@ class AdmissionController:
         capabilities = ["execute", "read", "write"]
         if sandbox_policy.network_destinations:
             capabilities.append("network")
+        if sandbox_policy.credential_refs:
+            capabilities.append("credential")
         authority = AuthorityPolicy(
             run_id=binding.run_id,
             task_id=binding.task_id,
@@ -269,7 +284,10 @@ class AdmissionController:
             **binding.subject(),
             concurrency_slots=1,
             max_tokens=self.runbook["run"]["token_policy"]["max_tokens_per_turn"],
-            max_usd_cents=None,
+            max_usd_cents=(
+                load_model_profile(handle.path, agent["adapter"]["profile"]).max_turn_usd_cents
+                if agent["adapter"]["kind"] != "process" else None
+            ),
             status="reserved",
             reserved_at=observed_at,
             expires_at=expires_at,
@@ -325,7 +343,9 @@ class AdmissionController:
         status = "green" if results and all(result.status == "green" for result in results) else "red"
         adapter_outcome = outcomes.get("adapter." + sanitize_identifier(agent["id"]))
         facts = adapter_outcome.facts if adapter_outcome else {}
-        runtime = facts.get("resolved_binary") or facts.get("binary_path") or agent["adapter"]["argv"][0]
+        runtime = facts.get("resolved_binary") or facts.get("binary_path") or (
+            agent["adapter"]["argv"][0] if "argv" in agent["adapter"] else agent["adapter"]["kind"]
+        )
         runtime_id = sanitize_identifier(
             "{}@{}".format(Path(str(runtime)).name, facts.get("version") or "unverified"), "runtime-unverified"
         )
@@ -338,7 +358,7 @@ class AdmissionController:
             box_id=binding.box_id,
             worker_id=binding.worker_id,
             target_id=binding.target_id,
-            transport_id="local-process",
+            transport_id="local-process" if agent["adapter"]["kind"] == "process" else "local-provider-cli",
             runtime_id=runtime_id,
             box_binding_digest=binding.digest(),
             workspace_digest=workspace.digest(),
@@ -346,8 +366,11 @@ class AdmissionController:
             authority_digest=authority.digest(),
             probe_policy_digest=probe_policy.digest(),
             adapter_kind=agent["adapter"]["kind"],
-            requested_model=None,
-            credential_scopes=(),
+            requested_model=(
+                load_model_profile(handle.path, agent["adapter"]["profile"]).requested_model
+                if agent["adapter"]["kind"] != "process" else None
+            ),
+            credential_scopes=sandbox_policy.credential_refs,
             reservation_id=reservation.reservation_id,
             probes=results,
             status=status,

@@ -1,6 +1,6 @@
 """Loading, normalization, and validation for executable JSON runbooks.
 
-Two schema versions are readable:
+Three schema versions are readable:
 
 * ``schema_version: 1`` is the pre-M0 contract. Its normalization is unchanged so
   every previously frozen plan digest still reproduces byte-for-byte, including
@@ -11,6 +11,9 @@ Two schema versions are readable:
   Those fields are contract data only: the M0 scheduler records them in the
   frozen plan but does not yet enforce them. There is deliberately no field that
   disables readiness proof; READY_TO_LEASE is not plan-configurable.
+* ``schema_version: 3`` adds provider-neutral adapter profile references.  A
+  process adapter keeps its v2 shape; a hosted adapter names a versioned profile
+  whose digest is subsequently bound by readiness evidence.
 
 A v1 document is never reinterpreted as v2 implicitly. Use
 :func:`migrate_runbook_v1_to_v2` with explicit values for every new field.
@@ -32,8 +35,8 @@ class RunbookError(ValueError):
 
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-SUPPORTED_SCHEMA_VERSIONS = (1, 2)
-LATEST_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)
+LATEST_SCHEMA_VERSION = 3
 
 _ROOT_FIELDS_V2 = ("schema_version", "run", "rules", "agents", "tasks")
 _RUN_FIELDS_V2 = ("id", "objective", "max_concurrency", "completion", "token_policy", "readiness_policy")
@@ -42,6 +45,7 @@ _READINESS_POLICY_FIELDS = ("receipt_ttl_seconds",)
 _RULE_FIELDS = ("id", "text", "enforcement")
 _AGENT_FIELDS_V2 = ("id", "role", "box", "capabilities", "adapter", "trust_tier")
 _ADAPTER_FIELDS = ("kind", "argv", "timeout_seconds")
+_ADAPTER_FIELDS_V3 = ("kind", "argv", "profile", "timeout_seconds")
 _TASK_FIELDS = (
     "id",
     "goal",
@@ -243,10 +247,28 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             )
         adapter = _object(agent.get("adapter"), "agents[{}].adapter".format(index))
         if strict:
-            _reject_unknown(adapter, _ADAPTER_FIELDS, "agents[{}].adapter".format(index))
-        if adapter.get("kind") != "process":
-            raise RunbookError("agents[{}].adapter.kind must be process".format(index))
-        argv = _string_list(adapter.get("argv"), "agents[{}].adapter.argv".format(index), allow_empty=False)
+            _reject_unknown(
+                adapter,
+                _ADAPTER_FIELDS_V3 if version >= 3 else _ADAPTER_FIELDS,
+                "agents[{}].adapter".format(index),
+            )
+        kind = adapter.get("kind")
+        if kind not in ({"process", "claude_cli"} if version >= 3 else {"process"}):
+            raise RunbookError(
+                "agents[{}].adapter.kind must be {}".format(
+                    index, "process or claude_cli" if version >= 3 else "process"
+                )
+            )
+        argv = None
+        profile = None
+        if kind == "process":
+            if version >= 3 and "profile" in adapter:
+                raise RunbookError("agents[{}].adapter.profile is only valid for hosted adapters".format(index))
+            argv = _string_list(adapter.get("argv"), "agents[{}].adapter.argv".format(index), allow_empty=False)
+        else:
+            if "argv" in adapter:
+                raise RunbookError("agents[{}].adapter.argv is not accepted for claude_cli; the profile owns invocation policy".format(index))
+            profile = _relative_path(adapter.get("profile"), "agents[{}].adapter.profile".format(index))
         timeout_seconds = adapter.get("timeout_seconds", 1800)
         if strict:
             _strict_int(timeout_seconds, "agents[{}].adapter.timeout_seconds".format(index), minimum=1)
@@ -261,11 +283,10 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
                     "agents[{}].capabilities".format(index),
                     allow_empty=False,
                 ),
-                "adapter": {
-                    "kind": "process",
-                    "argv": argv,
-                    "timeout_seconds": timeout_seconds,
-                },
+                "adapter": dict(
+                    {"kind": kind, "timeout_seconds": timeout_seconds},
+                    **({"argv": argv} if kind == "process" else {"profile": profile})
+                ),
         }
         if strict:
             trust_tier = agent.get("trust_tier")
@@ -446,6 +467,20 @@ def migrate_runbook_v1_to_v2(
     run["readiness_policy"] = copy.deepcopy(readiness_policy)
     for agent in migrated["agents"]:
         agent["trust_tier"] = trust_tiers[agent["id"]]
+    return validate_runbook(migrated)
+
+
+def migrate_runbook_v2_to_v3(runbook: Dict[str, Any]) -> Dict[str, Any]:
+    """Explicitly migrate a normalized or raw v2 plan to the v3 adapter schema.
+
+    Existing process adapters need no new choices, but the version change is
+    still explicit so a frozen v2 digest is never silently reinterpreted.
+    """
+    source = validate_runbook(runbook)
+    if source["schema_version"] != 2:
+        raise RunbookError("migrate_runbook_v2_to_v3 requires a schema_version 2 runbook")
+    migrated = copy.deepcopy(source)
+    migrated["schema_version"] = 3
     return validate_runbook(migrated)
 
 

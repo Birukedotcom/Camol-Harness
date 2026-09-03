@@ -47,6 +47,7 @@ adapters registered against an adapter kind, not branches in this module. All
 output passes through :class:`Redactor`.
 """
 
+import json
 import os
 import platform
 import re
@@ -294,7 +295,8 @@ def runbook_commands(runbook: Dict[str, Any], workspace: Path) -> List[Tuple[str
         commands.append(tuple(item.replace("{workspace}", str(workspace)) for item in argv))
 
     for agent in runbook["agents"]:
-        add(agent["adapter"]["argv"])
+        if "argv" in agent["adapter"]:
+            add(agent["adapter"]["argv"])
     for task in runbook["tasks"]:
         for step in task["steps"]:
             for command in step["commands"]:
@@ -679,11 +681,55 @@ class AdapterBinaryProbe(Probe):
         self.probe_id = "adapter." + sanitize_identifier(agent["id"])
 
     def config(self, context):
-        return {"argv": list(self.agent["adapter"]["argv"]), "version_allowlist": list(context.version_allowlist)}
+        adapter = self.agent["adapter"]
+        config = {"kind": adapter["kind"], "version_allowlist": list(context.version_allowlist)}
+        if adapter["kind"] == "process":
+            config["argv"] = list(adapter["argv"])
+        else:
+            config["profile"] = adapter.get("profile")
+            try:
+                from .providers import load_model_profile
+                config["profile_digest"] = load_model_profile(context.workspace, adapter["profile"]).digest()
+            except Exception as error:
+                config["profile_error"] = error.__class__.__name__
+        return config
 
     def observe(self, context):
         adapter = self.agent["adapter"]
         policy = adapter_policy(self.agent, context)
+        if adapter.get("kind") == "claude_cli":
+            try:
+                from .providers import load_model_profile
+                profile = load_model_profile(context.workspace, adapter["profile"])
+            except Exception as error:
+                return self.red(
+                    context,
+                    "Claude adapter profile is invalid: {}".format(error),
+                    reason="POLICY_DENIED",
+                    wake="repair and re-approve the versioned model profile",
+                    missing=["valid model profile"],
+                    facts={"policy": policy, "profile": adapter.get("profile")},
+                )
+            if profile.adapter_kind != "claude_cli":
+                return self.red(context, "model profile adapter kind does not match the worker", reason="POLICY_DENIED", wake="select a claude_cli profile", missing=["matching adapter profile"], facts={"profile_digest": profile.digest()})
+            resolved = context.path_binary(profile.runtime_binary)
+            facts = {
+                "policy": policy,
+                "profile_digest": profile.digest(),
+                "runtime_binary": profile.runtime_binary,
+                "resolved_binary": resolved,
+                "requested_model": profile.requested_model,
+                "maturity": profile.maturity,
+            }
+            if not resolved:
+                return self.red(context, "Claude CLI runtime is not installed on PATH", reason="NEEDS_DOWNLOAD", wake="install {} and rerun readiness".format(profile.runtime_binary), missing=[profile.runtime_binary], method="filesystem", facts=facts)
+            outcome = context.runner((resolved, "--version"), None, 20)
+            lines = (outcome.stdout or outcome.stderr).strip().splitlines()
+            version = lines[0] if outcome.exit_code == 0 and lines else None
+            facts["version"] = version
+            if not version:
+                return self.unknown(context, "Claude CLI did not return a version", reason="OPERATOR_ATTENTION", wake="repair or upgrade the Claude CLI", missing=["parseable CLI version"], command=(resolved, "--version"), facts=facts)
+            return self.green(context, "Claude CLI is installed and its version was observed; provider entitlement is checked separately", command=(resolved, "--version"), tool_version=version, facts=facts)
         if adapter.get("kind") != "process":
             return self.unknown(context, "no probe adapter registered for adapter kind {!r}".format(adapter.get("kind")), reason="OPERATOR_ATTENTION", wake="register a probe adapter for this adapter kind", missing=["probe adapter for {}".format(adapter.get("kind"))], facts={"policy": policy})
         raw = list(adapter["argv"])
@@ -829,15 +875,89 @@ class ProviderConnectionProbe(Probe):
     kind = "provider"
     required = False
 
+    VERSION = 2
+
+    def config(self, context):
+        profiles = []
+        for agent in context.runbook["agents"]:
+            if not adapter_policy(agent, context)["requires_provider_proof"]:
+                continue
+            adapter = agent["adapter"]
+            item = {"agent_id": agent["id"], "adapter_kind": adapter["kind"], "profile": adapter.get("profile")}
+            if adapter["kind"] == "claude_cli" and adapter.get("profile"):
+                try:
+                    from .providers import load_model_profile
+                    item["profile_digest"] = load_model_profile(context.workspace, adapter["profile"]).digest()
+                except Exception as error:
+                    item["profile_error"] = error.__class__.__name__
+            profiles.append(item)
+        return {"profiles": profiles, "capability_store": "<state-dir>/provider-capabilities"}
+
     def observe(self, context):
-        kinds = sorted({agent["adapter"]["kind"] for agent in context.runbook["agents"]})
-        return self.unknown(
+        hosted = [agent for agent in context.runbook["agents"] if adapter_policy(agent, context)["requires_provider_proof"]]
+        if not hosted:
+            return self.unknown(
+                context,
+                "no hosted adapter requires provider proof; this informational check is not a lease gate",
+                reason="OPERATOR_ATTENTION",
+                wake="register a hosted adapter before provider readiness is applicable",
+                missing=["hosted adapter candidate"],
+                facts={"agents": []},
+            )
+        facts = {"agents": []}
+        missing = []
+        unsupported = False
+        for agent in hosted:
+            adapter = agent["adapter"]
+            if adapter.get("kind") != "claude_cli" or not adapter.get("profile"):
+                unsupported = True
+                missing.append("provider probe adapter for {}".format(agent["id"]))
+                facts["agents"].append({"agent_id": agent["id"], "adapter_kind": adapter.get("kind"), "status": "unsupported"})
+                continue
+            try:
+                from .providers import load_model_profile, read_capability
+                profile = load_model_profile(context.workspace, adapter["profile"])
+                resolved = context.path_binary(profile.runtime_binary)
+                if not resolved:
+                    missing.append("runtime {} for {}".format(profile.runtime_binary, agent["id"]))
+                    continue
+                auth = context.runner((resolved, "auth", "status", "--json"), None, 20)
+                payload = json.loads(auth.stdout) if auth.exit_code == 0 else {}
+                authenticated = payload.get("loggedIn") is True or payload.get("authenticated") is True
+                capability = read_capability(context.state_dir, profile)
+                valid, detail = capability.valid_for(profile, context.target_id, context.now) if capability else (False, "capability receipt is missing")
+                item = {
+                    "agent_id": agent["id"],
+                    "adapter_kind": adapter["kind"],
+                    "profile_digest": profile.digest(),
+                    "requested_model": profile.requested_model,
+                    "authenticated": authenticated,
+                    "capability_receipt_digest": capability.digest() if capability else None,
+                    "resolved_model": capability.resolved_model if capability else None,
+                    "capability_valid": valid,
+                }
+                facts["agents"].append(item)
+                if not authenticated:
+                    missing.append("authenticated existing Claude CLI login for {}".format(agent["id"]))
+                if not valid:
+                    missing.append("{}: {}".format(agent["id"], detail))
+            except Exception as error:
+                missing.append("{} provider evidence: {}".format(agent["id"], error.__class__.__name__))
+        if missing:
+            emit = self.unknown if unsupported else self.red
+            return emit(
+                context,
+                "provider readiness is not proven for every hosted worker",
+                reason="AUTH_REQUIRED",
+                wake="authenticate the CLI and run `camol provider-preflight` with explicit spend approval",
+                missing=missing,
+                facts=facts,
+            )
+        return self.green(
             context,
-            "runbook declares no hosted-model connection and no provider probe adapter is registered for adapter kinds {}; provider auth and model availability are unproven, not assumed".format(", ".join(kinds)),
-            reason="AUTH_REQUIRED",
-            wake="register a provider probe adapter (M5) that checks connection, auth scope, and model entitlement without a billable request",
-            missing=["provider connection declaration", "provider probe adapter"],
-            facts={"adapter_kinds": kinds},
+            "existing CLI authentication and fresh spend-capped model capability are proven for every hosted worker",
+            method="in_process",
+            facts=facts,
         )
 
 

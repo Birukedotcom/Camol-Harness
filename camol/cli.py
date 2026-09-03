@@ -15,6 +15,8 @@ from .runbook import RunbookError, load_runbook
 from .schema import SchemaError
 from .store import SQLiteEventStore
 from .workspace import WorkspaceError, WorkspaceManager
+from .providers import ProviderError, create_claude_capability, load_model_profile
+from .probes import local_target_id
 
 
 def _write_json(value: Any) -> None:
@@ -151,6 +153,31 @@ def command_doctor(args: argparse.Namespace) -> int:
     return report.exit_code
 
 
+def command_provider_preflight(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    state_dir = Path(args.state_dir).resolve()
+    WorkspaceManager(workspace, state_dir)
+    profile = load_model_profile(workspace, args.profile)
+    receipt = create_claude_capability(
+        profile,
+        target_id=args.target_id or local_target_id(),
+        state_dir=state_dir,
+        cwd=workspace,
+        accept_spend=args.accept_spend,
+        spend_ceiling_cents=args.max_usd_cents,
+    )
+    _write_json({
+        "ready": True,
+        "profile_id": profile.profile_id,
+        "profile_digest": profile.digest(),
+        "resolved_model": receipt.resolved_model,
+        "receipt_digest": receipt.digest(),
+        "expires_at": receipt.expires_at,
+        "cost_usd_micros": receipt.cost_usd_micros,
+    })
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="camol", description="Persistent plan-driven agent orchestration harness"
@@ -223,6 +250,24 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--require-service", action="append", metavar="HOST:PORT", help="read-only TCP reachability check; repeatable")
     doctor.add_argument("--target-id", help="override the local target identity (default: local:<hostname>)")
     doctor.set_defaults(handler=command_doctor)
+
+    preflight = subparsers.add_parser(
+        "provider-preflight",
+        help="explicitly spend up to a frozen ceiling to prove provider/model capability",
+    )
+    preflight.add_argument("--profile", required=True, help="workspace-relative versioned model profile")
+    preflight.add_argument("--workspace", required=True, help="clean source repository root")
+    preflight.add_argument("--state-dir", required=True, help="external Camol state directory")
+    preflight.add_argument("--target-id", help="target identity (default: local host)")
+    preflight.add_argument(
+        "--accept-spend", action="store_true",
+        help="authorize this one no-tools model request up to the profile's max_turn_usd_cents",
+    )
+    preflight.add_argument(
+        "--max-usd-cents", type=int, default=10,
+        help="maximum spend for this preflight (default 10; also capped by the profile)",
+    )
+    preflight.set_defaults(handler=command_provider_preflight)
     return parser
 
 
@@ -233,7 +278,7 @@ def main(argv: Any = None) -> int:
         return args.handler(args)
     except (
         ArtifactError, RunbookError, SchemaError, StateTransitionError,
-        WorkspaceError, OSError, json.JSONDecodeError,
+        WorkspaceError, ProviderError, OSError, json.JSONDecodeError,
     ) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2

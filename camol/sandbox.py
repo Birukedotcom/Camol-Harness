@@ -175,6 +175,7 @@ class SandboxBackend:
         policy: SandboxPolicy,
         timeout_seconds: int,
         environment: Optional[Mapping[str, str]] = None,
+        stdin_bytes: Optional[bytes] = None,
     ) -> SandboxResult:
         raise NotImplementedError
 
@@ -187,6 +188,7 @@ class SandboxBackend:
         policy: SandboxPolicy,
         timeout_seconds: int,
         environment: Optional[Mapping[str, str]],
+        stdin_bytes: Optional[bytes],
     ) -> SandboxResult:
         resolved_cwd = Path(_real(str(cwd)))
         try:
@@ -199,12 +201,16 @@ class SandboxBackend:
                 *effective_argv,
                 cwd=str(resolved_cwd),
                 env=policy.environment(environment),
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout_task = asyncio.create_task(self._drain(process.stdout))
             stderr_task = asyncio.create_task(self._drain(process.stderr))
+            if stdin_bytes is not None:
+                process.stdin.write(stdin_bytes)
+                await process.stdin.drain()
+                process.stdin.close()
             try:
                 await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
             except asyncio.TimeoutError as error:
@@ -240,11 +246,12 @@ class DeveloperTrustedBackend(SandboxBackend):
 
     name = "developer_trusted"
 
-    async def run(self, argv, *, cwd, policy, timeout_seconds, environment=None):
+    async def run(self, argv, *, cwd, policy, timeout_seconds, environment=None, stdin_bytes=None):
         if policy.trust_tier != "developer_trusted":
             raise SandboxError("unsandboxed backend cannot satisfy a sandboxed trust tier")
         return await self._spawn(
-            argv, argv, cwd=cwd, policy=policy, timeout_seconds=timeout_seconds, environment=environment
+            argv, argv, cwd=cwd, policy=policy, timeout_seconds=timeout_seconds, environment=environment,
+            stdin_bytes=stdin_bytes,
         )
 
 
@@ -272,14 +279,15 @@ class MacOSSandboxBackend(SandboxBackend):
             rules.append("(allow network*)")
         return " ".join(rules)
 
-    async def run(self, argv, *, cwd, policy, timeout_seconds, environment=None):
+    async def run(self, argv, *, cwd, policy, timeout_seconds, environment=None, stdin_bytes=None):
         if not self.available():
             raise SandboxError("macOS sandbox-exec is unavailable")
         if policy.trust_tier == "developer_trusted":
             raise SandboxError("sandbox backend requires a sandboxed trust tier")
         effective = ["/usr/bin/sandbox-exec", "-p", self.profile(policy)] + list(argv)
         return await self._spawn(
-            effective, argv, cwd=cwd, policy=policy, timeout_seconds=timeout_seconds, environment=environment
+            effective, argv, cwd=cwd, policy=policy, timeout_seconds=timeout_seconds, environment=environment,
+            stdin_bytes=stdin_bytes,
         )
 
 
@@ -287,7 +295,9 @@ def system_read_paths(executable: Optional[str] = None) -> Tuple[str, ...]:
     """Conservative platform runtime roots; never includes the user's whole home."""
     candidates = ["/System", "/usr", "/bin", "/sbin", "/Library"]
     if executable:
+        lexical = Path(os.path.abspath(executable))
         resolved = Path(_real(executable))
+        candidates.append(str(lexical.parent))
         candidates.append(str(resolved.parent))
     return tuple(sorted({_real(item) for item in candidates if Path(item).exists()}))
 
