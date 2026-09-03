@@ -30,8 +30,9 @@ complete runnable example.
 }
 ```
 
-The v1 contract requires exactly three agents. Concurrency can be lower when the task
-graph has fewer ready nodes, but never higher.
+The current v1 file format registers exactly three agent slots. This is available
+capacity, not a requirement to keep all three active. Concurrency can be zero to three
+according to ready work, dependencies, capability matching, policy, and budget.
 
 Completion is a conjunction of named conditions, not a confidence score. The run
 stops green only when every selected condition is true.
@@ -70,6 +71,13 @@ should migrate to an executable gate.
 
 All boxes must be distinct, relative paths inside the declared workspace. The process
 adapter performs argv execution directly; it does not use an implicit shell.
+
+Agent IDs and `role` strings describe capabilities or current policy; they do not
+reserve permanent builder/verifier/watcher positions. Different slots may receive
+different tasks. Competing implementations of one logical objective are encoded as
+distinct task IDs so the exclusive lease invariant is preserved. A first-class
+candidate/comparison-group field is planned but is not implemented in the current
+schema.
 
 Supported placeholders are:
 

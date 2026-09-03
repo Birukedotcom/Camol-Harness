@@ -52,10 +52,11 @@ delegation, recovery, or integration.
 
 Public suites are complemented by a Camol-owned workflow corpus. Its first long-run
 scenario family comes from sanitized Buckeye work patterns: inspect a repository,
-plan work across three boxes, implement and integrate a change, forward-deploy to an
-isolated GCP target, observe a voice-agent boundary, diagnose a seeded failure,
-recover from an orchestrator restart, and produce replayable evidence. This internal
-corpus measures product fit that a public leaderboard cannot.
+let the plan choose an appropriate one-to-three-box topology, implement and integrate
+a change, forward-deploy to an isolated GCP target, observe a voice-agent boundary,
+diagnose a seeded failure, recover from an orchestrator restart, and produce
+replayable evidence. This internal corpus measures product fit that a public
+leaderboard cannot.
 
 ## 3. Benchmark adapter contract
 
@@ -122,13 +123,16 @@ attribute. Every milestone campaign includes matched controls:
 ```text
 same model + direct vendor CLI
 same model + Camol with one active execution box
-same model + Camol orchestrator and three execution boxes
+same model + Camol with a plan-selected one-to-three-box topology
 ```
 
-The two unused v1 slots remain dormant in the one-active-box control so the kernel's
-three-slot contract does not change. Additional ablations may disable plan freezing,
-cross-box context routing, evaluator feedback, or recovery one at a time. Unsafe
-ablations run only in isolated benchmark environments.
+Unused v1 slots remain dormant, so the three-slot registry contract does not force
+work into them. The adaptive arm records active count, role assignment, task fan-out,
+candidate groups, and why each additional box was justified. Fixed-topology
+ablations may separately test partitioned, replicated, mixed-role, and sequential
+assignments. Additional ablations may disable plan freezing, cross-box context
+routing, evaluator feedback, or recovery one at a time. Unsafe ablations run only in
+isolated benchmark environments.
 
 ### Claude CLI versus Camol
 
@@ -138,13 +142,13 @@ actual work under three arms:
 ```text
 A  direct Claude CLI
 B  one active Camol box using the Claude CLI adapter
-C  Camol orchestrator plus three Claude-backed boxes
+C  Camol orchestrator using its plan-selected adaptive box topology
 ```
 
 Arm A measures the existing workflow. The difference between A and B reveals Camol's
 kernel, logging, context, and gating overhead or benefit. The difference between B
-and C reveals the value of orchestration, parallel delegation, independent
-verification, and integration.
+and C reveals whether the orchestrator selected useful concurrency, task assignment,
+parallel candidates, independent verification, or integration for that task.
 
 Each paired task freezes the same user brief, acceptance contract, starting commit,
 dependency lock state, seeded external sandbox, tool authority, network policy,
@@ -171,15 +175,16 @@ retries, duplicated work, merge conflicts, idle/stalled time
 restart recovery, deployment reconciliation, and evidence completeness
 ```
 
-A task may be won by the direct CLI, one-box Camol, or three-box Camol. Camol does not
-promote a harness change merely because its preferred arm wins the average; the
-change must meet the predeclared threshold without a forbidden task-level regression.
+A task may be won by the direct CLI, one-box Camol, or adaptive Camol. The adaptive
+arm may correctly choose one, two, or three active boxes. Camol does not promote a
+harness change merely because its preferred arm wins the average; the change must
+meet the predeclared threshold without a forbidden task-level regression.
 
 The planned command surface is:
 
 ```text
 /bench capture <run-or-worklog>
-/bench compare --arms claude-direct,camol-one,camol-three
+/bench compare --arms claude-direct,camol-one,camol-adaptive
 /bench inspect <campaign-id> [task-id]
 /bench diff <baseline-campaign> <candidate-campaign>
 ```

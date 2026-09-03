@@ -105,7 +105,7 @@ def command_run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="camol", description="Persistent three-agent orchestration harness"
+        prog="camol", description="Persistent plan-driven agent orchestration harness"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

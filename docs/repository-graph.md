@@ -38,6 +38,7 @@ The switcher remains visible while the graph is focused. Connection and selectio
 are separate signals: `■` means the box is connected and task-ready, while `▸`
 (plus inverse-video styling where available) marks the workspace currently being
 viewed. A box does not become ready merely because the user selects it.
+`BUILD`, `VERIFY`, and `WATCH` are example current assignments, not fixed slot roles.
 
 Direct selection uses `Alt+0` for the orchestrator and `Alt+1` through `Alt+3` for
 the boxes. Left/right or `[`/`]` cycles through all four workspaces; mouse-capable

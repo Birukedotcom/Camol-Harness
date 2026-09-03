@@ -22,9 +22,10 @@ authoritative only when a human approves the exact digest of its compiled plan.
 
 Camol is a terminal-native, local-first control plane for human-guided agent work. A
 human develops a plan with one orchestrator, freezes that plan, and lets the
-orchestrator distribute bounded work among three agent boxes. The harness continues
-until state gates are satisfied, a human decision is required, or an owner-defined
-pause condition is reached.
+orchestrator distribute bounded work across a pool of execution boxes. V1 permits up
+to three concurrent box leases, but a run activates only the boxes justified by its
+plan. The harness continues until state gates are satisfied, a human decision is
+required, or an owner-defined pause condition is reached.
 
 Camol is not primarily a chat interface, a prompt collection, a web application, or
 a terminal multiplexer. Its product is the durable combination of:
@@ -58,7 +59,8 @@ for ordinary engineering work. The acceptance workflow is:
 
 1. Open an orchestrator session in the CLI.
 2. Use `/grill` to convert an objective into a human-confirmed plan.
-3. Attach or provision three isolated boxes locally, through cmux, or on VMs.
+3. Register the v1 three-slot pool locally, through cmux, or on VMs, and activate only
+   the isolated boxes required by the plan.
 4. Select hosted or local models per box.
 5. Distribute repository work and route all inter-box communication through the
    orchestrator.
@@ -372,11 +374,26 @@ new obligations, evaluator changes, and the resume location. State-schema change
 require a tested migration. Unaffected boxes may continue only when the impact
 analysis demonstrates that their assumptions and dependencies remain valid.
 
-## 8. Three boxes, integration, and optional expansion
+## 8. Box scheduling, integration, and optional expansion
 
-V1 has three simultaneously available agent slots, though fewer may be active. Roles
-are plan policies rather than permanent identities. A model can strategize on one
-task and build on another, but consequential self-approval is forbidden.
+V1 has capacity for three simultaneous agent leases, though zero to three may be
+active. The number three is a concurrency ceiling, not a prescribed team shape.
+Boxes are role-neutral execution containers; roles, tasks, and models are plan
+assignments rather than permanent identities. A model can strategize on one task and
+build on another, but consequential self-approval is forbidden.
+
+The orchestrator may choose any plan-backed topology:
+
+```text
+partitioned   boxes work different independent or dependent subtasks
+replicated    boxes produce competing candidates for the same logical task
+mixed         boxes build, research, verify, debug, deploy, or observe
+sequential    a box changes assignment after its lease closes
+```
+
+Replicated work uses distinct leased task IDs joined by a candidate/comparison group;
+two boxes never hold the same exclusive lease. The human-approved plan decides when
+extra implementations or independent verification justify their cost.
 
 Boxes work in isolated worktrees or remote workspaces. The orchestrator owns the
 canonical integration workspace:
@@ -505,9 +522,9 @@ collapses correctness, invariant violations, cost, liveness, recovery, and human
 intervention into one score. Harness revisions are tested against matched direct-CLI
 and one-active-box controls so orchestration gains can be distinguished from model or
 budget changes. The first workflow comparison uses direct Claude CLI, one Claude-backed
-Camol box, and three Claude-backed Camol boxes against reconstructed real tasks. The
-suite selection, paired-task protocol, adapter contract, metrics, and anti-overfitting
-rules live in `docs/evaluation-program.md`.
+Camol box, and Camol's plan-selected adaptive topology against reconstructed real
+tasks. The suite selection, paired-task protocol, adapter contract, metrics, and
+anti-overfitting rules live in `docs/evaluation-program.md`.
 
 A failed evaluation creates a permanent counterexample linked to the plan revision
 and artifact hash:
@@ -672,7 +689,7 @@ not assume that a timed-out deployment, migration, message, or payment failed.
 The repository already contains an executable local control-plane slice:
 
 - a JSON runbook;
-- exactly three process-backed boxes;
+- three configured process-backed slots with plan- and DAG-driven activation;
 - a task DAG and capability scheduler;
 - SQLite event replay;
 - frozen plan digests and human approval;
@@ -696,6 +713,7 @@ The following specification areas are not yet implemented and remain speculative
 - isolated Git worktree execution;
 - real Codex, Claude, local-model, cmux, SSH, and GCP adapters;
 - adaptive differential evaluation;
+- adaptive box-topology policy and first-class candidate/comparison groups;
 - external coding-suite adapters, canary campaigns, and benchmark ablations;
 - read-only box attachment and explicit takeover;
 - voice-agent evidence ingestion;
@@ -745,9 +763,11 @@ views remain terminal-native and two-dimensional.
 - Boxes may propose but not authorize new work or weaker truth conditions.
 - Newly discovered work enters through a versioned plan amendment.
 - Peering into boxes is read-only; mutation requires explicit takeover.
-- Three simultaneous box leases are the v1 execution target; the registry may track
-  more discovered, dormant, unavailable, or historical boxes. Multiple
-  implementations are optional and explicitly requested.
+- Three simultaneous box leases are the v1 ceiling, not the required active count;
+  the registry may track more discovered, dormant, unavailable, or historical boxes.
+  Boxes may receive different tasks, distinct candidate tasks for the same logical
+  objective, or mixed roles. Multiple implementations are optional and explicitly
+  requested or approved by the plan.
 - Local-only, hybrid, cmux-compatible, and VM-backed execution use the same protocol.
 - Integration is orchestrator-owned and every synthesized artifact is reevaluated.
 - Long-running sessions are owner-controlled and pause on declared lack of verified

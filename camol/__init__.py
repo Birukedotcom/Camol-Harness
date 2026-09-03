@@ -1,4 +1,4 @@
-"""Camol: a persistent three-agent orchestration harness."""
+"""Camol: a persistent orchestration harness with three v1 execution slots."""
 
 from .hillclimb import compare_vectors
 from .orchestrator import Orchestrator

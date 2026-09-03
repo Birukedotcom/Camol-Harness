@@ -1,7 +1,8 @@
 # Camol Harness
 
-Camol is a restart-safe Python control plane for one human-guided orchestrator and
-exactly three bounded agent boxes.
+Camol is a restart-safe Python control plane for one human-guided orchestrator and a
+v1 pool of three bounded execution slots. Zero to three boxes may be active, and their
+task assignments are chosen by the plan rather than fixed by the slot number.
 
 The consolidated product direction, trust model, transparent tool-log protocol,
 invariant gates, cmux/GCP compatibility target, and implementation roadmap live in
@@ -14,7 +15,7 @@ Its operating loop is:
 human + orchestrator freeze the plan
                |
                v
-       three agent boxes execute
+       required boxes execute
                |
                v
  checkpoints + evidence + token use
@@ -37,7 +38,7 @@ and completion. Agents work inside separate boxes and cannot declare themselves 
 
 ## What is executable now
 
-- A JSON runbook describes the objective, three agents, boxes, rules, task DAG,
+- A JSON runbook describes the objective, three registered agent slots, boxes, rules,
   per-step instructions and commands, evidence requirements, verification commands,
   retry limits, token budgets, and terminal conditions.
 - A SQLite event ledger reconstructs the run after process restart.

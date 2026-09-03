@@ -111,7 +111,7 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     agents = root.get("agents")
     if not isinstance(agents, list) or len(agents) != 3:
-        raise RunbookError("agents must define exactly three agent boxes")
+        raise RunbookError("agents must define exactly three registered v1 slots")
     normalized_agents = []
     for index, agent_value in enumerate(agents):
         agent = _object(agent_value, "agents[{}]".format(index))

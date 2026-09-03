@@ -1,4 +1,4 @@
-"""Long-running three-agent scheduler and verification loop."""
+"""Long-running execution-slot scheduler and verification loop."""
 
 import asyncio
 import hashlib

@@ -1,4 +1,4 @@
-"""Authoritative state transitions for a three-agent run."""
+"""Authoritative state transitions for a run over the v1 execution-slot pool."""
 
 from typing import Any, Dict, List, Optional
 from uuid import uuid4

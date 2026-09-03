@@ -13,10 +13,12 @@ terminal panes, repo-local skills, human memory, and ad hoc status messages. The
 is not a more elaborate prompt. The fix is a control plane that makes work and its
 evidence explicit.
 
-Camol has one authoritative orchestrator and exactly three agent slots in v1. The
-slots may run locally or on separate VMs, but workers never become independent sources of truth.
-They lease tasks, emit evidence, ask questions, propose follow-up work, and return
-claims. The orchestrator decides what enters the run and what is accepted.
+Camol has one authoritative orchestrator and three available agent slots in v1. This
+is a concurrency ceiling, not a requirement to run three builders or even three
+workers. Slots may run locally or on separate VMs, but workers never become
+independent sources of truth. They lease plan-selected tasks, emit evidence, ask
+questions, propose follow-up work, and return claims. The orchestrator decides what
+enters the run and what is accepted.
 
 The first reusable proof case is Sarah in Enrollment Hub:
 
@@ -48,7 +50,8 @@ general harness protocol.
                    +---------------------+---------------------+
                    |                     |                     |
              +-----+------+        +-----+------+        +-----+------+
-             | strategist |        |   builder  |        |  verifier  |
+             | slot 1     |        | slot 2     |        | slot 3     |
+             | role/task A|        | role/task B|        | role/task A|
              | box/adapter|        | box/adapter|        | box/adapter|
              +------------+        +------------+        +------------+
                    |                     |                     |
@@ -64,6 +67,11 @@ general harness protocol.
 
 The VM transport can be SSH, an agent API, tmux/cmux, or another substrate. The
 transport is replaceable. Its contract is not.
+
+The diagram deliberately shows slots 1 and 3 on the same logical task. Parallel
+candidates are represented by separate leased task IDs in one comparison group;
+other plans may partition work or activate only one slot. Slot identity never implies
+`builder`, `verifier`, or any other permanent role.
 
 ## 3. Authority boundaries
 
