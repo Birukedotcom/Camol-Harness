@@ -132,7 +132,10 @@ Goal: make the unsafe current behavior explicit before changing it.
 
 Status (branch `camol/m0-readiness-contracts`): contracts, canonical hashing,
 runbook v2 + migration, typed waiting reasons, and the three readiness ledger
-events are implemented and tested. The characterization cases in
+events are implemented and tested. Receipts bind run, task, box, worker, target,
+plan, workspace, evaluator, and reservation identities; a green receipt cannot
+outlive its weakest probe; hashed collections are immutable tuples; and no plan
+field can disable readiness proof. The characterization cases in
 `tests/test_readiness.py` pass by asserting the current unsafe behavior; M3 must
 invert every `test_CURRENT_UNSAFE_*` assertion. Nothing in M0 probes, provisions,
 reserves, grants, or launches; `assess_ready_to_lease` is a pure function the

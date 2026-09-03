@@ -127,7 +127,7 @@ class RunbookV1CompatibilityTests(unittest.TestCase):
 
     def test_v2_fields_are_not_silently_reinterpreted_inside_v1(self):
         leaked = copy.deepcopy(self.raw)
-        leaked["run"]["readiness_policy"] = {"receipt_ttl_seconds": 60, "require_readiness_receipt": True}
+        leaked["run"]["readiness_policy"] = {"receipt_ttl_seconds": 60}
         with self.assertRaisesRegex(RunbookError, "schema v2 field"):
             validate_runbook(leaked)
         leaked = copy.deepcopy(self.raw)
@@ -149,7 +149,7 @@ class RunbookV2Tests(unittest.TestCase):
     def setUp(self):
         raw = json.loads((ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8"))
         self.v1 = raw
-        self.policy = {"receipt_ttl_seconds": 300, "require_readiness_receipt": True}
+        self.policy = {"receipt_ttl_seconds": 300}
         self.tiers = {agent["id"]: "developer_trusted" for agent in raw["agents"]}
 
     def _v2(self):
@@ -190,9 +190,7 @@ class RunbookV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(RunbookError, "unknown agents: ghost"):
             migrate_runbook_v1_to_v2(self.v1, readiness_policy=self.policy, trust_tiers=dict(self.tiers, ghost="sandboxed"))
         with self.assertRaisesRegex(RunbookError, "receipt_ttl_seconds must be a positive integer"):
-            migrate_runbook_v1_to_v2(self.v1, readiness_policy={"require_readiness_receipt": True}, trust_tiers=self.tiers)
-        with self.assertRaisesRegex(RunbookError, "require_readiness_receipt must be a boolean"):
-            migrate_runbook_v1_to_v2(self.v1, readiness_policy={"receipt_ttl_seconds": 1}, trust_tiers=self.tiers)
+            migrate_runbook_v1_to_v2(self.v1, readiness_policy={}, trust_tiers=self.tiers)
         with self.assertRaisesRegex(RunbookError, "trust_tier must be one of"):
             migrate_runbook_v1_to_v2(self.v1, readiness_policy=self.policy, trust_tiers=dict(self.tiers, builder="root"))
         with self.assertRaisesRegex(RunbookError, "requires a schema_version 1"):
@@ -229,6 +227,46 @@ class RunbookV2Tests(unittest.TestCase):
         del missing_tier["agents"][1]["trust_tier"]
         with self.assertRaisesRegex(RunbookError, r"agents\[1\].trust_tier must be one of"):
             validate_runbook(missing_tier)
+
+    def test_readiness_cannot_be_disabled_by_any_plan_field(self):
+        for flag in (False, True):
+            bypass = self._v2()
+            bypass["run"]["readiness_policy"]["require_readiness_receipt"] = flag
+            with self.assertRaisesRegex(RunbookError, "readiness proof cannot be disabled by a plan"):
+                validate_runbook(bypass)
+            with self.assertRaisesRegex(RunbookError, "readiness proof cannot be disabled by a plan"):
+                migrate_runbook_v1_to_v2(
+                    self.v1,
+                    readiness_policy={"receipt_ttl_seconds": 300, "require_readiness_receipt": flag},
+                    trust_tiers=self.tiers,
+                )
+        self.assertEqual(set(self._v2()["run"]["readiness_policy"]), {"receipt_ttl_seconds"})
+
+    def test_v2_integer_fields_reject_booleans(self):
+        v2 = self._v2()
+        cases = [
+            (lambda r, v: r["run"].__setitem__("max_concurrency", v), "max_concurrency must be a positive integer"),
+            (lambda r, v: r["run"]["readiness_policy"].__setitem__("receipt_ttl_seconds", v), "receipt_ttl_seconds must be a positive integer"),
+            (lambda r, v: r["run"]["token_policy"].__setitem__("max_tokens_per_turn", v), "max_tokens_per_turn must be a positive integer"),
+            (lambda r, v: r["run"]["token_policy"].__setitem__("max_total_tokens", v), "max_total_tokens must be a positive integer"),
+            (lambda r, v: r["run"]["token_policy"].__setitem__("max_turns_per_task", v), "max_turns_per_task must be a positive integer"),
+            (lambda r, v: r["run"]["token_policy"].__setitem__("checkpoint_reserve", v), "checkpoint_reserve must be a non-negative integer"),
+            (lambda r, v: r["agents"][0]["adapter"].__setitem__("timeout_seconds", v), r"timeout_seconds must be a positive integer"),
+            (lambda r, v: r["tasks"][0].__setitem__("max_attempts", v), "max_attempts must be a positive integer"),
+        ]
+        for mutate, message in cases:
+            for flag in (True, False):
+                broken = copy.deepcopy(v2)
+                mutate(broken, flag)
+                with self.assertRaisesRegex(RunbookError, message, msg="{} <- {}".format(message, flag)):
+                    validate_runbook(broken)
+
+    def test_v1_integer_tolerance_is_unchanged(self):
+        # Compatibility pin: v1 keeps its pre-M0 acceptance of `True` where an
+        # int was expected, so already-frozen v1 digests cannot shift. v2 is strict.
+        tolerant = copy.deepcopy(self.v1)
+        tolerant["tasks"][0]["max_attempts"] = True
+        self.assertEqual(validate_runbook(tolerant)["tasks"][0]["max_attempts"], True)
 
 
 if __name__ == "__main__":

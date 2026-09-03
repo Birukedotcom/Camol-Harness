@@ -20,7 +20,9 @@ from pathlib import Path
 from camol.events import LEGACY_EVENT_TYPES, new_event
 from camol.orchestrator import Orchestrator
 from camol.readiness import (
+    FILESYSTEM_POLICIES,
     NON_RUNNABLE_REASONS,
+    TRUST_TIERS,
     CapabilityGrant,
     CapacityReservation,
     LeaseFence,
@@ -39,13 +41,16 @@ from camol.store import SQLiteEventStore
 ROOT = Path(__file__).resolve().parents[1]
 T0 = "2026-09-03T10:00:00+00:00"
 T0_NORMALIZED = "2026-09-03T10:00:00.000000+00:00"
-T_PLUS_5M = "2026-09-03T10:05:00+00:00"
+T_PLUS_1M = "2026-09-03T10:01:00+00:00"
 T_PLUS_2M = "2026-09-03T10:02:00+00:00"
+T_PLUS_3M = "2026-09-03T10:03:00+00:00"
+T_PLUS_5M = "2026-09-03T10:05:00+00:00"
 T_PLUS_10M = "2026-09-03T10:10:00+00:00"
 PLAN = canonical_digest({"plan": "fixture"})
 EVALUATOR = canonical_digest({"evaluator": "fixture"})
 WORKSPACE = canonical_digest({"workspace": "fixture"})
 CLEAN = canonical_digest([])
+OTHER = canonical_digest(["other"])
 
 
 def probe(**overrides):
@@ -97,7 +102,7 @@ def workspace(**overrides):
         branch="camol/task-frame",
         path="state/worktrees/frame",
         dirty_digest=CLEAN,
-        filesystem_policy="developer_trusted",
+        filesystem_policy="isolated_worktree_write",
         cleanup_owner="camol",
         created_at=T0,
     )
@@ -161,6 +166,30 @@ def fence(**overrides):
     return LeaseFence(**values)
 
 
+def assess(**overrides):
+    """All-green READY_TO_LEASE inputs for subject (run-1, frame, box-1, strategist, localhost)."""
+    values = dict(
+        now=T_PLUS_2M,
+        run_id="run-1",
+        task_id="frame",
+        box_id="box-1",
+        worker_id="strategist",
+        target_id="localhost",
+        plan_digest=PLAN,
+        plan_frozen=True,
+        control_plane_ready=True,
+        dependencies_green=True,
+        workspace_digest=WORKSPACE,
+        receipt=receipt(),
+        evaluator_digest=EVALUATOR,
+        evaluator_ready=True,
+        grant=grant(),
+        reservation=reservation(),
+    )
+    values.update(overrides)
+    return assess_ready_to_lease(**values)
+
+
 class UnsafeBoundaryCharacterization(unittest.TestCase):
     """CURRENT BEHAVIOR, NOT DESIRED BEHAVIOR. See module docstring."""
 
@@ -209,12 +238,13 @@ class UnsafeBoundaryCharacterization(unittest.TestCase):
         self.assertNotIn("TASK_WAITING", types)
         self.assertNotIn("READINESS_RECORDED", types)
 
-    def test_CURRENT_UNSAFE_scheduler_ignores_v2_readiness_policy(self):
-        # A v2 plan that says "require a readiness receipt" is still leased without one.
+    def test_CURRENT_UNSAFE_scheduler_leases_a_v2_plan_without_any_receipt(self):
+        # A v2 plan carries a readiness policy, and readiness cannot be disabled by
+        # any plan field, yet the M0 scheduler still leases with no receipt at all.
         raw = json.loads((ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8"))
         raw["schema_version"] = 2
-        raw["run"]["id"] = "v2-policy-ignored"
-        raw["run"]["readiness_policy"] = {"receipt_ttl_seconds": 300, "require_readiness_receipt": True}
+        raw["run"]["id"] = "v2-policy-not-enforced"
+        raw["run"]["readiness_policy"] = {"receipt_ttl_seconds": 300}
         for agent in raw["agents"]:
             agent["trust_tier"] = "developer_trusted"
         state = self.orchestrator.initialize(raw)
@@ -231,22 +261,26 @@ class UnsafeBoundaryCharacterization(unittest.TestCase):
         state = self.orchestrator.state(self.run_id)
         decision = assess_ready_to_lease(
             now=T0,
+            run_id=self.run_id,
+            task_id="frame",
+            box_id="strategist",
+            worker_id="strategist",
+            target_id="localhost",
             plan_digest=state["plan_digest"],
             plan_frozen=True,
             control_plane_ready=True,
             dependencies_green=True,
+            workspace_digest=None,
             receipt=None,
             evaluator_digest=None,
             evaluator_ready=False,
             grant=None,
             reservation=None,
-            task_id="frame",
-            box_id="strategist",
         )
         self.assertFalse(decision.ready)
         self.assertEqual(
             [reason.code for reason in decision.reasons],
-            ["READINESS_STALE", "EVALUATOR_NOT_READY", "APPROVAL_REQUIRED", "CAPACITY_EXHAUSTED"],
+            ["WORKSPACE_CONFLICT", "READINESS_STALE", "EVALUATOR_NOT_READY", "APPROVAL_REQUIRED", "CAPACITY_EXHAUSTED"],
         )
         self.assertEqual(len(self.orchestrator.lease_ready_tasks(self.run_id)), 3)
 
@@ -303,12 +337,15 @@ class ContractRoundTripTests(unittest.TestCase):
     def test_every_contract_round_trips_and_normalizes_deterministically(self):
         for value in (probe(), receipt(), workspace(), reservation(), grant(), fence()):
             payload = self.assertRoundTrips(value)
+            # to_dict emits JSON arrays even though the contract stores tuples.
+            for item in payload.values():
+                self.assertNotIsInstance(item, tuple)
             self.assertEqual(json.dumps(payload, sort_keys=True), json.dumps(payload, sort_keys=True))
 
     def test_normalization_sorts_lists_and_timestamps(self):
         value = grant(capabilities=["write", "credential", "read"], credential_refs=["b-ref", "a-ref"])
-        self.assertEqual(value.capabilities, ["credential", "read", "write"])
-        self.assertEqual(value.credential_refs, ["a-ref", "b-ref"])
+        self.assertEqual(value.capabilities, ("credential", "read", "write"))
+        self.assertEqual(value.credential_refs, ("a-ref", "b-ref"))
         self.assertEqual(value.granted_at, T0_NORMALIZED)
         self.assertEqual(grant(granted_at="2026-09-03T12:00:00+02:00").digest(), grant().digest())
         r = receipt(probes=[probe(probe_id="z"), probe(probe_id="a")])
@@ -338,6 +375,61 @@ class ContractRoundTripTests(unittest.TestCase):
             ProbeResult.from_dict(payload)
 
 
+class DeepImmutabilityTests(unittest.TestCase):
+    """Hashed collections are tuples: nothing can change a digest after construction."""
+
+    def assertImmutableCollection(self, contract, attribute):
+        before = contract.digest()
+        collection = getattr(contract, attribute)
+        self.assertIsInstance(collection, tuple, attribute)
+        with self.assertRaises(AttributeError, msg=attribute):
+            collection.append("mutation")
+        with self.assertRaises(TypeError, msg=attribute):
+            collection[0] = "mutation"
+        with self.assertRaises(AttributeError, msg=attribute):
+            setattr(contract, attribute, ())
+        self.assertEqual(contract.digest(), before, attribute)
+
+    def test_receipt_probes_cannot_be_appended(self):
+        r = receipt()
+        before = r.digest()
+        with self.assertRaises(AttributeError):
+            r.probes.append(probe(probe_id="late"))
+        self.assertEqual(r.digest(), before)
+        self.assertImmutableCollection(r, "probes")
+        self.assertImmutableCollection(r, "credential_scopes")
+
+    def test_grant_collections_are_immutable(self):
+        g = grant(capabilities=["network", "credential", "read"], network_destinations=["a:443"], credential_refs=["ref-1"])
+        for attribute in ("capabilities", "filesystem_paths", "network_destinations", "credential_refs"):
+            self.assertImmutableCollection(g, attribute)
+
+    def test_probe_collections_are_immutable(self):
+        p = probe(status="red", missing_requirements=["docker"], expires_at=None)
+        self.assertImmutableCollection(p, "missing_requirements")
+        self.assertImmutableCollection(p, "command")
+
+    def test_caller_lists_are_copied_not_aliased(self):
+        probes = [probe()]
+        capabilities = ["read"]
+        command = ["git", "--version"]
+        r = receipt(probes=probes)
+        g = grant(capabilities=capabilities)
+        p = probe(command=command)
+        digests = (r.digest(), g.digest(), p.digest())
+        probes.append(probe(probe_id="late"))
+        capabilities.append("destroy")
+        command.append("--evil")
+        self.assertEqual((r.digest(), g.digest(), p.digest()), digests)
+        self.assertEqual(len(r.probes), 1)
+        self.assertEqual(g.capabilities, ("read",))
+        self.assertEqual(p.command, ("git", "--version"))
+
+    def test_tuple_inputs_are_accepted_and_equal_to_list_inputs(self):
+        self.assertEqual(grant(capabilities=("read", "write", "execute")).digest(), grant().digest())
+        self.assertEqual(receipt(probes=(probe(),)).digest(), receipt().digest())
+
+
 class ValidationFailureTests(unittest.TestCase):
     def test_probe_validation(self):
         with self.assertRaisesRegex(SchemaError, "status must be one of"):
@@ -346,12 +438,14 @@ class ValidationFailureTests(unittest.TestCase):
             probe(expires_at=T0)
         with self.assertRaisesRegex(SchemaError, "green probe cannot list missing"):
             probe(missing_requirements=["docker"])
+        with self.assertRaisesRegex(SchemaError, "green probe must declare expires_at"):
+            probe(expires_at=None)
         with self.assertRaisesRegex(SchemaError, "argv array"):
             probe(command="git --version")
         with self.assertRaisesRegex(SchemaError, "evidence_digest must look like"):
             probe(evidence_digest="abc")
         red = probe(status="red", missing_requirements=["docker daemon"], expires_at=None)
-        self.assertEqual(red.missing_requirements, ["docker daemon"])
+        self.assertEqual(red.missing_requirements, ("docker daemon",))
 
     def test_receipt_validation(self):
         with self.assertRaisesRegex(SchemaError, "plan_digest must look like"):
@@ -367,13 +461,21 @@ class ValidationFailureTests(unittest.TestCase):
         red = receipt(status="red", probes=[probe(status="unknown")])
         self.assertFalse(red.is_fresh(T0))
 
-    def test_workspace_validation(self):
-        with self.assertRaisesRegex(SchemaError, "filesystem_policy must be one of"):
-            workspace(filesystem_policy="yolo")
+    def test_workspace_filesystem_policy_is_not_a_trust_tier(self):
+        self.assertEqual(FILESYSTEM_POLICIES, frozenset({"read_only", "isolated_worktree_write", "shared_checkout_write"}))
+        self.assertFalse(FILESYSTEM_POLICIES & TRUST_TIERS, "vocabularies must not overlap")
+        for tier in sorted(TRUST_TIERS):
+            with self.assertRaisesRegex(SchemaError, "filesystem_policy must be one of"):
+                workspace(filesystem_policy=tier)
+        for policy in sorted(FILESYSTEM_POLICIES):
+            self.assertEqual(workspace(filesystem_policy=policy).filesystem_policy, policy)
         with self.assertRaisesRegex(SchemaError, "cleanup_owner must be one of"):
             workspace(cleanup_owner="user")
         with self.assertRaisesRegex(SchemaError, "dirty_digest must look like"):
             workspace(dirty_digest="dirty")
+        for policy in sorted(FILESYSTEM_POLICIES):
+            with self.assertRaisesRegex(SchemaError, "trust_tier must be one of"):
+                grant(trust_tier=policy)
 
     def test_reservation_validation(self):
         with self.assertRaisesRegex(SchemaError, "concurrency_slots must be a positive integer"):
@@ -406,6 +508,43 @@ class ValidationFailureTests(unittest.TestCase):
             fence(expires_at=T0)
 
 
+class TransitiveFreshnessTests(unittest.TestCase):
+    """A green receipt can never outlive its weakest probe."""
+
+    def test_receipt_expiring_after_a_child_probe_is_rejected_at_construction(self):
+        with self.assertRaisesRegex(SchemaError, "later than probe git-version expires_at"):
+            receipt(expires_at=T_PLUS_5M, probes=[probe(expires_at=T_PLUS_2M)])
+        with self.assertRaisesRegex(SchemaError, "later than probe weak expires_at"):
+            receipt(expires_at=T_PLUS_5M, probes=[probe(), probe(probe_id="weak", expires_at=T_PLUS_3M)])
+
+    def test_receipt_expiring_at_or_before_every_child_is_accepted(self):
+        r = receipt(expires_at=T_PLUS_2M, probes=[probe(), probe(probe_id="weak", expires_at=T_PLUS_2M)])
+        self.assertTrue(r.is_fresh(T_PLUS_1M))
+
+    def test_green_child_probe_without_expiry_is_rejected(self):
+        with self.assertRaisesRegex(SchemaError, "green probe must declare expires_at"):
+            probe(expires_at=None)
+        # Even bypassing ProbeResult's own check via a red probe, a green receipt
+        # rejects a child that cannot expire.
+        with self.assertRaisesRegex(SchemaError, "non-green probe"):
+            receipt(probes=[probe(status="red", expires_at=None)])
+
+    def test_runtime_freshness_requires_every_probe_fresh(self):
+        r = receipt(expires_at=T_PLUS_2M, probes=[probe(expires_at=T_PLUS_2M), probe(probe_id="other", expires_at=T_PLUS_5M)])
+        self.assertTrue(r.is_fresh(T_PLUS_1M))
+        self.assertFalse(r.is_fresh(T_PLUS_2M), "weakest probe expired at the same instant as the receipt")
+        self.assertFalse(r.is_fresh(T_PLUS_3M))
+        # Defense in depth: a receipt whose probe list was somehow weakened after
+        # construction still reports stale because is_fresh re-checks children.
+        stale_child = probe(expires_at=T_PLUS_1M)
+        object.__setattr__(r, "probes", (stale_child,))
+        self.assertFalse(r.is_fresh(T_PLUS_1M))
+
+    def test_red_probe_without_expiry_is_never_fresh(self):
+        self.assertFalse(probe(status="red", expires_at=None).is_fresh(T0))
+        self.assertFalse(probe(status="unknown", expires_at=None).is_fresh(T0))
+
+
 class ExpiryAndBindingTests(unittest.TestCase):
     def test_receipt_expiry_is_explicit_and_pure(self):
         r = receipt()
@@ -415,9 +554,6 @@ class ExpiryAndBindingTests(unittest.TestCase):
         self.assertFalse(r.is_fresh(T_PLUS_5M), "expiry instant is not fresh")
         self.assertFalse(r.is_fresh(T_PLUS_10M))
         self.assertFalse(receipt(status="red").is_fresh(T0), "red is never fresh")
-
-    def test_probe_without_expiry_is_never_fresh(self):
-        self.assertFalse(probe(expires_at=None).is_fresh(T0))
 
     def test_reservation_and_grant_and_fence_expiry(self):
         self.assertTrue(reservation().is_active(T0))
@@ -451,15 +587,14 @@ class ExpiryAndBindingTests(unittest.TestCase):
         binding = r.binding()
         self.assertEqual(set(binding), set(ReadinessReceipt.BINDING_FIELDS))
         self.assertEqual(r.binding_digest(), canonical_digest(binding))
-        # Changing any bound field changes the binding digest ...
         for name in ReadinessReceipt.BINDING_FIELDS:
-            changed = {"requested_model": "other-model"} if name == "requested_model" else None
-            if changed is None:
+            if name == "requested_model":
+                changed = {name: "other-model"}
+            else:
                 current = getattr(r, name)
-                changed = {name: canonical_digest(["other"]) if current.startswith("sha256:") else current + "-x"}
+                changed = {name: OTHER if current.startswith("sha256:") else current + "-x"}
             self.assertNotEqual(receipt(**changed).binding_digest(), r.binding_digest(), name)
-        # ... while a new observation time alone does not.
-        self.assertEqual(receipt(observed_at="2026-09-03T10:01:00+00:00").binding_digest(), r.binding_digest())
+        self.assertEqual(receipt(observed_at=T_PLUS_1M, expires_at=T_PLUS_5M).binding_digest(), r.binding_digest())
 
     def test_fence_binds_every_input_digest_and_supersedes_by_epoch(self):
         f = fence()
@@ -470,8 +605,7 @@ class ExpiryAndBindingTests(unittest.TestCase):
         self.assertEqual(f.readiness_digest, receipt().digest())
         self.assertEqual(f.grant_digest, grant().digest())
         self.assertEqual(f.reservation_digest, reservation().digest())
-        # Re-probing produces a new receipt digest and therefore a mismatched fence.
-        self.assertNotEqual(receipt(observed_at="2026-09-03T10:01:00+00:00").digest(), f.readiness_digest)
+        self.assertNotEqual(receipt(observed_at=T_PLUS_1M).digest(), f.readiness_digest)
         newer = fence(lease_id="lease-2", epoch=2)
         self.assertTrue(newer.supersedes(f))
         self.assertFalse(f.supersedes(newer))
@@ -480,30 +614,12 @@ class ExpiryAndBindingTests(unittest.TestCase):
     def test_credential_scopes_are_fingerprints_not_secrets(self):
         r = receipt(credential_scopes=["provider:scope-fingerprint-1"])
         self.assertNotIn("token", json.dumps(r.to_dict()).lower())
-        self.assertEqual(r.credential_scopes, ["provider:scope-fingerprint-1"])
+        self.assertEqual(r.credential_scopes, ("provider:scope-fingerprint-1",))
 
 
 class ReadyToLeasePredicateTests(unittest.TestCase):
-    def all_green(self, **overrides):
-        values = dict(
-            now=T_PLUS_2M,
-            plan_digest=PLAN,
-            plan_frozen=True,
-            control_plane_ready=True,
-            dependencies_green=True,
-            receipt=receipt(),
-            evaluator_digest=EVALUATOR,
-            evaluator_ready=True,
-            grant=grant(),
-            reservation=reservation(),
-            task_id="frame",
-            box_id="box-1",
-        )
-        values.update(overrides)
-        return assess_ready_to_lease(**values)
-
     def test_all_conjuncts_green_is_ready(self):
-        decision = self.all_green()
+        decision = assess()
         self.assertTrue(decision.ready)
         self.assertEqual(decision.reasons, ())
         self.assertEqual(decision.to_dict(), {"ready": True, "reasons": []})
@@ -513,21 +629,21 @@ class ReadyToLeasePredicateTests(unittest.TestCase):
             ({"plan_frozen": False}, "APPROVAL_REQUIRED"),
             ({"control_plane_ready": False}, "OPERATOR_ATTENTION"),
             ({"dependencies_green": False}, "WAITING_DEPENDENCY"),
+            ({"workspace_digest": None}, "WORKSPACE_CONFLICT"),
             ({"receipt": None}, "READINESS_STALE"),
             ({"now": T_PLUS_10M}, "READINESS_STALE"),
             ({"receipt": receipt(status="red", probes=[probe(status="red", expires_at=None)])}, "READINESS_STALE"),
-            ({"receipt": receipt(plan_digest=canonical_digest("other plan"))}, "READINESS_STALE"),
-            ({"receipt": receipt(task_id="inventory")}, "POLICY_DENIED"),
+            ({"receipt": receipt(plan_digest=OTHER)}, "READINESS_STALE"),
             ({"evaluator_ready": False}, "EVALUATOR_NOT_READY"),
-            ({"evaluator_digest": canonical_digest("other evaluator")}, "EVALUATOR_NOT_READY"),
+            ({"evaluator_digest": OTHER}, "EVALUATOR_NOT_READY"),
             ({"grant": None}, "APPROVAL_REQUIRED"),
-            ({"grant": grant(box_id="box-2")}, "POLICY_DENIED"),
+            ({"grant": grant(expires_at=T_PLUS_1M)}, "APPROVAL_REQUIRED"),
             ({"reservation": None}, "CAPACITY_EXHAUSTED"),
             ({"reservation": reservation(status="released")}, "CAPACITY_EXHAUSTED"),
             ({"reservation": reservation(reservation_id="rsv-2")}, "READINESS_STALE"),
         ]
         for overrides, expected in cases:
-            decision = self.all_green(**overrides)
+            decision = assess(**overrides)
             self.assertFalse(decision.ready, overrides)
             self.assertIn(expected, [reason.code for reason in decision.reasons], overrides)
             for reason in decision.reasons:
@@ -535,22 +651,101 @@ class ReadyToLeasePredicateTests(unittest.TestCase):
                 self.assertEqual(reason.box_id, "box-1")
                 self.assertTrue(reason.wake_condition)
 
+    def test_expired_child_probe_makes_the_lease_not_ready(self):
+        r = receipt(expires_at=T_PLUS_2M, probes=[probe(expires_at=T_PLUS_2M)])
+        self.assertTrue(assess(receipt=r, now=T_PLUS_1M).ready)
+        decision = assess(receipt=r, now=T_PLUS_3M)
+        self.assertFalse(decision.ready)
+        self.assertEqual([reason.code for reason in decision.reasons], ["READINESS_STALE"])
+
     def test_reasons_are_serializable_contracts(self):
-        decision = self.all_green(receipt=None, grant=None)
+        decision = assess(receipt=None, grant=None)
         payload = decision.to_dict()
         restored = [WaitingReason.from_dict(item) for item in payload["reasons"]]
         self.assertEqual(tuple(restored), decision.reasons)
 
 
+class IdentityBindingTests(unittest.TestCase):
+    """No cross-run or cross-subject combination of inputs may ever be ready."""
+
+    def assertDenied(self, decision, label):
+        self.assertFalse(decision.ready, label)
+        codes = [reason.code for reason in decision.reasons]
+        self.assertIn("POLICY_DENIED", codes, label)
+
+    def test_reported_scenario_three_runs_and_mismatched_worker_and_target(self):
+        decision = assess(
+            receipt=receipt(run_id="run-A", worker_id="strategist", target_id="localhost"),
+            grant=grant(run_id="run-B"),
+            reservation=reservation(run_id="run-C", worker_id="builder", target_id="vm-7"),
+            run_id="run-A",
+        )
+        self.assertFalse(decision.ready)
+        details = "\n".join(reason.detail for reason in decision.reasons)
+        self.assertIn("capability grant run_id 'run-B'", details)
+        self.assertIn("capacity reservation run_id 'run-C'", details)
+        self.assertIn("capacity reservation worker_id 'builder'", details)
+        self.assertIn("capacity reservation target_id 'vm-7'", details)
+        self.assertEqual({reason.code for reason in decision.reasons}, {"POLICY_DENIED"})
+
+    def test_receipt_identity_mismatches(self):
+        self.assertDenied(assess(receipt=receipt(run_id="run-2")), "receipt.run_id")
+        self.assertDenied(assess(receipt=receipt(task_id="inventory")), "receipt.task_id")
+        self.assertDenied(assess(receipt=receipt(box_id="box-2")), "receipt.box_id")
+        self.assertDenied(assess(receipt=receipt(worker_id="builder")), "receipt.worker_id")
+        self.assertDenied(assess(receipt=receipt(target_id="vm-7")), "receipt.target_id")
+
+    def test_receipt_digest_mismatches(self):
+        for overrides, code in [
+            ({"receipt": receipt(plan_digest=OTHER)}, "READINESS_STALE"),
+            ({"receipt": receipt(workspace_digest=OTHER)}, "WORKSPACE_CONFLICT"),
+            ({"receipt": receipt(evaluator_digest=OTHER)}, "EVALUATOR_NOT_READY"),
+            ({"receipt": receipt(reservation_id="rsv-9")}, "READINESS_STALE"),
+            ({"plan_digest": OTHER}, "READINESS_STALE"),
+            ({"workspace_digest": OTHER}, "WORKSPACE_CONFLICT"),
+            ({"evaluator_digest": OTHER}, "EVALUATOR_NOT_READY"),
+        ]:
+            decision = assess(**overrides)
+            self.assertFalse(decision.ready, overrides)
+            self.assertEqual([reason.code for reason in decision.reasons], [code], overrides)
+
+    def test_grant_identity_mismatches(self):
+        self.assertDenied(assess(grant=grant(run_id="run-2")), "grant.run_id")
+        self.assertDenied(assess(grant=grant(task_id="inventory")), "grant.task_id")
+        self.assertDenied(assess(grant=grant(box_id="box-2")), "grant.box_id")
+
+    def test_reservation_identity_mismatches(self):
+        self.assertDenied(assess(reservation=reservation(run_id="run-2")), "reservation.run_id")
+        self.assertDenied(assess(reservation=reservation(task_id="inventory")), "reservation.task_id")
+        self.assertDenied(assess(reservation=reservation(worker_id="builder")), "reservation.worker_id")
+        self.assertDenied(assess(reservation=reservation(target_id="vm-7")), "reservation.target_id")
+
+    def test_expected_subject_mismatch_is_denied_even_when_records_agree_with_each_other(self):
+        # All records are mutually consistent for run-1/frame/box-1/strategist/localhost,
+        # but the caller asks about a different subject.
+        self.assertDenied(assess(run_id="run-2"), "expected run_id")
+        self.assertDenied(assess(task_id="inventory"), "expected task_id")
+        self.assertDenied(assess(box_id="box-2"), "expected box_id")
+        self.assertDenied(assess(worker_id="builder"), "expected worker_id")
+        self.assertDenied(assess(target_id="vm-7"), "expected target_id")
+
+    def test_every_denial_names_the_offending_field_and_values(self):
+        decision = assess(grant=grant(run_id="run-B"))
+        self.assertEqual(len(decision.reasons), 1)
+        self.assertEqual(decision.reasons[0].detail, "capability grant run_id 'run-B' does not match expected 'run-1'")
+
+
 class EventAndProjectionTests(unittest.TestCase):
+    RUN = "three-agent-demo"
+
     def _run_created(self):
         runbook = load_runbook(ROOT / "examples/three-agent-runbook.json")
-        return new_event(
-            "three-agent-demo",
-            "RUN_CREATED",
-            "orchestrator",
-            {"runbook": runbook, "plan_digest": canonical_digest(runbook)},
-        )
+        return new_event(self.RUN, "RUN_CREATED", "orchestrator", {"runbook": runbook, "plan_digest": canonical_digest(runbook)})
+
+    def _ledger_receipt(self, state, **overrides):
+        values = dict(run_id=self.RUN, plan_digest=state["plan_digest"], task_id="frame", worker_id="strategist")
+        values.update(overrides)
+        return receipt(**values)
 
     def test_legacy_event_stream_replays_to_the_same_projection_plus_empty_receipts(self):
         created = self._run_created()
@@ -565,21 +760,40 @@ class EventAndProjectionTests(unittest.TestCase):
         for task in legacy_state["tasks"].values():
             self.assertNotIn("waiting", task)
 
-    def test_readiness_recorded_projects_a_validated_receipt(self):
-        created = self._run_created()
-        state = project([created])
-        recorded = new_event("three-agent-demo", "READINESS_RECORDED", "doctor", {"receipt": receipt().to_dict()})
-        state = apply_event(state, recorded)
-        self.assertEqual(state["readiness_receipts"]["rcpt-1"], receipt().to_dict())
-        corrupt = dict(receipt().to_dict(), schema_version=3)
-        with self.assertRaisesRegex(SchemaError, "schema_version 3 is not supported"):
-            apply_event(state, new_event("three-agent-demo", "READINESS_RECORDED", "doctor", {"receipt": corrupt}))
+    def test_readiness_recorded_projects_a_validated_bound_receipt(self):
+        state = project([self._run_created()])
+        bound = self._ledger_receipt(state)
+        state = apply_event(state, new_event(self.RUN, "READINESS_RECORDED", "doctor", {"receipt": bound.to_dict()}))
+        self.assertEqual(state["readiness_receipts"]["rcpt-1"], bound.to_dict())
+
+    def test_corrupted_ledger_receipts_are_rejected_on_replay(self):
+        state = project([self._run_created()])
+        good = self._ledger_receipt(state)
+        cases = [
+            (dict(good.to_dict(), schema_version=3), SchemaError, "schema_version 3 is not supported"),
+            (self._ledger_receipt(state, run_id="other-run").to_dict(), ValueError, "run_id 'other-run' does not match event run_id"),
+            (self._ledger_receipt(state, plan_digest=OTHER).to_dict(), ValueError, "different plan digest"),
+            (self._ledger_receipt(state, task_id="ghost").to_dict(), ValueError, "unknown task 'ghost'"),
+            (self._ledger_receipt(state, worker_id="ghost").to_dict(), ValueError, "unknown worker 'ghost'"),
+        ]
+        for payload, error, message in cases:
+            with self.assertRaisesRegex(error, message):
+                apply_event(state, new_event(self.RUN, "READINESS_RECORDED", "doctor", {"receipt": payload}))
+        with_first = apply_event(state, new_event(self.RUN, "READINESS_RECORDED", "doctor", {"receipt": good.to_dict()}))
+        with self.assertRaisesRegex(ValueError, "receipt id already exists"):
+            apply_event(with_first, new_event(self.RUN, "READINESS_RECORDED", "doctor", {"receipt": good.to_dict()}))
+
+    def test_foreign_receipt_cannot_be_smuggled_through_a_matching_event_run_id(self):
+        # Event run_id matches, but the receipt itself was issued for another run.
+        state = project([self._run_created()])
+        foreign = receipt(run_id="run-1", plan_digest=state["plan_digest"])
+        with self.assertRaisesRegex(ValueError, "run_id 'run-1' does not match event run_id 'three-agent-demo'"):
+            apply_event(state, new_event(self.RUN, "READINESS_RECORDED", "doctor", {"receipt": foreign.to_dict()}))
 
     def test_task_waiting_and_cleared_round_trip_through_sqlite(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = SQLiteEventStore(Path(temporary) / "events.sqlite3")
             try:
-                run_id = "three-agent-demo"
                 store.append(self._run_created())
                 reason = WaitingReason(
                     code="EVALUATOR_NOT_READY",
@@ -587,24 +801,38 @@ class EventAndProjectionTests(unittest.TestCase):
                     wake_condition="evaluator probe green",
                     task_id="frame",
                 )
-                store.append(new_event(run_id, "TASK_WAITING", "orchestrator", {"task_id": "frame", "reason": reason.to_dict()}))
-                waiting = project(store.read(run_id))
+                store.append(new_event(self.RUN, "TASK_WAITING", "orchestrator", {"task_id": "frame", "reason": reason.to_dict()}))
+                waiting = project(store.read(self.RUN))
                 self.assertEqual(waiting["tasks"]["frame"]["status"], "waiting")
                 self.assertEqual(WaitingReason.from_dict(waiting["tasks"]["frame"]["waiting"]), reason)
-                store.append(new_event(run_id, "TASK_WAIT_CLEARED", "orchestrator", {"task_id": "frame"}))
-                cleared = project(store.read(run_id))
+                store.append(new_event(self.RUN, "TASK_WAIT_CLEARED", "orchestrator", {"task_id": "frame"}))
+                cleared = project(store.read(self.RUN))
                 self.assertEqual(cleared["tasks"]["frame"]["status"], "pending")
                 self.assertIsNone(cleared["tasks"]["frame"]["waiting"])
             finally:
                 store.close()
 
+    def test_cross_task_and_unbound_waiting_reasons_are_rejected(self):
+        state = project([self._run_created()])
+        cross = WaitingReason(code="AUTH_REQUIRED", detail="x", task_id="inventory").to_dict()
+        with self.assertRaisesRegex(ValueError, "reason task_id 'inventory' does not match payload task_id 'frame'"):
+            apply_event(state, new_event(self.RUN, "TASK_WAITING", "o", {"task_id": "frame", "reason": cross}))
+        unbound = WaitingReason(code="AUTH_REQUIRED", detail="x").to_dict()
+        with self.assertRaisesRegex(ValueError, "reason task_id None does not match payload task_id 'frame'"):
+            apply_event(state, new_event(self.RUN, "TASK_WAITING", "o", {"task_id": "frame", "reason": unbound}))
+        ghost = WaitingReason(code="AUTH_REQUIRED", detail="x", task_id="ghost").to_dict()
+        with self.assertRaisesRegex(ValueError, "unknown task 'ghost'"):
+            apply_event(state, new_event(self.RUN, "TASK_WAITING", "o", {"task_id": "ghost", "reason": ghost}))
+        with self.assertRaisesRegex(ValueError, "unknown task 'ghost'"):
+            apply_event(state, new_event(self.RUN, "TASK_WAIT_CLEARED", "o", {"task_id": "ghost"}))
+
     def test_waiting_transitions_are_guarded(self):
         state = project([self._run_created()])
         with self.assertRaisesRegex(ValueError, "not waiting"):
-            apply_event(state, new_event("three-agent-demo", "TASK_WAIT_CLEARED", "o", {"task_id": "frame"}))
-        bad_reason = {"schema": "camol.waiting_reason", "schema_version": 1, "code": "NOPE", "detail": "x"}
+            apply_event(state, new_event(self.RUN, "TASK_WAIT_CLEARED", "o", {"task_id": "frame"}))
+        bad_reason = {"schema": "camol.waiting_reason", "schema_version": 1, "code": "NOPE", "detail": "x", "task_id": "frame"}
         with self.assertRaisesRegex(SchemaError, "code must be one of"):
-            apply_event(state, new_event("three-agent-demo", "TASK_WAITING", "o", {"task_id": "frame", "reason": bad_reason}))
+            apply_event(state, new_event(self.RUN, "TASK_WAITING", "o", {"task_id": "frame", "reason": bad_reason}))
 
     def test_waiting_task_is_not_offered_to_the_scheduler(self):
         with tempfile.TemporaryDirectory() as temporary:

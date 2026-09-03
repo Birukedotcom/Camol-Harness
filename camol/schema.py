@@ -5,8 +5,10 @@ receipts, reservations, grants, lease fences) is hashed through
 :func:`canonical_digest`. The canonical form is deterministic: keys are sorted,
 separators carry no whitespace, non-ASCII text is escaped, and the bytes are UTF-8.
 Values that JSON cannot represent unambiguously (NaN, infinities, non-string keys,
-tuples, sets, bytes, datetimes, arbitrary objects) are rejected instead of being
-coerced, so two producers can never disagree about what a digest covers.
+sets, bytes, datetimes, arbitrary objects, cyclic containers) are rejected instead
+of being coerced, so two producers can never disagree about what a digest covers.
+Tuples are accepted and encoded as JSON arrays because contracts store their
+collections as tuples for deep immutability.
 
 The byte layout intentionally matches the pre-M0 ``runbook_digest`` formula so
 existing frozen plan digests do not change.
@@ -17,7 +19,7 @@ import json
 import math
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence
 
 __all__ = [
     "SchemaError",
@@ -50,20 +52,22 @@ class SchemaError(ValueError):
 
 
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
-_FRACTION = re.compile(r"\.(\d{1,9})(?=[+-]\d{2}:\d{2}$)")
+_FRACTION = re.compile(r"\.(\d+)(?=[+-]\d{2}:\d{2}$)")
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$")
 
 
 # --------------------------------------------------------------------------- hashing
 
 
-def _normalize(value: Any, path: str) -> Any:
+def _normalize(value: Any, path: str, active: Optional[FrozenSet[int]] = None) -> Any:
     """Return a JSON-safe copy of ``value`` or raise ``SchemaError``.
 
     ``bool`` is checked before ``int`` because ``bool`` subclasses ``int``.
     Floats are accepted only when finite and are re-emitted as floats, never
     silently converted to integers; ``1`` and ``1.0`` therefore hash differently,
-    which is the ambiguity-free choice.
+    which is the ambiguity-free choice. ``active`` holds the ids of containers on
+    the current descent path so a cyclic structure is rejected deterministically
+    instead of overflowing the stack.
     """
     if value is None or isinstance(value, bool) or isinstance(value, str):
         return value
@@ -73,17 +77,27 @@ def _normalize(value: Any, path: str) -> Any:
         if math.isnan(value) or math.isinf(value):
             raise SchemaError("{}: non-finite float cannot be canonicalized".format(path))
         return value
-    if isinstance(value, dict):
-        normalized: Dict[str, Any] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise SchemaError("{}: object keys must be strings, not {}".format(path, type(key).__name__))
-            normalized[key] = _normalize(item, "{}.{}".format(path, key))
-        return normalized
-    if isinstance(value, list):
-        return [_normalize(item, "{}[{}]".format(path, index)) for index, item in enumerate(value)]
+    if isinstance(value, (dict, list, tuple)):
+        if active is None:
+            active = frozenset()
+        if id(value) in active:
+            raise SchemaError("{}: cyclic structure cannot be canonicalized".format(path))
+        inner = active | {id(value)}
+        if isinstance(value, dict):
+            normalized: Dict[str, Any] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise SchemaError("{}: object keys must be strings, not {}".format(path, type(key).__name__))
+                normalized[key] = _normalize(item, "{}.{}".format(path, key), inner)
+            return normalized
+        if isinstance(value, tuple):
+            # Tuples are the immutable internal form of contract collections and
+            # canonicalize as JSON arrays. Bare tuples from callers are accepted
+            # for the same reason; sets remain rejected because they are unordered.
+            return [_normalize(item, "{}[{}]".format(path, index), inner) for index, item in enumerate(value)]
+        return [_normalize(item, "{}[{}]".format(path, index), inner) for index, item in enumerate(value)]
     raise SchemaError(
-        "{}: unsupported value type {} (only null, bool, int, finite float, str, list, dict)".format(
+        "{}: unsupported value type {} (only null, bool, int, finite float, str, list, tuple, dict)".format(
             path, type(value).__name__
         )
     )
@@ -116,9 +130,17 @@ def parse_timestamp(value: Any, label: str) -> datetime:
     text = value.strip()
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
-    # Python 3.9's fromisoformat accepts only 3- or 6-digit fractions; pad or
-    # truncate to microseconds so 1-9 digit fractions parse identically.
-    text = _FRACTION.sub(lambda match: "." + match.group(1)[:6].ljust(6, "0"), text)
+    # Python 3.9's fromisoformat accepts only 3- or 6-digit fractions. Pad
+    # shorter fractions to microseconds; reject longer ones outright so two
+    # distinct sub-microsecond instants can never normalize to one value.
+    fraction = _FRACTION.search(text)
+    if fraction is not None and len(fraction.group(1)) > 6:
+        raise SchemaError(
+            "{} carries sub-microsecond precision ({} digits); at most 6 fractional digits are supported".format(
+                label, len(fraction.group(1))
+            )
+        )
+    text = _FRACTION.sub(lambda match: "." + match.group(1).ljust(6, "0"), text)
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:

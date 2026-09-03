@@ -18,8 +18,8 @@ explicit ``expires_at`` field plus a pure ``is_fresh(now)`` check; no contract
 consults the wall clock on its own.
 """
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .schema import (
     SchemaError,
@@ -48,6 +48,7 @@ __all__ = [
     "RECEIPT_STATUSES",
     "RESERVATION_STATUSES",
     "TRUST_TIERS",
+    "FILESYSTEM_POLICIES",
     "CAPABILITY_KINDS",
     "CLEANUP_OWNERS",
     "ProbeResult",
@@ -84,8 +85,30 @@ PROBE_STATUSES = frozenset({"green", "red", "unknown"})
 RECEIPT_STATUSES = frozenset({"green", "red"})
 RESERVATION_STATUSES = frozenset({"reserved", "released", "expired"})
 TRUST_TIERS = frozenset({"developer_trusted", "developer_sandboxed", "sandboxed"})
+# What a box may actually do to source. Distinct from TRUST_TIERS, which describe
+# the process/credential posture of the worker and its grant.
+#   read_only                the box may read the workspace and write nothing
+#   isolated_worktree_write  the box may write only inside a dedicated task worktree
+#   shared_checkout_write    the box writes into a shared checkout; this is the
+#                            pre-M2 simulator posture and can never back a claim
+FILESYSTEM_POLICIES = frozenset({"read_only", "isolated_worktree_write", "shared_checkout_write"})
 CAPABILITY_KINDS = frozenset({"read", "write", "execute", "network", "deploy", "credential", "destroy"})
 CLEANUP_OWNERS = frozenset({"camol", "adopted"})
+
+
+def _tuple(value: Any, label: str) -> Tuple[str, ...]:
+    """Validate a string collection and freeze it as a tuple (deep immutability)."""
+    if isinstance(value, tuple):
+        value = list(value)
+    return tuple(require_string_list(value, label, sort=True))
+
+
+def _argv(value: Any, label: str) -> Tuple[str, ...]:
+    if isinstance(value, tuple):
+        value = list(value)
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise SchemaError("{} must be an argv array of strings".format(label))
+    return tuple(value)
 
 
 def _fresh(expires_at: Optional[str], now: str, label: str) -> bool:
@@ -186,9 +209,9 @@ class ProbeResult:
     summary: str
     target_id: Optional[str] = None
     expires_at: Optional[str] = None
-    command: List[str] = field(default_factory=list)
+    command: Tuple[str, ...] = ()
     tool_version: Optional[str] = None
-    missing_requirements: List[str] = field(default_factory=list)
+    missing_requirements: Tuple[str, ...] = ()
     evidence_digest: Optional[str] = None
 
     def __post_init__(self) -> None:
@@ -203,21 +226,19 @@ class ProbeResult:
             self.observed_at, "y"
         ):
             raise SchemaError("probe expires_at must be after observed_at")
-        if not isinstance(self.command, list) or any(not isinstance(item, str) for item in self.command):
-            raise SchemaError("probe command must be an argv array of strings")
-        object.__setattr__(self, "command", list(self.command))
+        object.__setattr__(self, "command", _argv(self.command, "probe command"))
         object.__setattr__(self, "tool_version", require_optional_string(self.tool_version, "probe tool_version"))
         object.__setattr__(self, "summary", require_string(self.summary, "probe summary"))
         object.__setattr__(
-            self,
-            "missing_requirements",
-            require_string_list(self.missing_requirements, "probe missing_requirements", sort=True),
+            self, "missing_requirements", _tuple(self.missing_requirements, "probe missing_requirements")
         )
         object.__setattr__(
             self, "evidence_digest", require_optional_digest(self.evidence_digest, "probe evidence_digest")
         )
         if self.status == "green" and self.missing_requirements:
             raise SchemaError("a green probe cannot list missing requirements")
+        if self.status == "green" and self.expires_at is None:
+            raise SchemaError("a green probe must declare expires_at; proof without expiry is not proof")
 
     def is_fresh(self, now: str) -> bool:
         return self.status == "green" and _fresh(self.expires_at, now, "probe expires_at")
@@ -275,6 +296,8 @@ class WorkspaceReceipt:
     ``path`` is recorded as a string and is not resolved, created, or checked in
     M0. ``dirty_digest`` is the canonical digest of the workspace's uncommitted
     state; ``sha256`` of an empty canonical list is the clean value.
+    ``filesystem_policy`` describes source access (see ``FILESYSTEM_POLICIES``);
+    the worker's trust tier lives on the grant, not here.
     """
 
     SCHEMA = "camol.workspace_receipt"
@@ -311,7 +334,7 @@ class WorkspaceReceipt:
         object.__setattr__(self, "path", require_string(self.path, "workspace path"))
         object.__setattr__(self, "dirty_digest", require_digest(self.dirty_digest, "dirty_digest"))
         object.__setattr__(
-            self, "filesystem_policy", require_choice(self.filesystem_policy, "filesystem_policy", TRUST_TIERS)
+            self, "filesystem_policy", require_choice(self.filesystem_policy, "filesystem_policy", FILESYSTEM_POLICIES)
         )
         object.__setattr__(self, "cleanup_owner", require_choice(self.cleanup_owner, "cleanup_owner", CLEANUP_OWNERS))
         object.__setattr__(self, "created_at", require_timestamp(self.created_at, "workspace created_at"))
@@ -464,28 +487,26 @@ class CapabilityGrant:
     run_id: str
     task_id: str
     box_id: str
-    capabilities: List[str]
+    capabilities: Tuple[str, ...]
     trust_tier: str
     granted_by: str
     granted_at: str
     expires_at: str
-    filesystem_paths: List[str] = field(default_factory=list)
-    network_destinations: List[str] = field(default_factory=list)
-    credential_refs: List[str] = field(default_factory=list)
+    filesystem_paths: Tuple[str, ...] = ()
+    network_destinations: Tuple[str, ...] = ()
+    credential_refs: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("grant_id", "run_id", "task_id", "box_id"):
             object.__setattr__(self, name, require_identifier(getattr(self, name), "grant " + name))
-        capabilities = require_string_list(self.capabilities, "grant capabilities", sort=True)
+        capabilities = _tuple(self.capabilities, "grant capabilities")
         unknown = sorted(set(capabilities) - CAPABILITY_KINDS)
         if unknown:
             raise SchemaError("grant capabilities contain unknown kinds: {}".format(", ".join(unknown)))
         object.__setattr__(self, "capabilities", capabilities)
-        object.__setattr__(self, "filesystem_paths", require_string_list(self.filesystem_paths, "filesystem_paths", sort=True))
-        object.__setattr__(
-            self, "network_destinations", require_string_list(self.network_destinations, "network_destinations", sort=True)
-        )
-        object.__setattr__(self, "credential_refs", require_string_list(self.credential_refs, "credential_refs", sort=True))
+        object.__setattr__(self, "filesystem_paths", _tuple(self.filesystem_paths, "filesystem_paths"))
+        object.__setattr__(self, "network_destinations", _tuple(self.network_destinations, "network_destinations"))
+        object.__setattr__(self, "credential_refs", _tuple(self.credential_refs, "credential_refs"))
         if self.credential_refs and "credential" not in capabilities:
             raise SchemaError("credential_refs require the credential capability")
         if self.network_destinations and "network" not in capabilities:
@@ -605,11 +626,11 @@ class ReadinessReceipt:
     adapter_kind: str
     requested_model: Optional[str]
     reservation_id: str
-    probes: List[ProbeResult]
+    probes: Tuple[ProbeResult, ...]
     status: str
     observed_at: str
     expires_at: str
-    credential_scopes: List[str] = field(default_factory=list)
+    credential_scopes: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -629,24 +650,36 @@ class ReadinessReceipt:
         object.__setattr__(self, "workspace_digest", require_digest(self.workspace_digest, "receipt workspace_digest"))
         object.__setattr__(self, "evaluator_digest", require_digest(self.evaluator_digest, "receipt evaluator_digest"))
         object.__setattr__(self, "requested_model", require_optional_string(self.requested_model, "requested_model"))
-        object.__setattr__(
-            self, "credential_scopes", require_string_list(self.credential_scopes, "credential_scopes", sort=True)
-        )
-        if not isinstance(self.probes, list) or not self.probes:
+        object.__setattr__(self, "credential_scopes", _tuple(self.credential_scopes, "credential_scopes"))
+        probes = list(self.probes) if isinstance(self.probes, (list, tuple)) else None
+        if not probes:
             raise SchemaError("receipt probes must be a non-empty list of ProbeResult")
-        if any(not isinstance(probe, ProbeResult) for probe in self.probes):
+        if any(not isinstance(probe, ProbeResult) for probe in probes):
             raise SchemaError("receipt probes must be ProbeResult instances")
-        probe_ids = [probe.probe_id for probe in self.probes]
+        probe_ids = [probe.probe_id for probe in probes]
         if len(set(probe_ids)) != len(probe_ids):
             raise SchemaError("receipt probe ids must be unique")
-        object.__setattr__(self, "probes", sorted(self.probes, key=lambda probe: probe.probe_id))
+        object.__setattr__(self, "probes", tuple(sorted(probes, key=lambda probe: probe.probe_id)))
         object.__setattr__(self, "status", require_choice(self.status, "receipt status", RECEIPT_STATUSES))
         object.__setattr__(self, "observed_at", require_timestamp(self.observed_at, "receipt observed_at"))
         object.__setattr__(self, "expires_at", require_timestamp(self.expires_at, "receipt expires_at"))
-        if parse_timestamp(self.expires_at, "x") <= parse_timestamp(self.observed_at, "y"):
+        expires = parse_timestamp(self.expires_at, "x")
+        if expires <= parse_timestamp(self.observed_at, "y"):
             raise SchemaError("receipt expires_at must be after observed_at")
-        if self.status == "green" and any(probe.status != "green" for probe in self.probes):
-            raise SchemaError("a green receipt cannot contain a non-green probe")
+        if self.status == "green":
+            # Construction-time coherence: a green receipt cannot outlive its
+            # weakest probe, and every probe must itself be green with an expiry.
+            for probe in self.probes:
+                if probe.status != "green":
+                    raise SchemaError("a green receipt cannot contain a non-green probe ({})".format(probe.probe_id))
+                if probe.expires_at is None:
+                    raise SchemaError("a green receipt requires probe {} to declare expires_at".format(probe.probe_id))
+                if expires > parse_timestamp(probe.expires_at, "z"):
+                    raise SchemaError(
+                        "receipt expires_at {} is later than probe {} expires_at {}".format(
+                            self.expires_at, probe.probe_id, probe.expires_at
+                        )
+                    )
 
     def binding(self) -> Dict[str, Any]:
         """The identity/digest fields a lease fence must match exactly."""
@@ -656,7 +689,10 @@ class ReadinessReceipt:
         return canonical_digest(self.binding())
 
     def is_fresh(self, now: str) -> bool:
-        return self.status == "green" and _fresh(self.expires_at, now, "receipt expires_at")
+        """Green, unexpired, and every underlying probe still green and unexpired."""
+        if self.status != "green" or not _fresh(self.expires_at, now, "receipt expires_at"):
+            return False
+        return all(probe.is_fresh(now) for probe in self.probes)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -698,7 +734,7 @@ class ReadinessReceipt:
         probes_raw = data["probes"]
         if not isinstance(probes_raw, list):
             raise SchemaError("readiness receipt probes must be a list")
-        probes = [ProbeResult.from_dict(item) for item in probes_raw]
+        probes = tuple(ProbeResult.from_dict(item) for item in probes_raw)
         values = {name: data[name] for name in required if name != "probes"}
         return cls(probes=probes, credential_scopes=data.get("credential_scopes", []), **values)
 
@@ -831,17 +867,21 @@ class ReadinessDecision:
 def assess_ready_to_lease(
     *,
     now: str,
+    run_id: str,
+    task_id: str,
+    box_id: str,
+    worker_id: str,
+    target_id: str,
     plan_digest: Optional[str],
     plan_frozen: bool,
     control_plane_ready: bool,
     dependencies_green: bool,
+    workspace_digest: Optional[str],
     receipt: Optional[ReadinessReceipt],
     evaluator_digest: Optional[str],
     evaluator_ready: bool,
     grant: Optional[CapabilityGrant],
     reservation: Optional[CapacityReservation],
-    task_id: str,
-    box_id: str,
 ) -> ReadinessDecision:
     """Pure evaluation of the READY_TO_LEASE conjunction over typed inputs.
 
@@ -849,11 +889,30 @@ def assess_ready_to_lease(
     predicate has one deterministic definition that M3 can wire in and that
     tests can exercise now. Every failed conjunct yields a typed reason; the
     caller sees all of them, not just the first.
+
+    The expected subject is ``(run_id, task_id, box_id, worker_id, target_id)``
+    plus the expected ``plan_digest``, ``workspace_digest``, and
+    ``evaluator_digest``. Every supplied receipt, grant, and reservation must
+    bind to exactly that subject; any cross-run or cross-subject combination is
+    ``POLICY_DENIED`` and can never be ready.
     """
     reasons: List[WaitingReason] = []
 
     def wait(code: str, detail: str, wake: str) -> None:
         reasons.append(WaitingReason(code=code, detail=detail, wake_condition=wake, task_id=task_id, box_id=box_id))
+
+    def bound(record: Any, label: str, expected: Sequence[Tuple[str, Any]]) -> bool:
+        """Emit POLICY_DENIED for every field of ``record`` that differs from the subject."""
+        consistent = True
+        for name, value in expected:
+            if getattr(record, name) != value:
+                consistent = False
+                wait(
+                    "POLICY_DENIED",
+                    "{} {} {!r} does not match expected {!r}".format(label, name, getattr(record, name), value),
+                    "{} re-issued for this subject".format(label),
+                )
+        return consistent
 
     if not plan_frozen or plan_digest is None:
         wait("APPROVAL_REQUIRED", "PLAN_FROZEN is false: the plan digest has not been approved", "PLAN_APPROVED")
@@ -861,18 +920,31 @@ def assess_ready_to_lease(
         wait("OPERATOR_ATTENTION", "CONTROL_PLANE_READY is false", "control-plane probes green")
     if not dependencies_green:
         wait("WAITING_DEPENDENCY", "TASK_DEPENDENCIES_GREEN is false", "all depends_on tasks succeeded")
+    if workspace_digest is None:
+        wait("WORKSPACE_CONFLICT", "no workspace receipt digest for this task", "workspace receipt recorded")
 
     if receipt is None:
         wait("READINESS_STALE", "BOX_READINESS_FRESH is false: no readiness receipt", "readiness receipt recorded")
     else:
-        if receipt.task_id != task_id or receipt.box_id != box_id:
-            wait("POLICY_DENIED", "readiness receipt is bound to a different task or box", "matching receipt recorded")
+        bound(
+            receipt,
+            "readiness receipt",
+            [
+                ("run_id", run_id),
+                ("task_id", task_id),
+                ("box_id", box_id),
+                ("worker_id", worker_id),
+                ("target_id", target_id),
+            ],
+        )
         if plan_digest is not None and receipt.plan_digest != plan_digest:
             wait("READINESS_STALE", "readiness receipt is bound to a different plan digest", "receipt re-probed")
+        if workspace_digest is not None and receipt.workspace_digest != workspace_digest:
+            wait("WORKSPACE_CONFLICT", "readiness receipt is bound to a different workspace digest", "receipt re-probed")
         if receipt.status != "green":
             wait("READINESS_STALE", "readiness receipt is red", "receipt re-probed green")
         elif not receipt.is_fresh(now):
-            wait("READINESS_STALE", "readiness receipt has expired", "receipt re-probed")
+            wait("READINESS_STALE", "readiness receipt or one of its probes has expired", "receipt re-probed")
 
     if not evaluator_ready or evaluator_digest is None:
         wait("EVALUATOR_NOT_READY", "EVALUATOR_READY is false", "evaluator bundle frozen and launchable")
@@ -881,18 +953,22 @@ def assess_ready_to_lease(
 
     if grant is None:
         wait("APPROVAL_REQUIRED", "AUTHORITY_GRANTED is false: no capability grant", "capability grant issued")
-    elif grant.task_id != task_id or grant.box_id != box_id:
-        wait("POLICY_DENIED", "capability grant is bound to a different task or box", "matching grant issued")
-    elif not grant.is_fresh(now):
-        wait("APPROVAL_REQUIRED", "capability grant has expired", "capability grant renewed")
+    else:
+        bound(grant, "capability grant", [("run_id", run_id), ("task_id", task_id), ("box_id", box_id)])
+        if not grant.is_fresh(now):
+            wait("APPROVAL_REQUIRED", "capability grant has expired", "capability grant renewed")
 
     if reservation is None:
         wait("CAPACITY_EXHAUSTED", "CAPACITY_RESERVED is false: no reservation", "capacity reservation recorded")
-    elif reservation.task_id != task_id:
-        wait("POLICY_DENIED", "capacity reservation is bound to a different task", "matching reservation recorded")
-    elif not reservation.is_active(now):
-        wait("CAPACITY_EXHAUSTED", "capacity reservation is not active", "reservation renewed")
-    elif receipt is not None and receipt.reservation_id != reservation.reservation_id:
-        wait("READINESS_STALE", "readiness receipt names a different reservation", "receipt re-probed")
+    else:
+        bound(
+            reservation,
+            "capacity reservation",
+            [("run_id", run_id), ("task_id", task_id), ("worker_id", worker_id), ("target_id", target_id)],
+        )
+        if not reservation.is_active(now):
+            wait("CAPACITY_EXHAUSTED", "capacity reservation is not active", "reservation renewed")
+        if receipt is not None and receipt.reservation_id != reservation.reservation_id:
+            wait("READINESS_STALE", "readiness receipt names a different reservation", "receipt re-probed")
 
     return ReadinessDecision(ready=not reasons, reasons=tuple(reasons))

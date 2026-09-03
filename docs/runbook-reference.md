@@ -15,7 +15,7 @@ Two `schema_version` values are readable. Any other value is rejected with
 | Version | Status | Differences |
 |---|---|---|
 | `1` | frozen; digests pinned in `tests/test_runbook.py` | Accepts the legacy `run.max_agents` alias, ignores unknown fields, and has no readiness fields. Normalization is byte-identical to the pre-M0 kernel, so existing frozen plans still resume. |
-| `2` | current | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
+| `2` | current | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, rejects booleans in integer fields, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
 
 A v1 file that contains a v2 field (`readiness_policy` or `trust_tier`) is rejected
 rather than partially reinterpreted. Upgrading is explicit:
@@ -25,7 +25,7 @@ from camol.runbook import migrate_runbook_v1_to_v2
 
 v2 = migrate_runbook_v1_to_v2(
     v1_runbook,
-    readiness_policy={"receipt_ttl_seconds": 300, "require_readiness_receipt": True},
+    readiness_policy={"receipt_ttl_seconds": 300},
     trust_tiers={"strategist": "developer_trusted", "builder": "developer_trusted"},
 )
 ```
@@ -42,8 +42,7 @@ The v2 additions look like this:
   "run": {
     "max_concurrency": 3,
     "readiness_policy": {
-      "receipt_ttl_seconds": 300,
-      "require_readiness_receipt": true
+      "receipt_ttl_seconds": 300
     }
   },
   "agents": [
@@ -52,12 +51,19 @@ The v2 additions look like this:
 }
 ```
 
-`trust_tier` is one of `developer_trusted`, `developer_sandboxed`, or `sandboxed`.
+`trust_tier` is one of `developer_trusted`, `developer_sandboxed`, or `sandboxed`
+and describes the worker's process/credential posture. It is distinct from a
+workspace's `filesystem_policy` (`read_only`, `isolated_worktree_write`,
+`shared_checkout_write`), which describes actual source access.
+
+There is no plan field that turns readiness proof off. `require_readiness_receipt`
+is rejected explicitly, whatever its value; `READY_TO_LEASE` is a kernel invariant,
+not a runbook option.
 
 > Enforcement status: the scheduler records `readiness_policy` and `trust_tier` in
-> the frozen plan but does not act on them yet. A v2 plan with
-> `require_readiness_receipt: true` is still leased without a receipt. That gap is
-> characterized in `tests/test_readiness.py` and closes in M3.
+> the frozen plan but does not act on them yet. A v2 plan is still leased without
+> any receipt. That gap is characterized in `tests/test_readiness.py` and closes in
+> M3.
 
 Plan digests use `camol.schema.canonical_digest`: sorted keys, `,`/`:` separators,
 ASCII-escaped UTF-8, SHA-256, and a hard rejection of NaN, infinities, non-string

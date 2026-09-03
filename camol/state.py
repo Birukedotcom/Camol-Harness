@@ -147,17 +147,43 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         next_state["hillclimbs"].append(deepcopy(payload))
     elif event_type == "READINESS_RECORDED":
         # Validate on replay so a corrupted or hand-edited ledger cannot project
-        # an unparseable receipt as if it were proof.
+        # an unparseable or foreign receipt as if it were proof.
         receipt = ReadinessReceipt.from_dict(payload["receipt"])
+        if receipt.run_id != event["run_id"]:
+            raise ValueError(
+                "READINESS_RECORDED receipt run_id {!r} does not match event run_id {!r}".format(
+                    receipt.run_id, event["run_id"]
+                )
+            )
+        if next_state["plan_digest"] is not None and receipt.plan_digest != next_state["plan_digest"]:
+            raise ValueError("READINESS_RECORDED receipt is bound to a different plan digest")
+        if receipt.task_id not in next_state["tasks"]:
+            raise ValueError("READINESS_RECORDED receipt names unknown task {!r}".format(receipt.task_id))
+        if receipt.worker_id not in next_state["agents"]:
+            raise ValueError("READINESS_RECORDED receipt names unknown worker {!r}".format(receipt.worker_id))
+        # box_id is not validated: the current runbook registers agents with a box
+        # path, not a box identity. M2 introduces box records; bind it there.
+        if receipt.receipt_id in next_state["readiness_receipts"]:
+            raise ValueError("READINESS_RECORDED receipt id already exists: {}".format(receipt.receipt_id))
         next_state["readiness_receipts"][receipt.receipt_id] = receipt.to_dict()
     elif event_type == "TASK_WAITING":
-        task = next_state["tasks"][payload["task_id"]]
+        task_id = payload["task_id"]
+        if task_id not in next_state["tasks"]:
+            raise ValueError("TASK_WAITING names unknown task {!r}".format(task_id))
+        task = next_state["tasks"][task_id]
         reason = WaitingReason.from_dict(payload["reason"])
+        if reason.task_id != task_id:
+            raise ValueError(
+                "TASK_WAITING reason task_id {!r} does not match payload task_id {!r}".format(reason.task_id, task_id)
+            )
         if task["status"] != "pending":
             raise ValueError("only a pending task can enter a typed wait")
         task.update(status="waiting", waiting=reason.to_dict())
     elif event_type == "TASK_WAIT_CLEARED":
-        task = next_state["tasks"][payload["task_id"]]
+        task_id = payload["task_id"]
+        if task_id not in next_state["tasks"]:
+            raise ValueError("TASK_WAIT_CLEARED names unknown task {!r}".format(task_id))
+        task = next_state["tasks"][task_id]
         if task["status"] != "waiting":
             raise ValueError("task is not waiting")
         task.update(status="pending", waiting=None)

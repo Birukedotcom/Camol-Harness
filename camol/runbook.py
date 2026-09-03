@@ -6,9 +6,11 @@ Two schema versions are readable:
   every previously frozen plan digest still reproduces byte-for-byte, including
   the legacy ``run.max_agents`` alias.
 * ``schema_version: 2`` is the M0 contract. It removes the legacy alias, rejects
-  unknown fields at every object level, and adds explicit ``run.readiness_policy``
-  and per-agent ``trust_tier`` fields. Those fields are contract data only: the
-  M0 scheduler records them in the frozen plan but does not yet enforce them.
+  unknown fields at every object level, rejects booleans in integer fields, and
+  adds explicit ``run.readiness_policy`` and per-agent ``trust_tier`` fields.
+  Those fields are contract data only: the M0 scheduler records them in the
+  frozen plan but does not yet enforce them. There is deliberately no field that
+  disables readiness proof; READY_TO_LEASE is not plan-configurable.
 
 A v1 document is never reinterpreted as v2 implicitly. Use
 :func:`migrate_runbook_v1_to_v2` with explicit values for every new field.
@@ -36,7 +38,7 @@ LATEST_SCHEMA_VERSION = 2
 _ROOT_FIELDS_V2 = ("schema_version", "run", "rules", "agents", "tasks")
 _RUN_FIELDS_V2 = ("id", "objective", "max_concurrency", "completion", "token_policy", "readiness_policy")
 _TOKEN_POLICY_FIELDS = ("max_tokens_per_turn", "checkpoint_reserve", "max_total_tokens", "max_turns_per_task")
-_READINESS_POLICY_FIELDS = ("receipt_ttl_seconds", "require_readiness_receipt")
+_READINESS_POLICY_FIELDS = ("receipt_ttl_seconds",)
 _RULE_FIELDS = ("id", "text", "enforcement")
 _AGENT_FIELDS_V2 = ("id", "role", "box", "capabilities", "adapter", "trust_tier")
 _ADAPTER_FIELDS = ("kind", "argv", "timeout_seconds")
@@ -119,16 +121,24 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
     return _validate(root, version=version)
 
 
+def _strict_int(value: Any, label: str, *, minimum: int) -> int:
+    """Schema v2 integer: rejects bool (a subclass of int) and values below ``minimum``."""
+    if type(value) is not int or value < minimum:
+        kind = "positive" if minimum > 0 else "non-negative"
+        raise RunbookError("{} must be a {} integer".format(label, kind))
+    return value
+
+
 def _validate_readiness_policy(value: Any) -> Dict[str, Any]:
     policy = _object(value, "run.readiness_policy")
+    if "require_readiness_receipt" in policy:
+        raise RunbookError(
+            "run.readiness_policy.require_readiness_receipt is not a supported field: "
+            "readiness proof cannot be disabled by a plan"
+        )
     _reject_unknown(policy, _READINESS_POLICY_FIELDS, "run.readiness_policy")
-    ttl = policy.get("receipt_ttl_seconds")
-    if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
-        raise RunbookError("run.readiness_policy.receipt_ttl_seconds must be a positive integer")
-    require_receipt = policy.get("require_readiness_receipt")
-    if not isinstance(require_receipt, bool):
-        raise RunbookError("run.readiness_policy.require_readiness_receipt must be a boolean")
-    return {"receipt_ttl_seconds": ttl, "require_readiness_receipt": require_receipt}
+    ttl = _strict_int(policy.get("receipt_ttl_seconds"), "run.readiness_policy.receipt_ttl_seconds", minimum=1)
+    return {"receipt_ttl_seconds": ttl}
 
 
 def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
@@ -178,10 +188,14 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
         _reject_unknown(token_policy, _TOKEN_POLICY_FIELDS, "run.token_policy")
     for field in ("max_tokens_per_turn", "max_total_tokens", "max_turns_per_task"):
         value = token_policy.get(field)
-        if not isinstance(value, int) or value <= 0:
+        if strict:
+            _strict_int(value, "run.token_policy.{}".format(field), minimum=1)
+        elif not isinstance(value, int) or value <= 0:
             raise RunbookError("run.token_policy.{} must be a positive integer".format(field))
     checkpoint_reserve = token_policy.get("checkpoint_reserve", 0)
-    if not isinstance(checkpoint_reserve, int) or checkpoint_reserve < 0:
+    if strict:
+        _strict_int(checkpoint_reserve, "run.token_policy.checkpoint_reserve", minimum=0)
+    elif not isinstance(checkpoint_reserve, int) or checkpoint_reserve < 0:
         raise RunbookError("run.token_policy.checkpoint_reserve must be a non-negative integer")
     if checkpoint_reserve >= token_policy["max_tokens_per_turn"]:
         raise RunbookError("checkpoint_reserve must be smaller than max_tokens_per_turn")
@@ -234,7 +248,9 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             raise RunbookError("agents[{}].adapter.kind must be process".format(index))
         argv = _string_list(adapter.get("argv"), "agents[{}].adapter.argv".format(index), allow_empty=False)
         timeout_seconds = adapter.get("timeout_seconds", 1800)
-        if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+        if strict:
+            _strict_int(timeout_seconds, "agents[{}].adapter.timeout_seconds".format(index), minimum=1)
+        elif not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
             raise RunbookError("agents[{}].adapter.timeout_seconds must be positive".format(index))
         normalized_agent = {
                 "id": _identifier(agent.get("id"), "agents[{}].id".format(index)),
@@ -345,7 +361,9 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             )
 
         max_attempts = task.get("max_attempts", 3)
-        if not isinstance(max_attempts, int) or max_attempts <= 0:
+        if strict:
+            _strict_int(max_attempts, "task {} max_attempts".format(task_id), minimum=1)
+        elif not isinstance(max_attempts, int) or max_attempts <= 0:
             raise RunbookError("task {} max_attempts must be positive".format(task_id))
         normalized_tasks.append(
             {
