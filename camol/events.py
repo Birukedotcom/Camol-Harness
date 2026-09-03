@@ -26,8 +26,17 @@ EVENT_TYPES = frozenset(
         "DEBUG_CASE_VERIFIED",
         "EVAL_PROMOTED",
         "HILLCLIMB_RECORDED",
+        # M0 readiness contracts. Recorded by callers that hold a validated
+        # contract; the scheduler does not emit them yet.
+        "READINESS_RECORDED",
+        "TASK_WAITING",
+        "TASK_WAIT_CLEARED",
     }
 )
+
+# Event types that existed before M0. Replay of a ledger containing only these
+# must produce a projection identical to the pre-M0 projection.
+LEGACY_EVENT_TYPES = frozenset(EVENT_TYPES - {"READINESS_RECORDED", "TASK_WAITING", "TASK_WAIT_CLEARED"})
 
 EVIDENCE_KINDS = frozenset(
     {

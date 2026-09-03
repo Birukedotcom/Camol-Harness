@@ -2,14 +2,37 @@
 
 from .hillclimb import compare_vectors
 from .orchestrator import Orchestrator
-from .runbook import RunbookError, load_runbook, validate_runbook
+from .readiness import (
+    CapabilityGrant,
+    CapacityReservation,
+    LeaseFence,
+    ProbeResult,
+    ReadinessReceipt,
+    WaitingReason,
+    WorkspaceReceipt,
+    assess_ready_to_lease,
+)
+from .runbook import RunbookError, load_runbook, migrate_runbook_v1_to_v2, validate_runbook
+from .schema import SchemaError, canonical_digest, canonical_json_bytes
 from .store import SQLiteEventStore
 
 __all__ = [
+    "CapabilityGrant",
+    "CapacityReservation",
+    "LeaseFence",
     "Orchestrator",
+    "ProbeResult",
+    "ReadinessReceipt",
     "RunbookError",
     "SQLiteEventStore",
+    "SchemaError",
+    "WaitingReason",
+    "WorkspaceReceipt",
+    "assess_ready_to_lease",
+    "canonical_digest",
+    "canonical_json_bytes",
     "compare_vectors",
     "load_runbook",
+    "migrate_runbook_v1_to_v2",
     "validate_runbook",
 ]

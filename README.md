@@ -202,13 +202,23 @@ The executable Python slice currently provides:
 - packet-hash-bound results and restart recovery after an unconsumed result;
 - compact checkpoints instead of automatic transcript growth;
 - evidence requirements, verifier commands, retries, and token budgets;
-- debugger-case promotion into evals; and
-- vector-based hill-climb comparison.
+- debugger-case promotion into evals;
+- vector-based hill-climb comparison;
+- one canonical JSON digest function (`camol.schema.canonical_digest`) shared by
+  plans and every readiness contract;
+- versioned, validated `ProbeResult`, `ReadinessReceipt`, `WorkspaceReceipt`,
+  `CapacityReservation`, `CapabilityGrant`, and `LeaseFence` contracts
+  (`camol.readiness`), plus the twelve typed non-runnable reasons;
+- runbook schema v2 with an explicit v1-to-v2 migration and pinned v1 digests; and
+- `READINESS_RECORDED`, `TASK_WAITING`, and `TASK_WAIT_CLEARED` ledger events.
 
 The current box directory is not yet a Git worktree or security sandbox. The current
 scheduler can still lease an idle static capability match without a task-specific
-readiness receipt. Consequently, the included fake-agent demo tests kernel semantics
-only; replacing its command with a real coding agent is not yet supported or safe.
+readiness receipt; `tests/test_readiness.py` characterizes that unsafe boundary
+explicitly, and the M0 contracts are recorded but not yet enforced by the scheduler.
+No probe, workspace, reservation, grant, or fence is produced by real observation
+yet. Consequently, the included fake-agent demo tests kernel semantics only;
+replacing its command with a real coding agent is not yet supported or safe.
 
 ## Build path
 
@@ -216,7 +226,7 @@ The implementation sequence is deliberately narrow:
 
 | Milestone | Deliverable |
 |---|---|
-| M0 | Versioned readiness, workspace, reservation, grant, and lease-fence schemas |
+| M0 (contracts landed) | Versioned readiness, workspace, reservation, grant, and lease-fence schemas |
 | M1 | Read-only probe registry and `camol doctor` |
 | M2 | External state directory, isolated worktrees, integration workspace, sandbox boundary |
 | M3 | Task-specific readiness gates, reservations, fenced leases, typed waits |

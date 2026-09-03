@@ -130,6 +130,14 @@ when their ownership does not overlap.
 
 Goal: make the unsafe current behavior explicit before changing it.
 
+Status (branch `camol/m0-readiness-contracts`): contracts, canonical hashing,
+runbook v2 + migration, typed waiting reasons, and the three readiness ledger
+events are implemented and tested. The characterization cases in
+`tests/test_readiness.py` pass by asserting the current unsafe behavior; M3 must
+invert every `test_CURRENT_UNSAFE_*` assertion. Nothing in M0 probes, provisions,
+reserves, grants, or launches; `assess_ready_to_lease` is a pure function the
+scheduler does not yet call.
+
 Work:
 
 - Write failing characterization cases showing that the current scheduler would

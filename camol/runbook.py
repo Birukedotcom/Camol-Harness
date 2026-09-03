@@ -1,12 +1,28 @@
-"""Loading, normalization, and validation for executable JSON runbooks."""
+"""Loading, normalization, and validation for executable JSON runbooks.
 
-import hashlib
+Two schema versions are readable:
+
+* ``schema_version: 1`` is the pre-M0 contract. Its normalization is unchanged so
+  every previously frozen plan digest still reproduces byte-for-byte, including
+  the legacy ``run.max_agents`` alias.
+* ``schema_version: 2`` is the M0 contract. It removes the legacy alias, rejects
+  unknown fields at every object level, and adds explicit ``run.readiness_policy``
+  and per-agent ``trust_tier`` fields. Those fields are contract data only: the
+  M0 scheduler records them in the frozen plan but does not yet enforce them.
+
+A v1 document is never reinterpreted as v2 implicitly. Use
+:func:`migrate_runbook_v1_to_v2` with explicit values for every new field.
+"""
+
+import copy
 import json
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from .events import EVIDENCE_KINDS
+from .readiness import TRUST_TIERS
+from .schema import canonical_digest
 
 
 class RunbookError(ValueError):
@@ -14,6 +30,35 @@ class RunbookError(ValueError):
 
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+LATEST_SCHEMA_VERSION = 2
+
+_ROOT_FIELDS_V2 = ("schema_version", "run", "rules", "agents", "tasks")
+_RUN_FIELDS_V2 = ("id", "objective", "max_concurrency", "completion", "token_policy", "readiness_policy")
+_TOKEN_POLICY_FIELDS = ("max_tokens_per_turn", "checkpoint_reserve", "max_total_tokens", "max_turns_per_task")
+_READINESS_POLICY_FIELDS = ("receipt_ttl_seconds", "require_readiness_receipt")
+_RULE_FIELDS = ("id", "text", "enforcement")
+_AGENT_FIELDS_V2 = ("id", "role", "box", "capabilities", "adapter", "trust_tier")
+_ADAPTER_FIELDS = ("kind", "argv", "timeout_seconds")
+_TASK_FIELDS = (
+    "id",
+    "goal",
+    "depends_on",
+    "capabilities",
+    "acceptance",
+    "required_evidence",
+    "max_attempts",
+    "steps",
+    "verification",
+)
+_STEP_FIELDS = ("id", "instruction", "commands", "completion")
+_COMMAND_FIELDS = ("purpose", "argv")
+
+
+def _reject_unknown(payload: Dict[str, Any], allowed: Iterable[str], label: str) -> None:
+    unknown = sorted(set(payload) - set(allowed))
+    if unknown:
+        raise RunbookError("{} has unknown fields: {}".format(label, ", ".join(unknown)))
 
 
 def _object(value: Any, label: str) -> Dict[str, Any]:
@@ -58,20 +103,56 @@ def _relative_path(value: Any, label: str) -> str:
 
 
 def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and normalize a runbook of any supported schema version.
+
+    The returned document keeps the input's ``schema_version``; validation never
+    upgrades a v1 document to v2.
+    """
     root = _object(raw, "runbook")
-    if root.get("schema_version") != 1:
-        raise RunbookError("schema_version must be 1")
+    version = root.get("schema_version")
+    if type(version) is not int or version not in SUPPORTED_SCHEMA_VERSIONS:
+        raise RunbookError(
+            "unsupported schema_version {!r}; supported versions: {}".format(
+                version, ", ".join(str(item) for item in SUPPORTED_SCHEMA_VERSIONS)
+            )
+        )
+    return _validate(root, version=version)
+
+
+def _validate_readiness_policy(value: Any) -> Dict[str, Any]:
+    policy = _object(value, "run.readiness_policy")
+    _reject_unknown(policy, _READINESS_POLICY_FIELDS, "run.readiness_policy")
+    ttl = policy.get("receipt_ttl_seconds")
+    if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+        raise RunbookError("run.readiness_policy.receipt_ttl_seconds must be a positive integer")
+    require_receipt = policy.get("require_readiness_receipt")
+    if not isinstance(require_receipt, bool):
+        raise RunbookError("run.readiness_policy.require_readiness_receipt must be a boolean")
+    return {"receipt_ttl_seconds": ttl, "require_readiness_receipt": require_receipt}
+
+
+def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
+    strict = version >= 2
+    if strict:
+        _reject_unknown(root, _ROOT_FIELDS_V2, "runbook")
 
     run = _object(root.get("run"), "run")
+    if strict:
+        if "max_agents" in run:
+            raise RunbookError("run.max_agents is a schema v1 alias; schema v2 requires run.max_concurrency")
+        _reject_unknown(run, _RUN_FIELDS_V2, "run")
     run_id = _identifier(run.get("id"), "run.id")
     objective = _string(run.get("objective"), "run.objective")
-    if (
-        "max_concurrency" in run
-        and "max_agents" in run
-        and run["max_concurrency"] != run["max_agents"]
-    ):
-        raise RunbookError("run.max_concurrency conflicts with legacy run.max_agents")
-    concurrency_field = "max_concurrency" if "max_concurrency" in run else "max_agents"
+    if strict:
+        concurrency_field = "max_concurrency"
+    else:
+        if (
+            "max_concurrency" in run
+            and "max_agents" in run
+            and run["max_concurrency"] != run["max_agents"]
+        ):
+            raise RunbookError("run.max_concurrency conflicts with legacy run.max_agents")
+        concurrency_field = "max_concurrency" if "max_concurrency" in run else "max_agents"
     max_concurrency = run.get(concurrency_field)
     if (
         not isinstance(max_concurrency, int)
@@ -93,6 +174,8 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
         raise RunbookError("unsupported completion conditions: {}".format(", ".join(unknown_completion)))
 
     token_policy = _object(run.get("token_policy"), "run.token_policy")
+    if strict:
+        _reject_unknown(token_policy, _TOKEN_POLICY_FIELDS, "run.token_policy")
     for field in ("max_tokens_per_turn", "max_total_tokens", "max_turns_per_task"):
         value = token_policy.get(field)
         if not isinstance(value, int) or value <= 0:
@@ -102,6 +185,13 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
         raise RunbookError("run.token_policy.checkpoint_reserve must be a non-negative integer")
     if checkpoint_reserve >= token_policy["max_tokens_per_turn"]:
         raise RunbookError("checkpoint_reserve must be smaller than max_tokens_per_turn")
+    readiness_policy = None
+    if strict:
+        if "readiness_policy" not in run:
+            raise RunbookError("run.readiness_policy is required in schema v2")
+        readiness_policy = _validate_readiness_policy(run["readiness_policy"])
+    elif "readiness_policy" in run:
+        raise RunbookError("run.readiness_policy is a schema v2 field; migrate the runbook to schema_version 2")
 
     rules = root.get("rules", [])
     if not isinstance(rules, list):
@@ -109,6 +199,8 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
     normalized_rules = []
     for index, rule_value in enumerate(rules):
         rule = _object(rule_value, "rules[{}]".format(index))
+        if strict:
+            _reject_unknown(rule, _RULE_FIELDS, "rules[{}]".format(index))
         enforcement = rule.get("enforcement")
         if enforcement not in {"hard", "review"}:
             raise RunbookError("rules[{}].enforcement must be hard or review".format(index))
@@ -129,15 +221,22 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
     normalized_agents = []
     for index, agent_value in enumerate(agents):
         agent = _object(agent_value, "agents[{}]".format(index))
+        if strict:
+            _reject_unknown(agent, _AGENT_FIELDS_V2, "agents[{}]".format(index))
+        elif "trust_tier" in agent:
+            raise RunbookError(
+                "agents[{}].trust_tier is a schema v2 field; migrate the runbook to schema_version 2".format(index)
+            )
         adapter = _object(agent.get("adapter"), "agents[{}].adapter".format(index))
+        if strict:
+            _reject_unknown(adapter, _ADAPTER_FIELDS, "agents[{}].adapter".format(index))
         if adapter.get("kind") != "process":
             raise RunbookError("agents[{}].adapter.kind must be process".format(index))
         argv = _string_list(adapter.get("argv"), "agents[{}].adapter.argv".format(index), allow_empty=False)
         timeout_seconds = adapter.get("timeout_seconds", 1800)
         if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
             raise RunbookError("agents[{}].adapter.timeout_seconds must be positive".format(index))
-        normalized_agents.append(
-            {
+        normalized_agent = {
                 "id": _identifier(agent.get("id"), "agents[{}].id".format(index)),
                 "role": _string(agent.get("role"), "agents[{}].role".format(index)),
                 "box": _relative_path(agent.get("box"), "agents[{}].box".format(index)),
@@ -151,8 +250,15 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
                     "argv": argv,
                     "timeout_seconds": timeout_seconds,
                 },
-            }
-        )
+        }
+        if strict:
+            trust_tier = agent.get("trust_tier")
+            if trust_tier not in TRUST_TIERS:
+                raise RunbookError(
+                    "agents[{}].trust_tier must be one of: {}".format(index, ", ".join(sorted(TRUST_TIERS)))
+                )
+            normalized_agent["trust_tier"] = trust_tier
+        normalized_agents.append(normalized_agent)
     _unique((agent["id"] for agent in normalized_agents), "agent ids")
     _unique((agent["box"] for agent in normalized_agents), "agent boxes")
 
@@ -163,6 +269,8 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
     seen_task_ids = set()
     for task_index, task_value in enumerate(tasks):
         task = _object(task_value, "tasks[{}]".format(task_index))
+        if strict:
+            _reject_unknown(task, _TASK_FIELDS, "tasks[{}]".format(task_index))
         task_id = _identifier(task.get("id"), "tasks[{}].id".format(task_index))
         if task_id in seen_task_ids:
             raise RunbookError("task ids must be unique")
@@ -191,12 +299,16 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
         normalized_steps = []
         for step_index, step_value in enumerate(steps):
             step = _object(step_value, "task {} step {}".format(task_id, step_index))
+            if strict:
+                _reject_unknown(step, _STEP_FIELDS, "task {} step {}".format(task_id, step_index))
             commands = step.get("commands", [])
             if not isinstance(commands, list):
                 raise RunbookError("task {} step commands must be an array".format(task_id))
             normalized_commands = []
             for command_index, command_value in enumerate(commands):
                 command = _object(command_value, "task {} command {}".format(task_id, command_index))
+                if strict:
+                    _reject_unknown(command, _COMMAND_FIELDS, "task {} command {}".format(task_id, command_index))
                 normalized_commands.append(
                     {
                         "purpose": _string(command.get("purpose"), "command purpose"),
@@ -223,6 +335,8 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
         normalized_verification = []
         for command_index, command_value in enumerate(verification):
             command = _object(command_value, "task {} verification {}".format(task_id, command_index))
+            if strict:
+                _reject_unknown(command, _COMMAND_FIELDS, "task {} verification {}".format(task_id, command_index))
             normalized_verification.append(
                 {
                     "purpose": _string(command.get("purpose"), "verification purpose"),
@@ -255,25 +369,66 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    normalized = {
-        "schema_version": 1,
-        "run": {
-            "id": run_id,
-            "objective": objective,
-            concurrency_field: max_concurrency,
-            "completion": completion,
-            "token_policy": {
-                "max_tokens_per_turn": token_policy["max_tokens_per_turn"],
-                "checkpoint_reserve": checkpoint_reserve,
-                "max_total_tokens": token_policy["max_total_tokens"],
-                "max_turns_per_task": token_policy["max_turns_per_task"],
-            },
+    normalized_run = {
+        "id": run_id,
+        "objective": objective,
+        concurrency_field: max_concurrency,
+        "completion": completion,
+        "token_policy": {
+            "max_tokens_per_turn": token_policy["max_tokens_per_turn"],
+            "checkpoint_reserve": checkpoint_reserve,
+            "max_total_tokens": token_policy["max_total_tokens"],
+            "max_turns_per_task": token_policy["max_turns_per_task"],
         },
+    }
+    if readiness_policy is not None:
+        normalized_run["readiness_policy"] = readiness_policy
+    normalized = {
+        "schema_version": version,
+        "run": normalized_run,
         "rules": normalized_rules,
         "agents": normalized_agents,
         "tasks": normalized_tasks,
     }
     return normalized
+
+
+def migrate_runbook_v1_to_v2(
+    runbook: Dict[str, Any],
+    *,
+    readiness_policy: Dict[str, Any],
+    trust_tiers: Dict[str, str],
+) -> Dict[str, Any]:
+    """Explicitly migrate a schema v1 runbook (raw or normalized) to schema v2.
+
+    Nothing is defaulted: the caller must supply the readiness policy and a
+    trust tier for every registered agent. ``max_agents`` becomes
+    ``max_concurrency`` with the same value. The result is re-validated as v2,
+    and the input is never mutated. The v2 digest is necessarily different from
+    the v1 digest because the plan now contains more frozen decisions.
+    """
+    source = validate_runbook(runbook)
+    if source["schema_version"] != 1:
+        raise RunbookError("migrate_runbook_v1_to_v2 requires a schema_version 1 runbook")
+    if not isinstance(trust_tiers, dict):
+        raise RunbookError("trust_tiers must map every agent id to a trust tier")
+    agent_ids = [agent["id"] for agent in source["agents"]]
+    missing = sorted(set(agent_ids) - set(trust_tiers))
+    extra = sorted(set(trust_tiers) - set(agent_ids))
+    if missing:
+        raise RunbookError("trust_tiers is missing agents: {}".format(", ".join(missing)))
+    if extra:
+        raise RunbookError("trust_tiers names unknown agents: {}".format(", ".join(extra)))
+
+    migrated = copy.deepcopy(source)
+    migrated["schema_version"] = 2
+    run = migrated["run"]
+    if "max_agents" in run:
+        run["max_concurrency"] = run.pop("max_agents")
+    run["readiness_policy"] = copy.deepcopy(readiness_policy)
+    for agent in migrated["agents"]:
+        agent["trust_tier"] = trust_tiers[agent["id"]]
+    return validate_runbook(migrated)
 
 
 def load_runbook(path: Path) -> Dict[str, Any]:
@@ -282,5 +437,10 @@ def load_runbook(path: Path) -> Dict[str, Any]:
 
 
 def runbook_digest(runbook: Dict[str, Any]) -> str:
-    canonical = json.dumps(runbook, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+    """Canonical digest of a normalized runbook.
+
+    Delegates to :func:`camol.schema.canonical_digest`, whose byte layout equals
+    the pre-M0 ``json.dumps(sort_keys=True, separators=(",", ":"))`` formula, so
+    existing frozen plan digests are unchanged (pinned in ``tests/test_runbook.py``).
+    """
+    return canonical_digest(runbook)

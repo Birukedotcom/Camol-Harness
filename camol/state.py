@@ -3,6 +3,8 @@
 from copy import deepcopy
 from typing import Any, Dict, Iterable
 
+from .readiness import ReadinessReceipt, WaitingReason
+
 
 def empty_state() -> Dict[str, Any]:
     return {
@@ -18,6 +20,7 @@ def empty_state() -> Dict[str, Any]:
         "debug_cases": {},
         "evals": {},
         "hillclimbs": [],
+        "readiness_receipts": {},
         "total_tokens": 0,
         "last_seq": 0,
     }
@@ -142,6 +145,22 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         next_state["evals"][payload["eval_id"]] = deepcopy(payload)
     elif event_type == "HILLCLIMB_RECORDED":
         next_state["hillclimbs"].append(deepcopy(payload))
+    elif event_type == "READINESS_RECORDED":
+        # Validate on replay so a corrupted or hand-edited ledger cannot project
+        # an unparseable receipt as if it were proof.
+        receipt = ReadinessReceipt.from_dict(payload["receipt"])
+        next_state["readiness_receipts"][receipt.receipt_id] = receipt.to_dict()
+    elif event_type == "TASK_WAITING":
+        task = next_state["tasks"][payload["task_id"]]
+        reason = WaitingReason.from_dict(payload["reason"])
+        if task["status"] != "pending":
+            raise ValueError("only a pending task can enter a typed wait")
+        task.update(status="waiting", waiting=reason.to_dict())
+    elif event_type == "TASK_WAIT_CLEARED":
+        task = next_state["tasks"][payload["task_id"]]
+        if task["status"] != "waiting":
+            raise ValueError("task is not waiting")
+        task.update(status="pending", waiting=None)
     else:
         raise ValueError("projection does not handle {}".format(event_type))
 
