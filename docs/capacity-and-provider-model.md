@@ -204,3 +204,22 @@ Before public use, Camol needs:
 - The harness, orchestration agent, worker agent, model, target, and provider account
   always retain separate identities.
 - Core maturity and each workflow/adapter maturity are reported independently.
+
+## 9. First hosted-model proof profile
+
+The first real hosted-model proof is a generic Claude CLI box requesting Claude
+Fable 5.1. This is an adapter profile, not a dependency of the kernel and not a claim
+that Fable runs locally. The box owns the isolated workspace, sandbox, tools, and
+evidence collector; inference uses the user's supported remote provider connection.
+
+Readiness requires a compatible CLI, supported authentication, model entitlement,
+quota and spend capacity, task capability fit, sandbox policy, isolated workspace,
+and a runnable frozen evaluator. The lease and model-call envelope record both the
+requested and resolved model so a refusal, provider fallback, or safeguard reroute
+cannot silently inherit Fable-specific capability claims.
+
+As of 2026-09-03, Anthropic documents model ID `claude-fable-5-1` and requires Claude
+Code 2.1.255 or later for Fable 5.1. Those values belong in versioned adapter
+compatibility data and must be reprobed rather than hard-coded into scheduler logic.
+The complete implementation order and dogfood acceptance gate live in
+[`v0-build-plan.md`](v0-build-plan.md).

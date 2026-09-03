@@ -78,6 +78,9 @@ leases—and the N-box scaling contract—is in
 Capacity discovery, agent/model suitability, bring-your-own accounts, and generic
 workflow profiles are specified in
 [docs/capacity-and-provider-model.md](docs/capacity-and-provider-model.md).
+The pull-request-sized path from the current simulator to a readiness-safe,
+worktree-isolated Claude/Fable dogfood run is in
+[docs/v0-build-plan.md](docs/v0-build-plan.md).
 
 ## Run the deterministic three-agent proof
 
@@ -106,7 +109,9 @@ it must use the packet as its bounded prompt and write the structured result con
 
 ## Current boundary
 
-The framework launches process adapters and gives every one a separate box path. It
-does not yet create Git worktrees, provision VMs, or contain a vendor-specific Codex,
-Claude, cmux, or exe.dev wrapper. Those are the next adapter layer and do not need to
-change the state machine.
+The framework launches process adapters and gives every one a separate box path. A
+box path is not yet a Git worktree or a process-security boundary. The current runner
+can lease an idle capability match without a task-specific readiness receipt, so it
+must be treated as a deterministic simulator rather than a safe real-agent runner.
+The v0 build plan makes readiness, isolation, fenced leases, and evidence capture
+prerequisites for the first Claude/Fable adapter.

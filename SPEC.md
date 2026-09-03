@@ -762,6 +762,11 @@ The following specification areas are not yet implemented and remain speculative
 
 ## 16. Build sequence
 
+The implementation-ready, pull-request-sized version of this sequence—including the
+`READY_TO_LEASE` invariant, isolation tiers, first Claude/Fable profile, tests, and
+promotion gates—is maintained in `docs/v0-build-plan.md`. That plan is the operational
+roadmap from the current deterministic simulator to the first real-agent dogfood run.
+
 1. Stabilize generic invariant, obligation, gate, approval, epistemic-status,
    resource-envelope, and plan-revision schemas with migration tests.
 2. Add the complete tool-event envelope, central event streaming, and
