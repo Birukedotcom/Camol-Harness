@@ -53,6 +53,35 @@ class RunnerTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_shipped_local_n_box_example_completes_with_repository_ignores(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, state_dir, store = self._workspace_and_store(temporary)
+            shutil.copy(ROOT / ".gitignore", workspace / ".gitignore")
+            subprocess.run(["git", "-C", str(workspace), "add", ".gitignore"], check=True)
+            subprocess.run(
+                ["git", "-C", str(workspace), "commit", "-q", "-m", "repository ignores"],
+                check=True,
+            )
+            try:
+                orchestrator = Orchestrator(store)
+                state = orchestrator.initialize(
+                    load_runbook(ROOT / "examples/local-n-box-runbook.json")
+                )
+                orchestrator.approve_plan(state["run_id"], "test-owner", state["plan_digest"])
+                final = asyncio.run(
+                    HarnessRunner(orchestrator, workspace, state_dir=state_dir).run_until_terminal(
+                        state["run_id"]
+                    )
+                )
+                self.assertEqual(final["status"], "completed", (final.get("terminal"), final["tasks"]))
+                self.assertTrue(all(task["status"] == "succeeded" for task in final["tasks"].values()))
+                first_wave_leases = [
+                    event for event in store.read(state["run_id"]) if event["type"] == "TASK_LEASED"
+                ][:3]
+                self.assertEqual(len({event["payload"]["agent_id"] for event in first_wave_leases}), 3)
+            finally:
+                store.close()
+
     def test_runner_resumes_active_leases_and_reuses_an_unconsumed_result(self):
         async def scenario(workspace, state_dir, store):
             orchestrator = Orchestrator(store)

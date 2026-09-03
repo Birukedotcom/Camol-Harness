@@ -270,9 +270,9 @@ Python 3.9+ is sufficient and the simulator has no runtime dependencies:
 
 ```bash
 python3 -m unittest discover -v
-python3 -m camol validate examples/three-agent-runbook.json
-python3 -m camol doctor examples/three-agent-runbook.json --workspace . --state-dir /path/outside/repo
-python3 -m camol run examples/three-agent-runbook.json \
+python3 -m camol validate examples/local-n-box-runbook.json
+python3 -m camol doctor examples/local-n-box-runbook.json --workspace . --state-dir /path/outside/repo
+python3 -m camol run examples/local-n-box-runbook.json \
   --workspace . \
   --state-dir /path/outside/repo/demo-state \
   --approve-by "$USER"
@@ -293,7 +293,7 @@ Or detach a draft run, inspect it, approve the exact plan, and let the daemon co
 after the client exits:
 
 ```bash
-python3 -m camol start examples/three-agent-runbook.json \
+python3 -m camol start examples/local-n-box-runbook.json \
   --workspace . --state-dir /path/outside/repo/supervised-state
 python3 -m camol ctl status --state-dir /path/outside/repo/supervised-state
 python3 -m camol ctl approve --state-dir /path/outside/repo/supervised-state --by "$USER"
@@ -302,12 +302,14 @@ python3 -m camol ctl approve --state-dir /path/outside/repo/supervised-state --b
 Inspect the replayed projection and immutable event stream:
 
 ```bash
-python3 -m camol status --db /path/outside/repo/demo-state/camol.sqlite3 --run-id three-agent-demo
-python3 -m camol events --db /path/outside/repo/demo-state/camol.sqlite3 --run-id three-agent-demo
+python3 -m camol status --db /path/outside/repo/demo-state/camol.sqlite3 --run-id local-n-box-demo
+python3 -m camol events --db /path/outside/repo/demo-state/camol.sqlite3 --run-id local-n-box-demo
 ```
 
-The example happens to register three fake workers so concurrency is easy to observe;
-three is not a product assumption. Use a schema-v3/v4 hosted profile, successful
+The local N-box example happens to register three fake workers so concurrency is easy
+to observe; three is not a product assumption. The legacy
+`examples/three-agent-runbook.json` remains frozen as the schema-v1 digest fixture and
+is not the in-repository execution example. Use a schema-v3/v4 hosted profile, successful
 provider preflight, an enforcing trust tier, and explicit budget approval before a
 real hosted-agent run.
 
