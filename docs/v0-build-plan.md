@@ -130,12 +130,16 @@ when their ownership does not overlap.
 
 Goal: make the unsafe current behavior explicit before changing it.
 
-Status (branch `camol/m0-readiness-contracts`): contracts, canonical hashing,
-runbook v2 + migration, typed waiting reasons, and the three readiness ledger
-events are implemented and tested. Receipts bind run, task, box, worker, target,
-plan, workspace, evaluator, and reservation identities; a green receipt cannot
-outlive its weakest probe; hashed collections are immutable tuples; and no plan
-field can disable readiness proof. The characterization cases in
+Status (branches `camol/m0-readiness-contracts`, `camol/readiness-foundation`):
+contracts, canonical hashing, runbook v2 + migration, typed waiting reasons, and
+the three readiness ledger events are implemented and tested. A `BoxBinding`
+fixes the subject `(run, task, box, worker, target)` and its workspace; receipts,
+grants, reservations, and fences bind to it, to the frozen `AuthorityPolicy`, and
+to the frozen `ProbePolicy` by digest. Validity is `start <= now < expires_at`
+everywhere; a green receipt cannot outlive or predate its weakest probe; hashed
+collections are immutable tuples; no plan field can disable readiness proof; and
+a grant must equal its authority policy exactly. See `docs/readiness.md`. The
+characterization cases in
 `tests/test_readiness.py` pass by asserting the current unsafe behavior; M3 must
 invert every `test_CURRENT_UNSAFE_*` assertion. Nothing in M0 probes, provisions,
 reserves, grants, or launches; `assess_ready_to_lease` is a pure function the
@@ -179,6 +183,14 @@ launched.
 ### M1 — Readiness receipts and `camol doctor`
 
 Goal: prove readiness without beginning task work.
+
+Status (branch `camol/readiness-foundation`): implemented in `camol/probes.py`
+and `camol/doctor.py` with exit codes 0/2/3, `--json`, a guarded runner that
+refuses to execute workspace or state-dir content and runbook commands, and
+hostile-fixture redaction tests. Provider connection and network policy are
+informational `unknown` results (no provider adapter exists yet), so a green
+doctor proves nothing about hosted-model or egress readiness. Only the local
+process-adapter fixture is backed; every other target class remains speculative.
 
 Work:
 

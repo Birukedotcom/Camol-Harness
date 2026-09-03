@@ -9,7 +9,9 @@ from typing import Any, Dict
 
 from .orchestrator import Orchestrator, StateTransitionError
 from .runner import HarnessRunner, summary
+from .doctor import DoctorOptions, run_doctor
 from .runbook import RunbookError, load_runbook
+from .schema import SchemaError
 from .store import SQLiteEventStore
 
 
@@ -106,6 +108,23 @@ def command_run(args: argparse.Namespace) -> int:
         store.close()
 
 
+def command_doctor(args: argparse.Namespace) -> int:
+    report = run_doctor(
+        DoctorOptions(
+            runbook=Path(args.runbook),
+            workspace=Path(args.workspace),
+            state_dir=Path(args.state_dir),
+            json_output=args.json,
+            now=args.now,
+            receipt_ttl_seconds=args.receipt_ttl_seconds,
+            min_free_bytes=args.min_free_bytes,
+            services=tuple(args.require_service or ()),
+            target_id=args.target_id,
+        )
+    )
+    return report.exit_code
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="camol", description="Persistent plan-driven agent orchestration harness"
@@ -144,6 +163,28 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--workspace", default=".")
     run.add_argument("--approve-by")
     run.set_defaults(handler=command_run)
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="prove task-specific readiness with read-only probes; never prepares, launches, or spends",
+    )
+    doctor.add_argument("runbook")
+    doctor.add_argument("--workspace", required=True, help="source repository root (read only)")
+    doctor.add_argument("--state-dir", required=True, help="external state directory; must be outside the workspace")
+    doctor.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    doctor.add_argument(
+        "--now",
+        help="ISO-8601 observation instant for deterministic fixtures; a receipt produced with a synthetic clock is not evidence (default: current UTC time)",
+    )
+    doctor.add_argument(
+        "--receipt-ttl-seconds",
+        type=int,
+        help="receipt validity for schema v1 runbooks (default 300); v2 runbooks freeze this in run.readiness_policy and reject a conflicting value",
+    )
+    doctor.add_argument("--min-free-bytes", type=int, default=1 << 30, help="required free disk at the state directory")
+    doctor.add_argument("--require-service", action="append", metavar="HOST:PORT", help="read-only TCP reachability check; repeatable")
+    doctor.add_argument("--target-id", help="override the local target identity (default: local:<hostname>)")
+    doctor.set_defaults(handler=command_doctor)
     return parser
 
 
@@ -152,7 +193,7 @@ def main(argv: Any = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (RunbookError, StateTransitionError, OSError, json.JSONDecodeError) as error:
+    except (RunbookError, SchemaError, StateTransitionError, OSError, json.JSONDecodeError) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2
 

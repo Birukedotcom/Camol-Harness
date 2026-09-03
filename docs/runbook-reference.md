@@ -294,6 +294,9 @@ python3 -m camol approve --db .camol/run.sqlite3 --run-id RUN --by NAME
 # Execute or resume until a declared terminal state
 python3 -m camol run runbook.json --db .camol/run.sqlite3 --workspace .
 
+# Prove task-specific readiness without starting work (read-only; exit 0/2/3)
+python3 -m camol doctor runbook.json --workspace . --state-dir /outside/repo --json
+
 # Read projection or immutable history
 python3 -m camol status --db .camol/run.sqlite3 --run-id RUN
 python3 -m camol events --db .camol/run.sqlite3 --run-id RUN --after 0

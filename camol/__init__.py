@@ -3,9 +3,13 @@
 from .hillclimb import compare_vectors
 from .orchestrator import Orchestrator
 from .readiness import (
+    AuthorityPolicy,
+    BoxBinding,
     CapabilityGrant,
     CapacityReservation,
     LeaseFence,
+    ProbePolicy,
+    ProbeRequirement,
     ProbeResult,
     ReadinessReceipt,
     WaitingReason,
@@ -17,10 +21,14 @@ from .schema import SchemaError, canonical_digest, canonical_json_bytes
 from .store import SQLiteEventStore
 
 __all__ = [
+    "AuthorityPolicy",
+    "BoxBinding",
     "CapabilityGrant",
     "CapacityReservation",
     "LeaseFence",
     "Orchestrator",
+    "ProbePolicy",
+    "ProbeRequirement",
     "ProbeResult",
     "ReadinessReceipt",
     "RunbookError",

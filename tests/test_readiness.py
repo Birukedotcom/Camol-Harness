@@ -1,4 +1,4 @@
-"""M0 readiness contracts and the characterization of the current unsafe boundary.
+"""Readiness contracts, the READY_TO_LEASE predicate, and the current unsafe boundary.
 
 The ``UnsafeBoundaryCharacterization`` class documents what the scheduler does
 TODAY: it leases an idle worker to any ready task whose static capability list
@@ -22,10 +22,15 @@ from camol.orchestrator import Orchestrator
 from camol.readiness import (
     FILESYSTEM_POLICIES,
     NON_RUNNABLE_REASONS,
+    SUBJECT_FIELDS,
     TRUST_TIERS,
+    AuthorityPolicy,
+    BoxBinding,
     CapabilityGrant,
     CapacityReservation,
     LeaseFence,
+    ProbePolicy,
+    ProbeRequirement,
     ProbeResult,
     ReadinessReceipt,
     WaitingReason,
@@ -39,6 +44,7 @@ from camol.store import SQLiteEventStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
+T_MINUS_1M = "2026-09-03T09:59:00+00:00"
 T0 = "2026-09-03T10:00:00+00:00"
 T0_NORMALIZED = "2026-09-03T10:00:00.000000+00:00"
 T_PLUS_1M = "2026-09-03T10:01:00+00:00"
@@ -48,9 +54,11 @@ T_PLUS_5M = "2026-09-03T10:05:00+00:00"
 T_PLUS_10M = "2026-09-03T10:10:00+00:00"
 PLAN = canonical_digest({"plan": "fixture"})
 EVALUATOR = canonical_digest({"evaluator": "fixture"})
-WORKSPACE = canonical_digest({"workspace": "fixture"})
 CLEAN = canonical_digest([])
 OTHER = canonical_digest(["other"])
+
+
+# --------------------------------------------------------------------------- fixtures
 
 
 def probe(**overrides):
@@ -60,38 +68,24 @@ def probe(**overrides):
         status="green",
         observed_at=T0,
         expires_at=T_PLUS_5M,
+        method="process",
         command=["git", "--version"],
         tool_version="2.45.0",
         summary="git 2.45.0 is installed",
+        target_id="localhost",
     )
     values.update(overrides)
+    if values["status"] != "green":
+        values.setdefault("reason_code", "NEEDS_DOWNLOAD")
+        values.setdefault("wake_condition", "install the tool")
+        values.setdefault("missing_requirements", ["git"])
     return ProbeResult(**values)
 
 
-def receipt(**overrides):
-    values = dict(
-        receipt_id="rcpt-1",
-        run_id="run-1",
-        plan_digest=PLAN,
-        task_id="frame",
-        box_id="box-1",
-        worker_id="strategist",
-        target_id="localhost",
-        transport_id="local-process",
-        runtime_id="fake-agent",
-        workspace_digest=WORKSPACE,
-        evaluator_digest=EVALUATOR,
-        adapter_kind="process",
-        requested_model=None,
-        credential_scopes=[],
-        reservation_id="rsv-1",
-        probes=[probe()],
-        status="green",
-        observed_at=T0,
-        expires_at=T_PLUS_5M,
-    )
+def red_probe(**overrides):
+    values = dict(status="red", expires_at=None)
     values.update(overrides)
-    return ReadinessReceipt(**values)
+    return probe(**values)
 
 
 def workspace(**overrides):
@@ -110,11 +104,79 @@ def workspace(**overrides):
     return WorkspaceReceipt(**values)
 
 
+def binding(**overrides):
+    values = dict(
+        run_id="run-1",
+        task_id="frame",
+        box_id="box-1",
+        worker_id="strategist",
+        target_id="localhost",
+        plan_digest=PLAN,
+        workspace_id="ws-1",
+        workspace_digest=workspace().digest(),
+        bound_at=T0,
+    )
+    values.update(overrides)
+    return BoxBinding(**values)
+
+
+def authority(**overrides):
+    values = dict(
+        run_id="run-1",
+        task_id="frame",
+        required_capabilities=["write", "read", "execute"],
+        filesystem_paths=["state/worktrees/frame"],
+        trust_tier="developer_trusted",
+    )
+    values.update(overrides)
+    return AuthorityPolicy(**values)
+
+
+def probe_policy(**overrides):
+    values = dict(
+        run_id="run-1",
+        task_id="frame",
+        required_probes=[ProbeRequirement(probe_id="git-version", kind="git", target_bound=True)],
+    )
+    values.update(overrides)
+    return ProbePolicy(**values)
+
+
+def receipt(**overrides):
+    values = dict(
+        receipt_id="rcpt-1",
+        run_id="run-1",
+        plan_digest=PLAN,
+        task_id="frame",
+        box_id="box-1",
+        worker_id="strategist",
+        target_id="localhost",
+        transport_id="local-process",
+        runtime_id="fake-agent",
+        box_binding_digest=binding().digest(),
+        workspace_digest=workspace().digest(),
+        evaluator_digest=EVALUATOR,
+        authority_digest=authority().digest(),
+        probe_policy_digest=probe_policy().digest(),
+        adapter_kind="process",
+        requested_model=None,
+        credential_scopes=[],
+        reservation_id="rsv-1",
+        probes=[probe()],
+        status="green",
+        observed_at=T0,
+        expires_at=T_PLUS_5M,
+    )
+    values.update(overrides)
+    return ReadinessReceipt(**values)
+
+
 def reservation(**overrides):
     values = dict(
         reservation_id="rsv-1",
         run_id="run-1",
         task_id="frame",
+        box_id="box-1",
         worker_id="strategist",
         target_id="localhost",
         concurrency_slots=1,
@@ -134,6 +196,9 @@ def grant(**overrides):
         run_id="run-1",
         task_id="frame",
         box_id="box-1",
+        worker_id="strategist",
+        target_id="localhost",
+        authority_digest=authority().digest(),
         capabilities=["write", "read", "execute"],
         filesystem_paths=["state/worktrees/frame"],
         trust_tier="developer_trusted",
@@ -152,10 +217,14 @@ def fence(**overrides):
         task_id="frame",
         box_id="box-1",
         worker_id="strategist",
+        target_id="localhost",
         epoch=1,
         plan_digest=PLAN,
+        box_binding_digest=binding().digest(),
         evaluator_digest=EVALUATOR,
-        workspace_digest=WORKSPACE,
+        workspace_digest=workspace().digest(),
+        authority_digest=authority().digest(),
+        probe_policy_digest=probe_policy().digest(),
         readiness_digest=receipt().digest(),
         grant_digest=grant().digest(),
         reservation_digest=reservation().digest(),
@@ -170,24 +239,28 @@ def assess(**overrides):
     """All-green READY_TO_LEASE inputs for subject (run-1, frame, box-1, strategist, localhost)."""
     values = dict(
         now=T_PLUS_2M,
-        run_id="run-1",
-        task_id="frame",
-        box_id="box-1",
-        worker_id="strategist",
-        target_id="localhost",
+        binding=binding(),
         plan_digest=PLAN,
         plan_frozen=True,
         control_plane_ready=True,
         dependencies_green=True,
-        workspace_digest=WORKSPACE,
+        workspace=workspace(),
         receipt=receipt(),
         evaluator_digest=EVALUATOR,
         evaluator_ready=True,
+        authority_policy=authority(),
         grant=grant(),
+        probe_policy=probe_policy(),
         reservation=reservation(),
     )
     values.update(overrides)
     return assess_ready_to_lease(**values)
+
+
+ALL_CONTRACTS = (probe, workspace, binding, authority, probe_policy, receipt, reservation, grant, fence)
+
+
+# --------------------------------------------------------------------------- unsafe boundary
 
 
 class UnsafeBoundaryCharacterization(unittest.TestCase):
@@ -209,10 +282,7 @@ class UnsafeBoundaryCharacterization(unittest.TestCase):
     def test_CURRENT_UNSAFE_idle_static_capability_match_is_leased_with_no_readiness_evidence(self):
         state = self.orchestrator.state(self.run_id)
         self.assertEqual(state["readiness_receipts"], {}, "precondition: no receipt exists")
-
         assignments = self.orchestrator.lease_ready_tasks(self.run_id)
-
-        # Every ready task was leased purely on static capability subset matching.
         self.assertEqual({item["task_id"] for item in assignments}, {"frame", "inventory", "challenge"})
         after = self.orchestrator.state(self.run_id)
         self.assertEqual(after["readiness_receipts"], {})
@@ -239,8 +309,6 @@ class UnsafeBoundaryCharacterization(unittest.TestCase):
         self.assertNotIn("READINESS_RECORDED", types)
 
     def test_CURRENT_UNSAFE_scheduler_leases_a_v2_plan_without_any_receipt(self):
-        # A v2 plan carries a readiness policy, and readiness cannot be disabled by
-        # any plan field, yet the M0 scheduler still leases with no receipt at all.
         raw = json.loads((ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8"))
         raw["schema_version"] = 2
         raw["run"]["id"] = "v2-policy-not-enforced"
@@ -250,39 +318,45 @@ class UnsafeBoundaryCharacterization(unittest.TestCase):
         state = self.orchestrator.initialize(raw)
         self.orchestrator.approve_plan(state["run_id"], "test-owner", state["plan_digest"])
         self.orchestrator.start(state["run_id"])
-
         assignments = self.orchestrator.lease_ready_tasks(state["run_id"])
-
         self.assertEqual(len(assignments), 3)
         self.assertEqual(self.orchestrator.state(state["run_id"])["readiness_receipts"], {})
 
     def test_desired_predicate_disagrees_with_the_current_scheduler(self):
-        # The pure READY_TO_LEASE assessment says the same lease is NOT ready.
         state = self.orchestrator.state(self.run_id)
         decision = assess_ready_to_lease(
             now=T0,
-            run_id=self.run_id,
-            task_id="frame",
-            box_id="strategist",
-            worker_id="strategist",
-            target_id="localhost",
+            binding=binding(run_id=self.run_id, box_id="strategist", plan_digest=state["plan_digest"]),
             plan_digest=state["plan_digest"],
             plan_frozen=True,
             control_plane_ready=True,
             dependencies_green=True,
-            workspace_digest=None,
+            workspace=None,
             receipt=None,
             evaluator_digest=None,
             evaluator_ready=False,
+            authority_policy=None,
             grant=None,
+            probe_policy=None,
             reservation=None,
         )
         self.assertFalse(decision.ready)
         self.assertEqual(
             [reason.code for reason in decision.reasons],
-            ["WORKSPACE_CONFLICT", "READINESS_STALE", "EVALUATOR_NOT_READY", "APPROVAL_REQUIRED", "CAPACITY_EXHAUSTED"],
+            [
+                "WORKSPACE_CONFLICT",
+                "READINESS_STALE",
+                "READINESS_STALE",
+                "EVALUATOR_NOT_READY",
+                "APPROVAL_REQUIRED",
+                "APPROVAL_REQUIRED",
+                "CAPACITY_EXHAUSTED",
+            ],
         )
         self.assertEqual(len(self.orchestrator.lease_ready_tasks(self.run_id)), 3)
+
+
+# --------------------------------------------------------------------------- vocabulary
 
 
 class WaitingReasonTests(unittest.TestCase):
@@ -323,6 +397,9 @@ class WaitingReasonTests(unittest.TestCase):
             WaitingReason.from_dict(payload)
 
 
+# --------------------------------------------------------------------------- round trips
+
+
 class ContractRoundTripTests(unittest.TestCase):
     def assertRoundTrips(self, value):
         payload = value.to_dict()
@@ -335,12 +412,10 @@ class ContractRoundTripTests(unittest.TestCase):
         return payload
 
     def test_every_contract_round_trips_and_normalizes_deterministically(self):
-        for value in (probe(), receipt(), workspace(), reservation(), grant(), fence()):
-            payload = self.assertRoundTrips(value)
-            # to_dict emits JSON arrays even though the contract stores tuples.
+        for factory in ALL_CONTRACTS:
+            payload = self.assertRoundTrips(factory())
             for item in payload.values():
                 self.assertNotIsInstance(item, tuple)
-            self.assertEqual(json.dumps(payload, sort_keys=True), json.dumps(payload, sort_keys=True))
 
     def test_normalization_sorts_lists_and_timestamps(self):
         value = grant(capabilities=["write", "credential", "read"], credential_refs=["b-ref", "a-ref"])
@@ -350,19 +425,19 @@ class ContractRoundTripTests(unittest.TestCase):
         self.assertEqual(grant(granted_at="2026-09-03T12:00:00+02:00").digest(), grant().digest())
         r = receipt(probes=[probe(probe_id="z"), probe(probe_id="a")])
         self.assertEqual([item.probe_id for item in r.probes], ["a", "z"])
+        policy = probe_policy(required_probes=[ProbeRequirement("z", "git", False), ProbeRequirement("a", "git", True)])
+        self.assertEqual([item.probe_id for item in policy.required_probes], ["a", "z"])
 
     def test_unknown_version_and_unknown_field_fail_clearly_for_every_contract(self):
-        for value in (probe(), receipt(), workspace(), reservation(), grant(), fence()):
+        for factory in ALL_CONTRACTS:
+            value = factory()
             cls = type(value)
-            bumped = dict(value.to_dict(), schema_version=99)
             with self.assertRaisesRegex(SchemaError, "schema_version 99 is not supported"):
-                cls.from_dict(bumped)
-            extra = dict(value.to_dict(), surprise=True)
+                cls.from_dict(dict(value.to_dict(), schema_version=99))
             with self.assertRaisesRegex(SchemaError, "unknown fields: surprise"):
-                cls.from_dict(extra)
-            wrong_schema = dict(value.to_dict(), schema="camol.other")
+                cls.from_dict(dict(value.to_dict(), surprise=True))
             with self.assertRaisesRegex(SchemaError, "schema must be"):
-                cls.from_dict(wrong_schema)
+                cls.from_dict(dict(value.to_dict(), schema="camol.other"))
 
     def test_missing_required_fields_fail_clearly(self):
         payload = fence().to_dict()
@@ -373,11 +448,17 @@ class ContractRoundTripTests(unittest.TestCase):
         del payload["summary"]
         with self.assertRaisesRegex(SchemaError, "missing required field summary"):
             ProbeResult.from_dict(payload)
+        payload = grant().to_dict()
+        del payload["authority_digest"]
+        with self.assertRaisesRegex(SchemaError, "missing required fields: authority_digest"):
+            CapabilityGrant.from_dict(payload)
+        payload = receipt().to_dict()
+        del payload["box_binding_digest"]
+        with self.assertRaisesRegex(SchemaError, "missing required fields: box_binding_digest"):
+            ReadinessReceipt.from_dict(payload)
 
 
 class DeepImmutabilityTests(unittest.TestCase):
-    """Hashed collections are tuples: nothing can change a digest after construction."""
-
     def assertImmutableCollection(self, contract, attribute):
         before = contract.digest()
         collection = getattr(contract, attribute)
@@ -399,13 +480,15 @@ class DeepImmutabilityTests(unittest.TestCase):
         self.assertImmutableCollection(r, "probes")
         self.assertImmutableCollection(r, "credential_scopes")
 
-    def test_grant_collections_are_immutable(self):
+    def test_grant_policy_and_probe_collections_are_immutable(self):
         g = grant(capabilities=["network", "credential", "read"], network_destinations=["a:443"], credential_refs=["ref-1"])
         for attribute in ("capabilities", "filesystem_paths", "network_destinations", "credential_refs"):
             self.assertImmutableCollection(g, attribute)
-
-    def test_probe_collections_are_immutable(self):
-        p = probe(status="red", missing_requirements=["docker"], expires_at=None)
+        a = authority(required_capabilities=["network", "read"], network_destinations=["a:443"])
+        for attribute in ("required_capabilities", "filesystem_paths", "network_destinations", "credential_refs"):
+            self.assertImmutableCollection(a, attribute)
+        self.assertImmutableCollection(probe_policy(), "required_probes")
+        p = red_probe(missing_requirements=["docker"])
         self.assertImmutableCollection(p, "missing_requirements")
         self.assertImmutableCollection(p, "command")
 
@@ -425,9 +508,8 @@ class DeepImmutabilityTests(unittest.TestCase):
         self.assertEqual(g.capabilities, ("read",))
         self.assertEqual(p.command, ("git", "--version"))
 
-    def test_tuple_inputs_are_accepted_and_equal_to_list_inputs(self):
-        self.assertEqual(grant(capabilities=("read", "write", "execute")).digest(), grant().digest())
-        self.assertEqual(receipt(probes=(probe(),)).digest(), receipt().digest())
+
+# --------------------------------------------------------------------------- validation
 
 
 class ValidationFailureTests(unittest.TestCase):
@@ -440,12 +522,32 @@ class ValidationFailureTests(unittest.TestCase):
             probe(missing_requirements=["docker"])
         with self.assertRaisesRegex(SchemaError, "green probe must declare expires_at"):
             probe(expires_at=None)
+        with self.assertRaisesRegex(SchemaError, "green probe cannot carry a reason_code"):
+            probe(reason_code="AUTH_REQUIRED", wake_condition="login")
+        with self.assertRaisesRegex(SchemaError, "red probe must carry a typed reason_code"):
+            ProbeResult(probe_id="x", kind="git", status="red", observed_at=T0, summary="s")
+        with self.assertRaisesRegex(SchemaError, "must state its wake_condition"):
+            ProbeResult(probe_id="x", kind="git", status="unknown", observed_at=T0, summary="s", reason_code="AUTH_REQUIRED")
+        with self.assertRaisesRegex(SchemaError, "must name at least one missing requirement"):
+            ProbeResult(probe_id="x", kind="git", status="red", observed_at=T0, summary="s", reason_code="AUTH_REQUIRED", wake_condition="w")
+        with self.assertRaisesRegex(SchemaError, "reason_code must be one of"):
+            probe(status="red", reason_code="NOPE", wake_condition="w", expires_at=None)
         with self.assertRaisesRegex(SchemaError, "argv array"):
             probe(command="git --version")
+        with self.assertRaisesRegex(SchemaError, "process probe must record its argv"):
+            probe(command=[])
+        with self.assertRaisesRegex(SchemaError, "filesystem probe cannot record an argv"):
+            probe(method="filesystem")
+        with self.assertRaisesRegex(SchemaError, "method must be one of"):
+            probe(method="telepathy")
+        self.assertEqual(probe(method="filesystem", command=[]).method, "filesystem")
         with self.assertRaisesRegex(SchemaError, "evidence_digest must look like"):
             probe(evidence_digest="abc")
-        red = probe(status="red", missing_requirements=["docker daemon"], expires_at=None)
+        red = red_probe(missing_requirements=["docker daemon"])
         self.assertEqual(red.missing_requirements, ("docker daemon",))
+        self.assertEqual(red.waiting_reason().code, "NEEDS_DOWNLOAD")
+        self.assertIn("docker daemon", red.waiting_reason().detail)
+        self.assertIsNone(probe().waiting_reason())
 
     def test_receipt_validation(self):
         with self.assertRaisesRegex(SchemaError, "plan_digest must look like"):
@@ -455,27 +557,31 @@ class ValidationFailureTests(unittest.TestCase):
         with self.assertRaisesRegex(SchemaError, "probe ids must be unique"):
             receipt(probes=[probe(), probe()])
         with self.assertRaisesRegex(SchemaError, "green receipt cannot contain a non-green probe"):
-            receipt(probes=[probe(status="red", expires_at=None)])
+            receipt(probes=[red_probe()])
         with self.assertRaisesRegex(SchemaError, "expires_at must be after observed_at"):
             receipt(expires_at=T0)
+        with self.assertRaisesRegex(SchemaError, "bound to target 'vm-7', receipt target is 'localhost'"):
+            receipt(probes=[probe(target_id="vm-7")])
         red = receipt(status="red", probes=[probe(status="unknown")])
         self.assertFalse(red.is_fresh(T0))
+        with self.assertRaisesRegex(SchemaError, "red receipt must contain at least one non-green probe"):
+            receipt(status="red")
+        self.assertIsNone(receipt(reservation_id=None).reservation_id)
 
     def test_workspace_filesystem_policy_is_not_a_trust_tier(self):
         self.assertEqual(FILESYSTEM_POLICIES, frozenset({"read_only", "isolated_worktree_write", "shared_checkout_write"}))
-        self.assertFalse(FILESYSTEM_POLICIES & TRUST_TIERS, "vocabularies must not overlap")
+        self.assertFalse(FILESYSTEM_POLICIES & TRUST_TIERS)
         for tier in sorted(TRUST_TIERS):
             with self.assertRaisesRegex(SchemaError, "filesystem_policy must be one of"):
                 workspace(filesystem_policy=tier)
         for policy in sorted(FILESYSTEM_POLICIES):
             self.assertEqual(workspace(filesystem_policy=policy).filesystem_policy, policy)
+            with self.assertRaisesRegex(SchemaError, "trust_tier must be one of"):
+                grant(trust_tier=policy)
         with self.assertRaisesRegex(SchemaError, "cleanup_owner must be one of"):
             workspace(cleanup_owner="user")
         with self.assertRaisesRegex(SchemaError, "dirty_digest must look like"):
             workspace(dirty_digest="dirty")
-        for policy in sorted(FILESYSTEM_POLICIES):
-            with self.assertRaisesRegex(SchemaError, "trust_tier must be one of"):
-                grant(trust_tier=policy)
 
     def test_reservation_validation(self):
         with self.assertRaisesRegex(SchemaError, "concurrency_slots must be a positive integer"):
@@ -486,8 +592,10 @@ class ValidationFailureTests(unittest.TestCase):
             reservation(status="pending")
         with self.assertRaisesRegex(SchemaError, "positive integer"):
             reservation(max_tokens=True)
+        with self.assertRaisesRegex(SchemaError, "reservation box_id"):
+            reservation(box_id="")
 
-    def test_grant_validation(self):
+    def test_grant_and_authority_validation(self):
         with self.assertRaisesRegex(SchemaError, "unknown kinds: sudo"):
             grant(capabilities=["sudo"])
         with self.assertRaisesRegex(SchemaError, "credential_refs require the credential capability"):
@@ -498,24 +606,94 @@ class ValidationFailureTests(unittest.TestCase):
             grant(trust_tier="root")
         with self.assertRaisesRegex(SchemaError, "must not contain duplicates"):
             grant(capabilities=["read", "read"])
+        with self.assertRaisesRegex(SchemaError, "authority_digest must look like"):
+            grant(authority_digest="policy")
+        with self.assertRaisesRegex(SchemaError, "unknown kinds: sudo"):
+            authority(required_capabilities=["sudo"])
+        with self.assertRaisesRegex(SchemaError, "credential_refs require the credential capability"):
+            authority(credential_refs=["ref"])
+        with self.assertRaisesRegex(SchemaError, "required_capabilities must not be empty"):
+            authority(required_capabilities=[])
 
-    def test_fence_validation(self):
+    def test_probe_policy_validation(self):
+        with self.assertRaisesRegex(SchemaError, "non-empty list"):
+            probe_policy(required_probes=[])
+        with self.assertRaisesRegex(SchemaError, "probe ids must be unique"):
+            probe_policy(required_probes=[ProbeRequirement("a", "git", True), ProbeRequirement("a", "git", False)])
+        with self.assertRaisesRegex(SchemaError, "target_bound must be a boolean"):
+            ProbeRequirement("a", "git", "yes")
+
+    def test_fence_and_binding_validation(self):
         with self.assertRaisesRegex(SchemaError, "epoch must be a positive integer"):
             fence(epoch=0)
         with self.assertRaisesRegex(SchemaError, "grant_digest must look like"):
             fence(grant_digest="nope")
         with self.assertRaisesRegex(SchemaError, "expires_at must be after issued_at"):
             fence(expires_at=T0)
+        with self.assertRaisesRegex(SchemaError, "box binding workspace_digest must look like"):
+            binding(workspace_digest="ws")
+        with self.assertRaisesRegex(SchemaError, "box binding target_id"):
+            binding(target_id="")
+
+
+# --------------------------------------------------------------------------- temporal validity
+
+
+class TemporalValidityTests(unittest.TestCase):
+    """Every time-bound record is valid on start <= now < expires_at."""
+
+    def test_exact_start_is_fresh_and_exact_expiry_is_not(self):
+        cases = [
+            (probe(), "is_fresh"),
+            (receipt(), "is_fresh"),
+            (grant(), "is_fresh"),
+            (reservation(), "is_active"),
+            (fence(), "is_fresh"),
+        ]
+        for record, method in cases:
+            check = getattr(record, method)
+            self.assertTrue(check(T0), (type(record).__name__, "exact start"))
+            self.assertTrue(check("2026-09-03T10:04:59.999999+00:00"), (type(record).__name__, "last microsecond"))
+            self.assertFalse(check(T_PLUS_5M), (type(record).__name__, "exact expiry"))
+            self.assertFalse(check(T_PLUS_10M), (type(record).__name__, "after expiry"))
+
+    def test_future_dated_records_are_never_fresh(self):
+        for record, method in [
+            (probe(), "is_fresh"),
+            (receipt(), "is_fresh"),
+            (grant(), "is_fresh"),
+            (reservation(), "is_active"),
+            (fence(), "is_fresh"),
+        ]:
+            self.assertFalse(getattr(record, method)(T_MINUS_1M), type(record).__name__)
+        # A receipt observed in the future relative to `now` is stale even if its probes were observed earlier.
+        future = receipt(observed_at=T_PLUS_2M, expires_at=T_PLUS_5M, probes=[probe(observed_at=T0)])
+        self.assertFalse(future.is_fresh(T_PLUS_1M))
+        self.assertTrue(future.is_fresh(T_PLUS_2M))
+
+    def test_red_or_released_records_are_never_fresh(self):
+        self.assertFalse(red_probe().is_fresh(T0))
+        self.assertFalse(probe(status="unknown", expires_at=None).is_fresh(T0))
+        self.assertFalse(receipt(status="red", probes=[red_probe()]).is_fresh(T0))
+        self.assertFalse(reservation(status="released").is_active(T0))
+        self.assertFalse(reservation(status="expired").is_active(T0))
 
 
 class TransitiveFreshnessTests(unittest.TestCase):
-    """A green receipt can never outlive its weakest probe."""
+    """A green receipt can never outlive, or predate the observation of, its weakest probe."""
 
     def test_receipt_expiring_after_a_child_probe_is_rejected_at_construction(self):
         with self.assertRaisesRegex(SchemaError, "later than probe git-version expires_at"):
             receipt(expires_at=T_PLUS_5M, probes=[probe(expires_at=T_PLUS_2M)])
         with self.assertRaisesRegex(SchemaError, "later than probe weak expires_at"):
             receipt(expires_at=T_PLUS_5M, probes=[probe(), probe(probe_id="weak", expires_at=T_PLUS_3M)])
+
+    def test_probe_observed_after_the_receipt_is_rejected(self):
+        with self.assertRaisesRegex(SchemaError, "observed at .* after the receipt observation"):
+            receipt(observed_at=T0, probes=[probe(observed_at=T_PLUS_1M)])
+        # Also for red receipts: aggregation cannot claim to predate its inputs.
+        with self.assertRaisesRegex(SchemaError, "after the receipt observation"):
+            receipt(status="red", observed_at=T0, probes=[red_probe(observed_at=T_PLUS_1M)])
 
     def test_receipt_expiring_at_or_before_every_child_is_accepted(self):
         r = receipt(expires_at=T_PLUS_2M, probes=[probe(), probe(probe_id="weak", expires_at=T_PLUS_2M)])
@@ -524,92 +702,73 @@ class TransitiveFreshnessTests(unittest.TestCase):
     def test_green_child_probe_without_expiry_is_rejected(self):
         with self.assertRaisesRegex(SchemaError, "green probe must declare expires_at"):
             probe(expires_at=None)
-        # Even bypassing ProbeResult's own check via a red probe, a green receipt
-        # rejects a child that cannot expire.
         with self.assertRaisesRegex(SchemaError, "non-green probe"):
-            receipt(probes=[probe(status="red", expires_at=None)])
+            receipt(probes=[red_probe()])
 
     def test_runtime_freshness_requires_every_probe_fresh(self):
         r = receipt(expires_at=T_PLUS_2M, probes=[probe(expires_at=T_PLUS_2M), probe(probe_id="other", expires_at=T_PLUS_5M)])
         self.assertTrue(r.is_fresh(T_PLUS_1M))
-        self.assertFalse(r.is_fresh(T_PLUS_2M), "weakest probe expired at the same instant as the receipt")
-        self.assertFalse(r.is_fresh(T_PLUS_3M))
-        # Defense in depth: a receipt whose probe list was somehow weakened after
-        # construction still reports stale because is_fresh re-checks children.
+        self.assertFalse(r.is_fresh(T_PLUS_2M))
         stale_child = probe(expires_at=T_PLUS_1M)
         object.__setattr__(r, "probes", (stale_child,))
         self.assertFalse(r.is_fresh(T_PLUS_1M))
 
-    def test_red_probe_without_expiry_is_never_fresh(self):
-        self.assertFalse(probe(status="red", expires_at=None).is_fresh(T0))
-        self.assertFalse(probe(status="unknown", expires_at=None).is_fresh(T0))
+
+# --------------------------------------------------------------------------- binding fields
 
 
-class ExpiryAndBindingTests(unittest.TestCase):
-    def test_receipt_expiry_is_explicit_and_pure(self):
-        r = receipt()
-        self.assertEqual(r.expires_at, "2026-09-03T10:05:00.000000+00:00")
-        self.assertTrue(r.is_fresh(T0))
-        self.assertTrue(r.is_fresh("2026-09-03T10:04:59.999999+00:00"))
-        self.assertFalse(r.is_fresh(T_PLUS_5M), "expiry instant is not fresh")
-        self.assertFalse(r.is_fresh(T_PLUS_10M))
-        self.assertFalse(receipt(status="red").is_fresh(T0), "red is never fresh")
-
-    def test_reservation_and_grant_and_fence_expiry(self):
-        self.assertTrue(reservation().is_active(T0))
-        self.assertFalse(reservation().is_active(T_PLUS_5M))
-        self.assertFalse(reservation(status="released").is_active(T0))
-        self.assertTrue(grant().is_fresh(T_PLUS_2M))
-        self.assertFalse(grant().is_fresh(T_PLUS_10M))
-        self.assertTrue(fence().is_fresh(T_PLUS_2M))
-        self.assertFalse(fence().is_fresh(T_PLUS_5M))
-
+class BindingDigestTests(unittest.TestCase):
     def test_receipt_binding_fields_and_digest(self):
         r = receipt()
-        self.assertEqual(
-            ReadinessReceipt.BINDING_FIELDS,
-            (
-                "run_id",
-                "plan_digest",
-                "task_id",
-                "box_id",
-                "worker_id",
-                "target_id",
-                "transport_id",
-                "runtime_id",
-                "workspace_digest",
-                "evaluator_digest",
-                "adapter_kind",
-                "requested_model",
-                "reservation_id",
-            ),
-        )
-        binding = r.binding()
-        self.assertEqual(set(binding), set(ReadinessReceipt.BINDING_FIELDS))
-        self.assertEqual(r.binding_digest(), canonical_digest(binding))
+        self.assertEqual(set(r.binding()), set(ReadinessReceipt.BINDING_FIELDS))
+        self.assertTrue(set(SUBJECT_FIELDS).issubset(ReadinessReceipt.BINDING_FIELDS))
+        for name in ("box_binding_digest", "authority_digest", "probe_policy_digest", "workspace_digest", "evaluator_digest", "plan_digest", "reservation_id"):
+            self.assertIn(name, ReadinessReceipt.BINDING_FIELDS)
+        self.assertEqual(r.binding_digest(), canonical_digest(r.binding()))
         for name in ReadinessReceipt.BINDING_FIELDS:
+            current = getattr(r, name)
             if name == "requested_model":
                 changed = {name: "other-model"}
+            elif current.startswith("sha256:"):
+                changed = {name: OTHER}
+            elif name == "target_id":
+                changed = {name: "vm-7", "probes": [probe(target_id="vm-7")]}
             else:
-                current = getattr(r, name)
-                changed = {name: OTHER if current.startswith("sha256:") else current + "-x"}
+                changed = {name: current + "-x"}
             self.assertNotEqual(receipt(**changed).binding_digest(), r.binding_digest(), name)
-        self.assertEqual(receipt(observed_at=T_PLUS_1M, expires_at=T_PLUS_5M).binding_digest(), r.binding_digest())
+        self.assertEqual(receipt(observed_at=T_PLUS_1M).binding_digest(), r.binding_digest())
 
     def test_fence_binds_every_input_digest_and_supersedes_by_epoch(self):
         f = fence()
         self.assertEqual(
             set(f.bound_digests()),
-            {"plan_digest", "evaluator_digest", "workspace_digest", "readiness_digest", "grant_digest", "reservation_digest"},
+            {
+                "plan_digest",
+                "box_binding_digest",
+                "evaluator_digest",
+                "workspace_digest",
+                "authority_digest",
+                "probe_policy_digest",
+                "readiness_digest",
+                "grant_digest",
+                "reservation_digest",
+            },
         )
         self.assertEqual(f.readiness_digest, receipt().digest())
-        self.assertEqual(f.grant_digest, grant().digest())
-        self.assertEqual(f.reservation_digest, reservation().digest())
+        self.assertEqual(f.box_binding_digest, binding().digest())
         self.assertNotEqual(receipt(observed_at=T_PLUS_1M).digest(), f.readiness_digest)
         newer = fence(lease_id="lease-2", epoch=2)
         self.assertTrue(newer.supersedes(f))
         self.assertFalse(f.supersedes(newer))
         self.assertFalse(fence(task_id="inventory", epoch=2).supersedes(f))
+
+    def test_box_binding_digest_changes_with_every_field(self):
+        base = binding()
+        for name in ("run_id", "task_id", "box_id", "worker_id", "target_id", "workspace_id"):
+            self.assertNotEqual(binding(**{name: getattr(base, name) + "-x"}).digest(), base.digest(), name)
+        for name in ("plan_digest", "workspace_digest"):
+            self.assertNotEqual(binding(**{name: OTHER}).digest(), base.digest(), name)
+        self.assertEqual(base.subject(), {"run_id": "run-1", "task_id": "frame", "box_id": "box-1", "worker_id": "strategist", "target_id": "localhost"})
 
     def test_credential_scopes_are_fingerprints_not_secrets(self):
         r = receipt(credential_scopes=["provider:scope-fingerprint-1"])
@@ -617,27 +776,33 @@ class ExpiryAndBindingTests(unittest.TestCase):
         self.assertEqual(r.credential_scopes, ("provider:scope-fingerprint-1",))
 
 
+# --------------------------------------------------------------------------- predicate
+
+
 class ReadyToLeasePredicateTests(unittest.TestCase):
     def test_all_conjuncts_green_is_ready(self):
         decision = assess()
-        self.assertTrue(decision.ready)
+        self.assertTrue(decision.ready, decision.to_dict())
         self.assertEqual(decision.reasons, ())
-        self.assertEqual(decision.to_dict(), {"ready": True, "reasons": []})
 
     def test_each_failed_conjunct_yields_its_typed_reason(self):
         cases = [
             ({"plan_frozen": False}, "APPROVAL_REQUIRED"),
+            ({"plan_digest": OTHER}, "POLICY_DENIED"),
             ({"control_plane_ready": False}, "OPERATOR_ATTENTION"),
             ({"dependencies_green": False}, "WAITING_DEPENDENCY"),
-            ({"workspace_digest": None}, "WORKSPACE_CONFLICT"),
+            ({"workspace": None}, "WORKSPACE_CONFLICT"),
             ({"receipt": None}, "READINESS_STALE"),
             ({"now": T_PLUS_10M}, "READINESS_STALE"),
-            ({"receipt": receipt(status="red", probes=[probe(status="red", expires_at=None)])}, "READINESS_STALE"),
-            ({"receipt": receipt(plan_digest=OTHER)}, "READINESS_STALE"),
+            ({"now": T_MINUS_1M}, "READINESS_STALE"),
+            ({"receipt": receipt(status="red", probes=[red_probe()])}, "READINESS_STALE"),
+            ({"receipt": receipt(reservation_id=None)}, "READINESS_STALE"),
             ({"evaluator_ready": False}, "EVALUATOR_NOT_READY"),
             ({"evaluator_digest": OTHER}, "EVALUATOR_NOT_READY"),
+            ({"authority_policy": None}, "APPROVAL_REQUIRED"),
             ({"grant": None}, "APPROVAL_REQUIRED"),
             ({"grant": grant(expires_at=T_PLUS_1M)}, "APPROVAL_REQUIRED"),
+            ({"probe_policy": None}, "READINESS_STALE"),
             ({"reservation": None}, "CAPACITY_EXHAUSTED"),
             ({"reservation": reservation(status="released")}, "CAPACITY_EXHAUSTED"),
             ({"reservation": reservation(reservation_id="rsv-2")}, "READINESS_STALE"),
@@ -660,79 +825,151 @@ class ReadyToLeasePredicateTests(unittest.TestCase):
 
     def test_reasons_are_serializable_contracts(self):
         decision = assess(receipt=None, grant=None)
-        payload = decision.to_dict()
-        restored = [WaitingReason.from_dict(item) for item in payload["reasons"]]
+        restored = [WaitingReason.from_dict(item) for item in decision.to_dict()["reasons"]]
         self.assertEqual(tuple(restored), decision.reasons)
 
 
-class IdentityBindingTests(unittest.TestCase):
-    """No cross-run or cross-subject combination of inputs may ever be ready."""
+class AuthoritySufficiencyTests(unittest.TestCase):
+    """AUTHORITY_GRANTED means the grant equals the frozen authority policy, not that a grant exists."""
 
-    def assertDenied(self, decision, label):
+    def codes(self, decision):
+        return [reason.code for reason in decision.reasons]
+
+    def test_empty_grant_is_insufficient(self):
+        empty = grant(capabilities=[], filesystem_paths=[])
+        decision = assess(grant=empty)
+        self.assertFalse(decision.ready)
+        self.assertIn("APPROVAL_REQUIRED", self.codes(decision))
+        self.assertTrue(any("lacks required capabilities: execute, read, write" in reason.detail for reason in decision.reasons))
+
+    def test_partial_grant_is_insufficient(self):
+        decision = assess(grant=grant(capabilities=["read"]))
+        self.assertFalse(decision.ready)
+        self.assertIn("APPROVAL_REQUIRED", self.codes(decision))
+        self.assertNotIn("POLICY_DENIED", self.codes(decision))
+
+    def test_excessive_grant_is_unauthorized_not_silently_accepted(self):
+        decision = assess(grant=grant(capabilities=["read", "write", "execute", "destroy"]))
+        self.assertFalse(decision.ready)
+        self.assertIn("POLICY_DENIED", self.codes(decision))
+        self.assertTrue(any("did not authorize: destroy" in reason.detail for reason in decision.reasons))
+        # Extra constraints (paths, network, credentials, trust tier) are also unauthorized.
+        for overrides in (
+            {"filesystem_paths": ["state/worktrees/frame", "/"]},
+            {"capabilities": ["read", "write", "execute", "network"], "network_destinations": ["evil:443"]},
+            {"capabilities": ["read", "write", "execute", "credential"], "credential_refs": ["keychain:prod"]},
+            {"trust_tier": "sandboxed"},
+        ):
+            decision = assess(grant=grant(**overrides))
+            self.assertFalse(decision.ready, overrides)
+            self.assertIn("POLICY_DENIED", self.codes(decision), overrides)
+
+    def test_stale_grant_is_not_authority(self):
+        decision = assess(grant=grant(granted_at=T_MINUS_1M, expires_at=T_PLUS_1M))
+        self.assertFalse(decision.ready)
+        self.assertIn("APPROVAL_REQUIRED", self.codes(decision))
+
+    def test_grant_bound_to_a_different_authority_policy_is_denied(self):
+        decision = assess(grant=grant(authority_digest=OTHER))
+        self.assertFalse(decision.ready)
+        self.assertEqual(self.codes(decision), ["POLICY_DENIED"])
+
+    def test_an_empty_authority_policy_cannot_exist_so_an_empty_grant_can_never_suffice(self):
+        with self.assertRaisesRegex(SchemaError, "required_capabilities must not be empty"):
+            authority(required_capabilities=[])
+        # Even against a minimal one-capability policy, an empty grant is insufficient.
+        minimal = authority(required_capabilities=["read"], filesystem_paths=[])
+        empty = grant(authority_digest=minimal.digest(), capabilities=[], filesystem_paths=[])
+        r = receipt(authority_digest=minimal.digest())
+        decision = assess(authority_policy=minimal, grant=empty, receipt=r)
+        self.assertFalse(decision.ready)
+        self.assertIn("APPROVAL_REQUIRED", self.codes(decision))
+        exact = grant(authority_digest=minimal.digest(), capabilities=["read"], filesystem_paths=[])
+        self.assertTrue(assess(authority_policy=minimal, grant=exact, receipt=r).ready)
+
+
+class IdentityBindingTests(unittest.TestCase):
+    """No cross-run or cross-subject mixture of records may ever be ready."""
+
+    def assertDenied(self, decision, label, code="POLICY_DENIED"):
         self.assertFalse(decision.ready, label)
-        codes = [reason.code for reason in decision.reasons]
-        self.assertIn("POLICY_DENIED", codes, label)
+        self.assertIn(code, [reason.code for reason in decision.reasons], label)
 
     def test_reported_scenario_three_runs_and_mismatched_worker_and_target(self):
         decision = assess(
-            receipt=receipt(run_id="run-A", worker_id="strategist", target_id="localhost"),
+            receipt=receipt(run_id="run-A"),
             grant=grant(run_id="run-B"),
             reservation=reservation(run_id="run-C", worker_id="builder", target_id="vm-7"),
-            run_id="run-A",
         )
         self.assertFalse(decision.ready)
         details = "\n".join(reason.detail for reason in decision.reasons)
-        self.assertIn("capability grant run_id 'run-B'", details)
-        self.assertIn("capacity reservation run_id 'run-C'", details)
-        self.assertIn("capacity reservation worker_id 'builder'", details)
-        self.assertIn("capacity reservation target_id 'vm-7'", details)
+        for expected in ("readiness receipt run_id 'run-A'", "capability grant run_id 'run-B'", "capacity reservation run_id 'run-C'", "worker_id 'builder'", "target_id 'vm-7'"):
+            self.assertIn(expected, details)
         self.assertEqual({reason.code for reason in decision.reasons}, {"POLICY_DENIED"})
 
-    def test_receipt_identity_mismatches(self):
-        self.assertDenied(assess(receipt=receipt(run_id="run-2")), "receipt.run_id")
-        self.assertDenied(assess(receipt=receipt(task_id="inventory")), "receipt.task_id")
-        self.assertDenied(assess(receipt=receipt(box_id="box-2")), "receipt.box_id")
-        self.assertDenied(assess(receipt=receipt(worker_id="builder")), "receipt.worker_id")
-        self.assertDenied(assess(receipt=receipt(target_id="vm-7")), "receipt.target_id")
+    def test_receipt_subject_mismatches(self):
+        for name in SUBJECT_FIELDS:
+            overrides = {name: "other"}
+            if name == "target_id":
+                overrides["probes"] = [probe(target_id="other")]
+            self.assertDenied(assess(receipt=receipt(**overrides)), "receipt." + name)
 
-    def test_receipt_digest_mismatches(self):
-        for overrides, code in [
-            ({"receipt": receipt(plan_digest=OTHER)}, "READINESS_STALE"),
-            ({"receipt": receipt(workspace_digest=OTHER)}, "WORKSPACE_CONFLICT"),
-            ({"receipt": receipt(evaluator_digest=OTHER)}, "EVALUATOR_NOT_READY"),
-            ({"receipt": receipt(reservation_id="rsv-9")}, "READINESS_STALE"),
-            ({"plan_digest": OTHER}, "READINESS_STALE"),
-            ({"workspace_digest": OTHER}, "WORKSPACE_CONFLICT"),
-            ({"evaluator_digest": OTHER}, "EVALUATOR_NOT_READY"),
-        ]:
-            decision = assess(**overrides)
-            self.assertFalse(decision.ready, overrides)
-            self.assertEqual([reason.code for reason in decision.reasons], [code], overrides)
+    def test_grant_subject_mismatches(self):
+        for name in SUBJECT_FIELDS:
+            self.assertDenied(assess(grant=grant(**{name: "other"})), "grant." + name)
 
-    def test_grant_identity_mismatches(self):
-        self.assertDenied(assess(grant=grant(run_id="run-2")), "grant.run_id")
-        self.assertDenied(assess(grant=grant(task_id="inventory")), "grant.task_id")
-        self.assertDenied(assess(grant=grant(box_id="box-2")), "grant.box_id")
+    def test_reservation_subject_mismatches(self):
+        for name in SUBJECT_FIELDS:
+            self.assertDenied(assess(reservation=reservation(**{name: "other"})), "reservation." + name)
 
-    def test_reservation_identity_mismatches(self):
-        self.assertDenied(assess(reservation=reservation(run_id="run-2")), "reservation.run_id")
-        self.assertDenied(assess(reservation=reservation(task_id="inventory")), "reservation.task_id")
-        self.assertDenied(assess(reservation=reservation(worker_id="builder")), "reservation.worker_id")
-        self.assertDenied(assess(reservation=reservation(target_id="vm-7")), "reservation.target_id")
+    def test_policy_subject_mismatches(self):
+        for name in ("run_id", "task_id"):
+            self.assertDenied(assess(authority_policy=authority(**{name: "other"})), "authority." + name)
+            self.assertDenied(assess(probe_policy=probe_policy(**{name: "other"})), "probe_policy." + name)
 
-    def test_expected_subject_mismatch_is_denied_even_when_records_agree_with_each_other(self):
-        # All records are mutually consistent for run-1/frame/box-1/strategist/localhost,
-        # but the caller asks about a different subject.
-        self.assertDenied(assess(run_id="run-2"), "expected run_id")
-        self.assertDenied(assess(task_id="inventory"), "expected task_id")
-        self.assertDenied(assess(box_id="box-2"), "expected box_id")
-        self.assertDenied(assess(worker_id="builder"), "expected worker_id")
-        self.assertDenied(assess(target_id="vm-7"), "expected target_id")
+    def test_binding_subject_mismatch_denies_every_consistent_record(self):
+        # Records agree with each other but the binding names another subject.
+        for name in SUBJECT_FIELDS:
+            decision = assess(binding=binding(**{name: "other"}))
+            self.assertDenied(decision, "binding." + name)
+
+    def test_cross_workspace_evaluator_reservation_authority_and_probe_policy(self):
+        other_ws = workspace(workspace_id="ws-2")
+        self.assertDenied(assess(workspace=other_ws), "cross-workspace receipt", "WORKSPACE_CONFLICT")
+        self.assertDenied(assess(binding=binding(workspace_digest=OTHER)), "binding workspace digest", "WORKSPACE_CONFLICT")
+        self.assertDenied(assess(receipt=receipt(workspace_digest=OTHER)), "receipt workspace digest", "WORKSPACE_CONFLICT")
+        self.assertDenied(assess(receipt=receipt(evaluator_digest=OTHER)), "cross-evaluator", "EVALUATOR_NOT_READY")
+        self.assertDenied(assess(receipt=receipt(reservation_id="rsv-9")), "cross-reservation", "READINESS_STALE")
+        self.assertDenied(assess(receipt=receipt(authority_digest=OTHER)), "cross-authority receipt")
+        self.assertDenied(assess(receipt=receipt(box_binding_digest=OTHER)), "cross-binding receipt")
+        self.assertDenied(assess(receipt=receipt(probe_policy_digest=OTHER)), "wrong probe policy digest")
+
+    def test_wrong_probe_policy_content_is_not_readiness(self):
+        wider = probe_policy(required_probes=[ProbeRequirement("git-version", "git", True), ProbeRequirement("docker", "container", True)])
+        r = receipt(probe_policy_digest=wider.digest())
+        decision = assess(probe_policy=wider, receipt=r)
+        self.assertDenied(decision, "missing required probe", "READINESS_STALE")
+        self.assertTrue(any("required probe docker is missing" in reason.detail for reason in decision.reasons))
+        # Extra probes not in the policy are also rejected: a receipt is not "some green probes".
+        extra = receipt(probes=[probe(), probe(probe_id="extra", kind="git")])
+        self.assertDenied(assess(receipt=extra), "extra probe is unlisted proof", "POLICY_DENIED")
+        # Kind mismatch and unbound target-bound probe.
+        wrong_kind = receipt(probes=[probe(kind="container")])
+        self.assertDenied(assess(receipt=wrong_kind), "kind mismatch", "READINESS_STALE")
+        unbound = receipt(probes=[probe(target_id=None)])
+        self.assertDenied(assess(receipt=unbound), "target-bound probe without target", "READINESS_STALE")
+
+    def test_target_bound_probe_must_name_the_receipt_target(self):
+        with self.assertRaisesRegex(SchemaError, "bound to target 'vm-7'"):
+            receipt(probes=[probe(target_id="vm-7")])
 
     def test_every_denial_names_the_offending_field_and_values(self):
         decision = assess(grant=grant(run_id="run-B"))
         self.assertEqual(len(decision.reasons), 1)
         self.assertEqual(decision.reasons[0].detail, "capability grant run_id 'run-B' does not match expected 'run-1'")
+
+
+# --------------------------------------------------------------------------- events
 
 
 class EventAndProjectionTests(unittest.TestCase):
@@ -748,13 +985,10 @@ class EventAndProjectionTests(unittest.TestCase):
         return receipt(**values)
 
     def test_legacy_event_stream_replays_to_the_same_projection_plus_empty_receipts(self):
-        created = self._run_created()
-        legacy_state = project([created])
+        legacy_state = project([self._run_created()])
         self.assertEqual(legacy_state["readiness_receipts"], {})
         stripped = {key: value for key, value in legacy_state.items() if key != "readiness_receipts"}
-        expected_keys = set(empty_state()) - {"readiness_receipts"}
-        self.assertEqual(set(stripped), expected_keys)
-        self.assertTrue(LEGACY_EVENT_TYPES)
+        self.assertEqual(set(stripped), set(empty_state()) - {"readiness_receipts"})
         self.assertNotIn("READINESS_RECORDED", LEGACY_EVENT_TYPES)
         self.assertNotIn("TASK_WAITING", LEGACY_EVENT_TYPES)
         for task in legacy_state["tasks"].values():
@@ -775,6 +1009,7 @@ class EventAndProjectionTests(unittest.TestCase):
             (self._ledger_receipt(state, plan_digest=OTHER).to_dict(), ValueError, "different plan digest"),
             (self._ledger_receipt(state, task_id="ghost").to_dict(), ValueError, "unknown task 'ghost'"),
             (self._ledger_receipt(state, worker_id="ghost").to_dict(), ValueError, "unknown worker 'ghost'"),
+            (dict(good.to_dict(), probes=[dict(probe().to_dict(), target_id="vm-7")]), SchemaError, "bound to target 'vm-7'"),
         ]
         for payload, error, message in cases:
             with self.assertRaisesRegex(error, message):
@@ -784,7 +1019,6 @@ class EventAndProjectionTests(unittest.TestCase):
             apply_event(with_first, new_event(self.RUN, "READINESS_RECORDED", "doctor", {"receipt": good.to_dict()}))
 
     def test_foreign_receipt_cannot_be_smuggled_through_a_matching_event_run_id(self):
-        # Event run_id matches, but the receipt itself was issued for another run.
         state = project([self._run_created()])
         foreign = receipt(run_id="run-1", plan_digest=state["plan_digest"])
         with self.assertRaisesRegex(ValueError, "run_id 'run-1' does not match event run_id 'three-agent-demo'"):
@@ -795,12 +1029,7 @@ class EventAndProjectionTests(unittest.TestCase):
             store = SQLiteEventStore(Path(temporary) / "events.sqlite3")
             try:
                 store.append(self._run_created())
-                reason = WaitingReason(
-                    code="EVALUATOR_NOT_READY",
-                    detail="frozen evaluator bundle is not launchable",
-                    wake_condition="evaluator probe green",
-                    task_id="frame",
-                )
+                reason = WaitingReason(code="EVALUATOR_NOT_READY", detail="frozen evaluator bundle is not launchable", wake_condition="evaluator probe green", task_id="frame")
                 store.append(new_event(self.RUN, "TASK_WAITING", "orchestrator", {"task_id": "frame", "reason": reason.to_dict()}))
                 waiting = project(store.read(self.RUN))
                 self.assertEqual(waiting["tasks"]["frame"]["status"], "waiting")

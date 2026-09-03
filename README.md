@@ -209,16 +209,25 @@ The executable Python slice currently provides:
 - versioned, validated `ProbeResult`, `ReadinessReceipt`, `WorkspaceReceipt`,
   `CapacityReservation`, `CapabilityGrant`, and `LeaseFence` contracts
   (`camol.readiness`), plus the twelve typed non-runnable reasons;
-- runbook schema v2 with an explicit v1-to-v2 migration and pinned v1 digests; and
-- `READINESS_RECORDED`, `TASK_WAITING`, and `TASK_WAIT_CLEARED` ledger events.
+- runbook schema v2 with an explicit v1-to-v2 migration and pinned v1 digests;
+- `READINESS_RECORDED`, `TASK_WAITING`, and `TASK_WAIT_CLEARED` ledger events;
+- a `BoxBinding`, `AuthorityPolicy`, and `ProbePolicy` identity model that binds every
+  proof record to one lease subject, plus the pure `READY_TO_LEASE` predicate; and
+- `camol doctor`: a read-only probe registry that proves task-specific readiness
+  (state directory, artifact sink, Git, repository revision and dirty state, adapter
+  and tool binaries, evaluator bundle, disk, capacity) and emits candidate readiness
+  receipts without launching, downloading, authenticating, or spending anything.
 
 The current box directory is not yet a Git worktree or security sandbox. The current
 scheduler can still lease an idle static capability match without a task-specific
 readiness receipt; `tests/test_readiness.py` characterizes that unsafe boundary
-explicitly, and the M0 contracts are recorded but not yet enforced by the scheduler.
-No probe, workspace, reservation, grant, or fence is produced by real observation
-yet. Consequently, the included fake-agent demo tests kernel semantics only;
-replacing its command with a real coding agent is not yet supported or safe.
+explicitly, and the contracts are recorded but not yet enforced by the scheduler.
+A green `camol doctor` is not a lease: it proves readiness dimensions only, shows
+that a grant and a reservation are still missing, and proves nothing about
+hosted-model availability or network egress for the process adapter (those probes
+are informational `unknown` until a provider adapter exists). Consequently, the
+included fake-agent demo tests kernel semantics only; replacing its command with a
+real coding agent is not yet supported or safe. See [docs/readiness.md](docs/readiness.md).
 
 ## Build path
 
@@ -226,8 +235,8 @@ The implementation sequence is deliberately narrow:
 
 | Milestone | Deliverable |
 |---|---|
-| M0 (contracts landed) | Versioned readiness, workspace, reservation, grant, and lease-fence schemas |
-| M1 | Read-only probe registry and `camol doctor` |
+| M0 (landed) | Versioned readiness, workspace, reservation, grant, and lease-fence schemas |
+| M1 (landed) | Read-only probe registry and `camol doctor` |
 | M2 | External state directory, isolated worktrees, integration workspace, sandbox boundary |
 | M3 | Task-specific readiness gates, reservations, fenced leases, typed waits |
 | M4 | Complete redacted event and content-addressed artifact capture |
@@ -248,6 +257,7 @@ Python 3.9+ is sufficient and the simulator has no runtime dependencies:
 ```bash
 python3 -m unittest discover -v
 python3 -m camol validate examples/three-agent-runbook.json
+python3 -m camol doctor examples/three-agent-runbook.json --workspace . --state-dir /path/outside/repo
 python3 -m camol run examples/three-agent-runbook.json \
   --db .camol/demo.sqlite3 \
   --workspace . \
@@ -279,6 +289,9 @@ until the M0-M4 readiness and isolation gates are implemented.
   model suitability, accounts, local models, and the first Fable profile.
 - [Runbook reference](docs/runbook-reference.md): current executable JSON schema,
   packets, results, and commands.
+- [Readiness contracts and doctor](docs/readiness.md): the lease-subject identity
+  model, temporal validity, `READY_TO_LEASE`, the read-only probe registry, exit
+  codes, execution guard, and redaction.
 - [Debugger protocol](docs/debugger-protocol.md): observed-versus-target behavior,
   experiments, evidence, and eval promotion.
 - [Evaluation program](docs/evaluation-program.md): canaries, coding suites,
