@@ -10,6 +10,7 @@ from camol.runbook import (
     RunbookError,
     migrate_runbook_v1_to_v2,
     migrate_runbook_v2_to_v3,
+    migrate_runbook_v3_to_v4,
     runbook_digest,
     validate_runbook,
 )
@@ -137,9 +138,9 @@ class RunbookV1CompatibilityTests(unittest.TestCase):
             validate_runbook(leaked)
 
     def test_unknown_schema_versions_are_rejected_clearly(self):
-        self.assertEqual(SUPPORTED_SCHEMA_VERSIONS, (1, 2, 3))
-        self.assertEqual(LATEST_SCHEMA_VERSION, 3)
-        for version in (0, 4, "1", None, True, 1.0):
+        self.assertEqual(SUPPORTED_SCHEMA_VERSIONS, (1, 2, 3, 4))
+        self.assertEqual(LATEST_SCHEMA_VERSION, 4)
+        for version in (0, 5, "1", None, True, 1.0):
             invalid = copy.deepcopy(self.raw)
             invalid["schema_version"] = version
             with self.assertRaisesRegex(RunbookError, "unsupported schema_version"):
@@ -305,6 +306,41 @@ class RunbookV3Tests(unittest.TestCase):
         v2["agents"][0]["adapter"] = copy.deepcopy(v3["agents"][0]["adapter"])
         with self.assertRaisesRegex(RunbookError, "unknown fields: profile"):
             validate_runbook(v2)
+
+
+class RunbookV4Tests(unittest.TestCase):
+    def setUp(self):
+        raw = json.loads((ROOT / "examples/three-agent-runbook.json").read_text(encoding="utf-8"))
+        tiers = {agent["id"]: "developer_trusted" for agent in raw["agents"]}
+        self.v3 = migrate_runbook_v2_to_v3(migrate_runbook_v1_to_v2(
+            raw, readiness_policy={"receipt_ttl_seconds": 300}, trust_tiers=tiers,
+        ))
+        self.assets = {task["id"]: [] for task in self.v3["tasks"]}
+
+    def test_migration_requires_an_explicit_asset_list_for_every_task(self):
+        snapshot = copy.deepcopy(self.v3)
+        v4 = migrate_runbook_v3_to_v4(self.v3, evaluator_assets=self.assets)
+        self.assertEqual(self.v3, snapshot)
+        self.assertEqual(v4["schema_version"], 4)
+        self.assertTrue(all(task["evaluator_assets"] == [] for task in v4["tasks"]))
+        self.assertEqual(validate_runbook(copy.deepcopy(v4)), v4)
+        with self.assertRaisesRegex(RunbookError, "task mismatch"):
+            migrate_runbook_v3_to_v4(self.v3, evaluator_assets={"frame": []})
+
+    def test_v4_assets_are_unique_relative_paths_and_required(self):
+        v4 = migrate_runbook_v3_to_v4(self.v3, evaluator_assets=self.assets)
+        missing = copy.deepcopy(v4)
+        del missing["tasks"][0]["evaluator_assets"]
+        with self.assertRaisesRegex(RunbookError, "evaluator_assets is required"):
+            validate_runbook(missing)
+        escaping = copy.deepcopy(v4)
+        escaping["tasks"][0]["evaluator_assets"] = ["../oracle.py"]
+        with self.assertRaisesRegex(RunbookError, "stay inside"):
+            validate_runbook(escaping)
+        duplicate = copy.deepcopy(v4)
+        duplicate["tasks"][0]["evaluator_assets"] = ["tests", "tests"]
+        with self.assertRaisesRegex(RunbookError, "must be unique"):
+            validate_runbook(duplicate)
 
 
 if __name__ == "__main__":

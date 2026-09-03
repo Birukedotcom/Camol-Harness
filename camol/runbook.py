@@ -1,6 +1,6 @@
 """Loading, normalization, and validation for executable JSON runbooks.
 
-Three schema versions are readable:
+Four schema versions are readable:
 
 * ``schema_version: 1`` is the pre-M0 contract. Its normalization is unchanged so
   every previously frozen plan digest still reproduces byte-for-byte, including
@@ -14,6 +14,9 @@ Three schema versions are readable:
 * ``schema_version: 3`` adds provider-neutral adapter profile references.  A
   process adapter keeps its v2 shape; a hosted adapter names a versioned profile
   whose digest is subsequently bound by readiness evidence.
+* ``schema_version: 4`` adds an explicit per-task ``evaluator_assets`` list.
+  Existing files below those paths are frozen outside builder authority and a
+  candidate that changes one is rejected before evaluator execution.
 
 A v1 document is never reinterpreted as v2 implicitly. Use
 :func:`migrate_runbook_v1_to_v2` with explicit values for every new field.
@@ -35,8 +38,8 @@ class RunbookError(ValueError):
 
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)
-LATEST_SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4)
+LATEST_SCHEMA_VERSION = 4
 
 _ROOT_FIELDS_V2 = ("schema_version", "run", "rules", "agents", "tasks")
 _RUN_FIELDS_V2 = ("id", "objective", "max_concurrency", "completion", "token_policy", "readiness_policy")
@@ -57,6 +60,7 @@ _TASK_FIELDS = (
     "steps",
     "verification",
 )
+_TASK_FIELDS_V4 = _TASK_FIELDS + ("evaluator_assets",)
 _STEP_FIELDS = ("id", "instruction", "commands", "completion")
 _COMMAND_FIELDS = ("purpose", "argv")
 
@@ -307,7 +311,10 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
     for task_index, task_value in enumerate(tasks):
         task = _object(task_value, "tasks[{}]".format(task_index))
         if strict:
-            _reject_unknown(task, _TASK_FIELDS, "tasks[{}]".format(task_index))
+            _reject_unknown(
+                task, _TASK_FIELDS_V4 if version >= 4 else _TASK_FIELDS,
+                "tasks[{}]".format(task_index),
+            )
         task_id = _identifier(task.get("id"), "tasks[{}].id".format(task_index))
         if task_id in seen_task_ids:
             raise RunbookError("task ids must be unique")
@@ -386,8 +393,7 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             _strict_int(max_attempts, "task {} max_attempts".format(task_id), minimum=1)
         elif not isinstance(max_attempts, int) or max_attempts <= 0:
             raise RunbookError("task {} max_attempts must be positive".format(task_id))
-        normalized_tasks.append(
-            {
+        normalized_task = {
                 "id": task_id,
                 "goal": _string(task.get("goal"), "task {} goal".format(task_id)),
                 "depends_on": dependencies,
@@ -405,8 +411,17 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
                 "max_attempts": max_attempts,
                 "steps": normalized_steps,
                 "verification": normalized_verification,
-            }
-        )
+        }
+        if version >= 4:
+            if "evaluator_assets" not in task:
+                raise RunbookError("task {} evaluator_assets is required in schema v4".format(task_id))
+            assets = [
+                _relative_path(item, "task {} evaluator asset".format(task_id))
+                for item in _string_list(task["evaluator_assets"], "task {} evaluator_assets".format(task_id))
+            ]
+            _unique(assets, "evaluator assets for task {}".format(task_id))
+            normalized_task["evaluator_assets"] = assets
+        normalized_tasks.append(normalized_task)
 
     normalized_run = {
         "id": run_id,
@@ -481,6 +496,27 @@ def migrate_runbook_v2_to_v3(runbook: Dict[str, Any]) -> Dict[str, Any]:
         raise RunbookError("migrate_runbook_v2_to_v3 requires a schema_version 2 runbook")
     migrated = copy.deepcopy(source)
     migrated["schema_version"] = 3
+    return validate_runbook(migrated)
+
+
+def migrate_runbook_v3_to_v4(
+    runbook: Dict[str, Any], *, evaluator_assets: Dict[str, List[str]]
+) -> Dict[str, Any]:
+    """Explicitly add the protected evaluator-asset decision for every task."""
+    source = validate_runbook(runbook)
+    if source["schema_version"] != 3:
+        raise RunbookError("migrate_runbook_v3_to_v4 requires a schema_version 3 runbook")
+    if not isinstance(evaluator_assets, dict):
+        raise RunbookError("evaluator_assets must map every task id to an array")
+    task_ids = {task["id"] for task in source["tasks"]}
+    missing = sorted(task_ids - set(evaluator_assets))
+    extra = sorted(set(evaluator_assets) - task_ids)
+    if missing or extra:
+        raise RunbookError("evaluator_assets task mismatch (missing={}, extra={})".format(missing, extra))
+    migrated = copy.deepcopy(source)
+    migrated["schema_version"] = 4
+    for task in migrated["tasks"]:
+        task["evaluator_assets"] = copy.deepcopy(evaluator_assets[task["id"]])
     return validate_runbook(migrated)
 
 

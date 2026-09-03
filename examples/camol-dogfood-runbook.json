@@ -1,0 +1,78 @@
+{
+  "schema_version": 4,
+  "run": {
+    "id": "camol-v0-dogfood",
+    "objective": "Use Camol's complete local kernel to implement and independently verify one bounded Camol change.",
+    "max_concurrency": 1,
+    "completion": [
+      "all_tasks_succeeded",
+      "all_required_evidence_present",
+      "all_verifications_green",
+      "no_open_blockers",
+      "no_open_debug_cases"
+    ],
+    "token_policy": {
+      "max_tokens_per_turn": 6000,
+      "checkpoint_reserve": 500,
+      "max_total_tokens": 12000,
+      "max_turns_per_task": 3
+    },
+    "readiness_policy": {"receipt_ttl_seconds": 300}
+  },
+  "rules": [
+    {
+      "id": "frozen-evaluator",
+      "text": "The builder cannot change the approved evaluator asset or accept its own result.",
+      "enforcement": "hard"
+    },
+    {
+      "id": "source-read-only",
+      "text": "All writes occur in Camol-managed isolated worktrees; the source checkout remains unchanged.",
+      "enforcement": "hard"
+    }
+  ],
+  "agents": [
+    {
+      "id": "dogfood-builder",
+      "role": "Implement one bounded Camol change",
+      "box": ".",
+      "capabilities": ["code", "test"],
+      "adapter": {
+        "kind": "process",
+        "argv": ["python3", "{workspace}/examples/dogfood_agent.py", "{packet}", "{result}"],
+        "timeout_seconds": 60
+      },
+      "trust_tier": "developer_trusted"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "guardrail-helper",
+      "goal": "Add a strict helper that rejects every hill-climb verdict containing a guardrail regression.",
+      "depends_on": [],
+      "capabilities": ["code", "test"],
+      "acceptance": [
+        "Empty regression lists pass; non-empty or missing regression lists fail closed."
+      ],
+      "required_evidence": ["command", "artifact", "claim", "test_result"],
+      "max_attempts": 2,
+      "steps": [
+        {
+          "id": "implement-helper",
+          "instruction": "Implement the helper without changing the frozen evaluator.",
+          "commands": [
+            {"purpose": "Edit hill-climb helper", "argv": ["python3", "-c", "pass"]}
+          ],
+          "completion": ["The helper exists in camol/hillclimb.py."]
+        }
+      ],
+      "verification": [
+        {
+          "purpose": "Run the frozen dogfood oracle",
+          "argv": ["python3", "tests/fixtures/dogfood_oracle.py"]
+        }
+      ],
+      "evaluator_assets": ["tests/fixtures/dogfood_oracle.py"]
+    }
+  ]
+}

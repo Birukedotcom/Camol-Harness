@@ -8,6 +8,7 @@ from .admission import AdmissionBundle
 from .artifacts import ArtifactRef
 from .evidence import EvidenceRecord
 from .effects import EffectRequest, outcome_payload
+from .evaluation import CandidateRecord, CounterexampleRecord, IntegrationReceipt
 from .events import EVIDENCE_KINDS, new_event
 from .hillclimb import agent_efficiency_vector, compare_vectors
 from .readiness import CapacityReservation, LeaseFence, ReadinessDecision, WaitingReason
@@ -933,6 +934,40 @@ class Orchestrator:
             expected_seq=state["last_seq"],
         )
 
+    def record_candidate(self, run_id: str, assignment: Dict[str, str], record: CandidateRecord) -> None:
+        state, _ = self._require_lease(
+            run_id, assignment["task_id"], assignment["agent_id"], assignment["lease_id"],
+            "verifying", fence_digest=assignment.get("fence_digest"),
+        )
+        if not isinstance(record, CandidateRecord):
+            raise ValueError("record must be a CandidateRecord")
+        self._emit(
+            run_id, "CANDIDATE_CAPTURED",
+            {"candidate": record.to_dict(), "candidate_digest": record.digest()},
+            expected_seq=state["last_seq"],
+        )
+
+    def record_counterexample(self, run_id: str, record: CounterexampleRecord) -> None:
+        state = self._require_status(run_id, "running")
+        if not isinstance(record, CounterexampleRecord):
+            raise ValueError("record must be a CounterexampleRecord")
+        self._emit(run_id, "COUNTEREXAMPLE_RECORDED", record.to_dict(), expected_seq=state["last_seq"])
+
+    def accept_integration(
+        self, run_id: str, assignment: Dict[str, str], receipt: IntegrationReceipt
+    ) -> None:
+        state, _ = self._require_lease(
+            run_id, assignment["task_id"], assignment["agent_id"], assignment["lease_id"],
+            "verifying", fence_digest=assignment.get("fence_digest"),
+        )
+        if not isinstance(receipt, IntegrationReceipt):
+            raise ValueError("receipt must be an IntegrationReceipt")
+        self._emit(
+            run_id, "INTEGRATION_ACCEPTED",
+            {"receipt": receipt.to_dict(), "receipt_digest": receipt.digest()},
+            expected_seq=state["last_seq"],
+        )
+
     def context_packet(self, run_id: str, assignment: Dict[str, str]) -> Dict[str, Any]:
         state, task = self._require_lease(
             run_id,
@@ -955,11 +990,25 @@ class Orchestrator:
                     continue
                 if evidence.get("schema") == EvidenceRecord.SCHEMA and not self._gate_evidence(evidence):
                     continue
+                data = evidence["data"]
+                if evidence["kind"] == "test_result" and isinstance(data, dict):
+                    data = {
+                        "passed": data.get("passed"),
+                        "checks": [
+                            {
+                                key: check.get(key)
+                                for key in ("purpose", "passed", "phase", "evaluated_task_id", "error")
+                                if key in check
+                            }
+                            for check in data.get("checks", [])[-20:]
+                            if isinstance(check, dict)
+                        ],
+                    }
                 compact_evidence[evidence["kind"]] = {
                     "evidence_id": evidence_id,
                     "kind": evidence["kind"],
                     "epistemic_status": evidence.get("epistemic_status", "UNVERIFIED"),
-                    "data": evidence["data"],
+                    "data": data,
                     "artifact_digests": [
                         reference["digest"] for reference in evidence.get("artifact_refs", [])
                     ],
@@ -972,6 +1021,25 @@ class Orchestrator:
                 }
             )
         last_verification = task["verification_history"][-1] if task["verification_history"] else None
+        if last_verification is not None:
+            last_verification = {
+                "passed": last_verification["passed"],
+                "checks": [
+                    {
+                        key: check.get(key)
+                        for key in ("purpose", "passed", "phase", "evaluated_task_id", "error")
+                        if key in check
+                    }
+                    for check in last_verification["checks"][-20:]
+                ],
+            }
+        last_counterexample = next(
+            (
+                item for item in reversed(state.get("counterexamples", []))
+                if item["task_id"] == task["id"]
+            ),
+            None,
+        )
         return {
             "protocol": "camol-agent-turn/v1",
             "run": {
@@ -1002,6 +1070,7 @@ class Orchestrator:
             ][-10:],
             "last_checkpoint": task["checkpoints"][-1] if task["checkpoints"] else None,
             "last_verification": last_verification,
+            "last_counterexample": last_counterexample,
             "token_budget": {
                 "turn": runbook["run"]["token_policy"]["max_tokens_per_turn"],
                 "checkpoint_reserve": runbook["run"]["token_policy"]["checkpoint_reserve"],
@@ -1296,6 +1365,15 @@ class Orchestrator:
         )
         if not task["verification_history"] or task["verification_history"][-1]["passed"] is not True:
             raise StateTransitionError("the latest verification is not green")
+        task_candidates = {
+            candidate_id for candidate_id, candidate in state.get("candidates", {}).items()
+            if candidate["task_id"] == task["id"] and candidate["lease_id"] == task["lease_id"]
+        }
+        if task_candidates and not any(
+            receipt["task_id"] == task["id"] and receipt["candidate_id"] in task_candidates
+            for receipt in state.get("integrations", [])
+        ):
+            raise StateTransitionError("the candidate has no accepted integration receipt")
         present_kinds = {
             state["evidence"][evidence_id]["kind"]
             for evidence_id in task["evidence_ids"]

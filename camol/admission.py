@@ -234,11 +234,15 @@ class AdmissionController:
         task: Dict[str, Any],
         agent: Dict[str, Any],
         granted_by: str,
+        base_revision: Optional[str] = None,
+        expected_evaluator_digest: Optional[str] = None,
     ) -> Tuple[AdmissionBundle, WorkspaceHandle]:
         now = _parse_clock(self.clock)
         observed_at = _timestamp(now)
         expires_at = _timestamp(now + timedelta(seconds=self._ttl()))
-        handle = self.workspaces.prepare_task(self.runbook["run"]["id"], task["id"], agent["id"])
+        handle = self.workspaces.prepare_task(
+            self.runbook["run"]["id"], task["id"], agent["id"], base_revision=base_revision
+        )
         workspace = self.workspaces.refresh_receipt(handle)
         binding = BoxBinding(
             run_id=self.runbook["run"]["id"],
@@ -314,6 +318,36 @@ class AdmissionController:
         outcomes: Dict[str, ProbeOutcome] = {}
         for probe in list(shared_probes) + list(agent_probes):
             outcomes[probe.probe_id] = probe.observe(context)
+        evaluator_probe = next(
+            (probe for probe in shared_probes if probe.probe_id == "evaluator.bundle"), None
+        )
+        observed_evaluator = outcomes.get("evaluator.bundle")
+        if expected_evaluator_digest is not None:
+            expected_evaluator_digest = require_digest(
+                expected_evaluator_digest, "expected evaluator digest"
+            )
+            if (
+                evaluator_probe is None
+                or observed_evaluator is None
+                or observed_evaluator.facts.get("evaluator_digest") != expected_evaluator_digest
+            ):
+                if evaluator_probe is None:
+                    raise AdmissionError("probe registry has no evaluator.bundle probe")
+                outcomes["evaluator.bundle"] = evaluator_probe.red(
+                    context,
+                    "workspace evaluator assets differ from the run's frozen evaluator",
+                    reason="EVALUATOR_NOT_READY",
+                    wake="restore the frozen evaluator assets before requesting another lease",
+                    missing=["workspace bytes matching the frozen evaluator digest"],
+                    method="filesystem",
+                    facts={
+                        "evaluator_digest": (
+                            observed_evaluator.facts.get("evaluator_digest")
+                            if observed_evaluator is not None else canonical_digest({"missing": True})
+                        ),
+                        "expected_evaluator_digest": expected_evaluator_digest,
+                    },
+                )
         policy = adapter_policy(agent, context)
 
         def required(probe: Probe) -> bool:
@@ -349,7 +383,7 @@ class AdmissionController:
         runtime_id = sanitize_identifier(
             "{}@{}".format(Path(str(runtime)).name, facts.get("version") or "unverified"), "runtime-unverified"
         )
-        evaluator_digest = canonical_digest(EvaluatorBundleProbe.bundle(self.runbook))
+        evaluator_digest = outcomes["evaluator.bundle"].facts["evaluator_digest"]
         receipt = ReadinessReceipt(
             receipt_id="receipt-" + uuid4().hex,
             run_id=binding.run_id,

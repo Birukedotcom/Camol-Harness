@@ -373,6 +373,15 @@ fixture effect.
 
 ### M7 — Frozen evaluator gate and first dogfood proof
 
+Implementation status: the deterministic kernel path is implemented. Evaluator
+definitions and declared assets are content-addressed outside builder worktrees;
+candidates run in independent verifier worktrees; passing candidates enter new
+integration generations where the full applicable bundle reruns; failures become
+visible counterexamples in the next bounded turn. A reproducible process-fixture
+Camol-on-Camol proof and matched direct/Camol trial contract are included. The hosted
+Claude/Fable slice remains `SPECULATIVE` until an owner-authorized live run proves the
+resolved model and cost; deterministic fixtures are never relabeled as that evidence.
+
 Goal: earn `BACKED` for the local-repository/Fable adapter slice.
 
 Work:

@@ -2,17 +2,28 @@
 
 import asyncio
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
+from uuid import uuid4
 
 from .admission import AdmissionBundle, AdmissionController, AdmissionError
 from .adapter import AdapterError, create_agent_adapter
 from .artifacts import ArtifactError, ArtifactRef, ArtifactStore
+from .evaluation import (
+    CandidateRecord,
+    CounterexampleRecord,
+    EvaluationError,
+    EvaluatorBundle,
+    EvaluatorStore,
+    IntegrationReceipt,
+)
 from .orchestrator import Orchestrator, StateTransitionError
 from .readiness import WaitingReason
-from .sandbox import SandboxError, select_backend
+from .sandbox import SandboxError, SandboxPolicy, select_backend, system_read_paths
 from .workspace import WorkspaceError, WorkspaceHandle, WorkspaceManager
 from .providers import ProviderError, load_model_profile
+from .schema import canonical_digest
 
 
 class HarnessRunner:
@@ -22,6 +33,9 @@ class HarnessRunner:
         self.state_dir = Path(state_dir).resolve() if state_dir is not None else None
         self.workspaces = WorkspaceManager(self.workspace, self.state_dir) if self.state_dir else None
         self.artifacts = ArtifactStore(self.state_dir, redactor=self.orchestrator.redactor) if self.state_dir else None
+        self.evaluators = EvaluatorStore(self.state_dir) if self.state_dir else None
+        self._evaluator_bundle: Optional[EvaluatorBundle] = None
+        self._verification_lock = None
         self._handles: Dict[Tuple[str, str], WorkspaceHandle] = {}
 
     def _agent_for(self, state: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
@@ -67,21 +81,58 @@ class HarnessRunner:
         command: Dict[str, Any],
         assignment: Dict[str, str],
         timeout_seconds: int = 900,
+        *,
+        workspace_root: Optional[Path] = None,
+        phase: str = "candidate",
+        trust_tier: str = "developer_trusted",
+        evaluated_task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        evaluated_task_id = evaluated_task_id or assignment["task_id"]
+        identifier = uuid4().hex
         try:
-            process = await asyncio.create_subprocess_exec(
-                *command["argv"],
-                cwd=str(box),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout_task = asyncio.create_task(self._bounded_stream(process.stdout))
-            stderr_task = asyncio.create_task(self._bounded_stream(process.stderr))
-            await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
-            stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+            sandboxed = None
+            if self.state_dir is not None and workspace_root is not None:
+                packet_dir = self.state_dir / "packets" / assignment["fence"]["run_id"] / assignment["task_id"]
+                packet_dir.mkdir(parents=True, exist_ok=True)
+                executable = command["argv"][0]
+                policy = SandboxPolicy(
+                    policy_id="evaluator-{}-{}".format(evaluated_task_id, phase),
+                    workspace=str(workspace_root),
+                    read_paths=(str(workspace_root), str(packet_dir)) + system_read_paths(executable),
+                    write_paths=(str(workspace_root), str(packet_dir)),
+                    environment_names=(
+                        "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE",
+                    ),
+                    network_destinations=(), credential_refs=(), trust_tier=trust_tier,
+                )
+                sandboxed = await select_backend(policy).run(
+                    command["argv"], cwd=box, policy=policy,
+                    timeout_seconds=timeout_seconds,
+                    environment={"PYTHONDONTWRITEBYTECODE": "1"},
+                    invocation_record=packet_dir / ("evaluator-" + identifier + ".invocation.json"),
+                )
+                stdout = (
+                    sandboxed.stdout, sandboxed.stdout_sha256, sandboxed.stdout_bytes,
+                    sandboxed.stdout_truncated,
+                )
+                stderr = (
+                    sandboxed.stderr, sandboxed.stderr_sha256, sandboxed.stderr_bytes,
+                    sandboxed.stderr_truncated,
+                )
+                exit_code = sandboxed.exit_code
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    *command["argv"], cwd=str(box), stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE, start_new_session=True,
+                )
+                stdout_task = asyncio.create_task(self._bounded_stream(process.stdout))
+                stderr_task = asyncio.create_task(self._bounded_stream(process.stderr))
+                await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+                stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+                exit_code = process.returncode
             references = []
             if self.artifacts is not None:
-                invocation_id = "verify-{}".format(hashlib.sha256(repr(command["argv"]).encode()).hexdigest()[:20])
+                invocation_id = "verify-{}".format(identifier)
                 producer = {
                     "run_id": assignment["fence"]["run_id"],
                     "task_id": assignment["task_id"],
@@ -104,8 +155,9 @@ class HarnessRunner:
             return {
                 "purpose": command["purpose"],
                 "argv": command["argv"],
-                "exit_code": process.returncode,
-                "passed": process.returncode == 0,
+                "phase": phase,
+                "exit_code": exit_code,
+                "passed": exit_code == 0,
                 "stdout_sha256": stdout[1],
                 "stderr_sha256": stderr[1],
                 "stdout_bytes": stdout[2],
@@ -113,6 +165,9 @@ class HarnessRunner:
                 "stdout_truncated": stdout[3],
                 "stderr_truncated": stderr[3],
                 "artifact_refs": references,
+                "sandbox_backend": sandboxed.backend if sandboxed else "legacy-unsandboxed",
+                "sandbox_policy_digest": sandboxed.policy_digest if sandboxed else None,
+                "evaluated_task_id": evaluated_task_id,
             }
         except asyncio.TimeoutError:
             process.kill()
@@ -125,17 +180,92 @@ class HarnessRunner:
                 "exit_code": None,
                 "passed": False,
                 "error": "verification_timeout",
+                "phase": phase,
+                "evaluated_task_id": evaluated_task_id,
             }
-        except OSError as error:
+        except (OSError, SandboxError) as error:
             return {
                 "purpose": command["purpose"],
                 "argv": command["argv"],
                 "exit_code": None,
                 "passed": False,
                 "error": "verification_launch_error: {}".format(error),
+                "phase": phase,
+                "evaluated_task_id": evaluated_task_id,
             }
 
+    def _record_verifier_check(
+        self, run_id: str, assignment: Dict[str, str], check: Dict[str, Any]
+    ) -> None:
+        self.orchestrator.record_observed_evidence(
+            run_id, assignment, kind="command",
+            data={key: value for key, value in check.items() if key != "artifact_refs"},
+            epistemic_status="EXECUTED", producer="verifier",
+            artifact_refs=tuple({
+                item["digest"]: ArtifactRef.from_dict(item)
+                for item in check.get("artifact_refs", [])
+            }.values()),
+        )
+
+    def _record_evaluator_result(
+        self, run_id: str, assignment: Dict[str, str], checks: Any
+    ) -> None:
+        references = {
+            item["digest"]: ArtifactRef.from_dict(item)
+            for check in checks for item in check.get("artifact_refs", [])
+        }
+        self.orchestrator.record_observed_evidence(
+            run_id, assignment, kind="test_result",
+            data={
+                "passed": bool(checks) and all(check.get("passed") is True for check in checks),
+                "checks": [
+                    {key: value for key, value in check.items() if key != "artifact_refs"}
+                    for check in checks
+                ],
+            },
+            epistemic_status="EXECUTED", producer="verifier",
+            artifact_refs=tuple(references.values()),
+        )
+
+    @staticmethod
+    def _salvage_fingerprint(salvage: Any) -> str:
+        return canonical_digest({
+            "patch_digest": salvage.patch_digest,
+            "patch_bytes": salvage.patch_bytes,
+            "untracked": list(salvage.untracked),
+        })
+
+    def _counterexample(
+        self, run_id: str, candidate: CandidateRecord, phase: str, checks: Any
+    ) -> None:
+        failed = next((check for check in checks if check.get("passed") is not True), {})
+        summary = failed.get("error") or failed.get("purpose") or "evaluator rejected the candidate"
+        self.orchestrator.record_counterexample(
+            run_id,
+            CounterexampleRecord(
+                counterexample_id="counterexample-" + uuid4().hex,
+                run_id=run_id, task_id=candidate.task_id, candidate_id=candidate.candidate_id,
+                evaluator_digest=candidate.evaluator_digest, phase=phase,
+                checks_digest=canonical_digest([
+                    {key: value for key, value in check.items() if key != "artifact_refs"}
+                    for check in checks
+                ]),
+                summary=self.orchestrator.redactor.text(str(summary)),
+                recorded_at=datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            ),
+        )
+
     async def _verify(
+        self,
+        run_id: str,
+        assignment: Dict[str, str],
+    ) -> bool:
+        if self._verification_lock is None:
+            self._verification_lock = asyncio.Lock()
+        async with self._verification_lock:
+            return await self._verify_serial(run_id, assignment)
+
+    async def _verify_serial(
         self,
         run_id: str,
         assignment: Dict[str, str],
@@ -143,43 +273,173 @@ class HarnessRunner:
         state = self.orchestrator.state(run_id)
         task = state["tasks"][assignment["task_id"]]
         agent = state["agents"][assignment["agent_id"]]
+        if self.workspaces is None or self.evaluators is None:
+            checks = []
+            box = (self.workspace / agent["box"]).resolve()
+            for command in task["verification"]:
+                check = await self._run_check(box, command, assignment)
+                checks.append(check)
+                self._record_verifier_check(run_id, assignment, check)
+            self._record_evaluator_result(run_id, assignment, checks)
+            return self.orchestrator.record_verification(run_id, assignment, checks)
+
+        bundle_payload = state["admissions"]["{}:{}".format(task["id"], agent["id"])]
+        admission = AdmissionBundle.from_dict(bundle_payload)
+        bundle = self.evaluators.load(run_id, admission.evaluator_digest)
+        if bundle.plan_digest != state["plan_digest"]:
+            raise EvaluationError("frozen evaluator is bound to another plan")
         execution_workspace = self._execution_workspace(run_id, assignment)
-        box = (execution_workspace / agent["box"]).resolve()
-        checks = []
-        for command in task["verification"]:
-            check = await self._run_check(box, command, assignment)
-            checks.append(check)
-            self.orchestrator.record_observed_evidence(
-                run_id,
-                assignment,
-                kind="command",
-                data={key: value for key, value in check.items() if key != "artifact_refs"},
-                epistemic_status="EXECUTED",
-                producer="verifier",
-                artifact_refs=tuple(
-                    {
-                        item["digest"]: ArtifactRef.from_dict(item)
-                        for item in check.get("artifact_refs", [])
-                    }.values()
-                ),
-            )
-        all_references = {
-            item["digest"]: ArtifactRef.from_dict(item)
-            for check in checks
-            for item in check.get("artifact_refs", [])
-        }
-        self.orchestrator.record_observed_evidence(
-            run_id,
-            assignment,
-            kind="test_result",
-            data={
-                "passed": bool(checks) and all(check["passed"] for check in checks),
-                "checks": [{key: value for key, value in check.items() if key != "artifact_refs"} for check in checks],
-            },
-            epistemic_status="EXECUTED",
-            producer="verifier",
-            artifact_refs=tuple(all_references.values()),
+        source_handle = self._handles[(task["id"], agent["id"])]
+        existing = next(
+            (
+                CandidateRecord.from_dict(item) for item in state["candidates"].values()
+                if item["lease_id"] == assignment["lease_id"]
+            ),
+            None,
         )
+        if existing is None:
+            salvage = self.workspaces.salvage(source_handle)
+            candidate = CandidateRecord(
+                candidate_id="candidate-" + uuid4().hex,
+                run_id=run_id, task_id=task["id"], agent_id=agent["id"],
+                lease_id=assignment["lease_id"], fence_digest=assignment["fence_digest"],
+                evaluator_digest=admission.evaluator_digest, salvage=salvage,
+                captured_at=datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            )
+            self.orchestrator.record_candidate(run_id, assignment, candidate)
+        else:
+            candidate = existing
+
+        verifier = self.workspaces.prepare_verifier(
+            run_id, task["id"], "verify-" + uuid4().hex,
+            base_revision=candidate.salvage.base_revision,
+        )
+        checks = []
+        try:
+            self.workspaces.materialize_candidate(candidate.salvage, verifier)
+            self.evaluators.verify_assets(bundle, verifier.path)
+            before = self._salvage_fingerprint(self.workspaces.salvage(verifier))
+        except (WorkspaceError, EvaluationError) as error:
+            checks.append({
+                "purpose": "Materialize candidate in independent verifier",
+                "phase": "candidate", "passed": False, "exit_code": None,
+                "error": str(error), "artifact_refs": [],
+                "evaluator_digest": bundle.evaluator_digest,
+                "workspace_id": verifier.receipt.workspace_id,
+            })
+            before = None
+        box = (verifier.path / agent["box"]).resolve()
+        for command in task["verification"] if before is not None else []:
+            check = await self._run_check(
+                box, command, assignment, workspace_root=verifier.path,
+                phase="candidate", trust_tier=agent.get("trust_tier", "developer_trusted"),
+                evaluated_task_id=task["id"],
+            )
+            check.update(
+                evaluator_digest=bundle.evaluator_digest, workspace_id=verifier.receipt.workspace_id,
+            )
+            checks.append(check)
+        if before is not None:
+            after = self._salvage_fingerprint(self.workspaces.salvage(verifier))
+            if after != before:
+                checks.append({
+                    "purpose": "Evaluator must not mutate candidate context",
+                    "phase": "candidate", "passed": False, "exit_code": None,
+                    "error": "evaluator mutated the independent verifier workspace",
+                    "artifact_refs": [], "evaluator_digest": bundle.evaluator_digest,
+                    "workspace_id": verifier.receipt.workspace_id,
+                })
+        for check in checks:
+            self._record_verifier_check(run_id, assignment, check)
+        if not checks or not all(check.get("passed") is True for check in checks):
+            self._counterexample(run_id, candidate, "candidate", checks)
+            self._record_evaluator_result(run_id, assignment, checks)
+            return self.orchestrator.record_verification(run_id, assignment, checks)
+
+        state = self.orchestrator.state(run_id)
+        accepted = next(
+            (item for item in state["integrations"] if item["candidate_id"] == candidate.candidate_id),
+            None,
+        )
+        integration_checks = []
+        if accepted is not None:
+            integration_checks.append({
+                "purpose": "Recover already accepted integration receipt",
+                "phase": "integration", "passed": True, "exit_code": 0,
+                "recovered": True, "receipt_digest": IntegrationReceipt.from_dict(accepted).digest(),
+                "artifact_refs": [], "evaluator_digest": bundle.evaluator_digest,
+                "workspace_id": accepted["workspace"]["workspace_id"],
+            })
+        else:
+            base_revision = state.get("integration_head") or self.workspaces.head_revision()
+            integration = self.workspaces.prepare_integration_generation(
+                run_id, task["id"], "integrate-" + uuid4().hex,
+                base_revision=base_revision,
+            )
+            try:
+                self.workspaces.materialize_candidate(candidate.salvage, integration)
+                self.evaluators.verify_assets(bundle, integration.path)
+                revision = self.workspaces.commit_workspace(
+                    integration, "Camol integration {} {}".format(task["id"], candidate.candidate_id)
+                )
+                before_integration = self._salvage_fingerprint(self.workspaces.salvage(integration))
+                accepted_task_ids = {item["task_id"] for item in state["integrations"]}
+                evaluation_tasks = [
+                    item for item in bundle.definition["tasks"]
+                    if item["id"] == task["id"] or item["id"] in accepted_task_ids
+                ]
+                for evaluated in evaluation_tasks:
+                    task_state = state["tasks"][evaluated["id"]]
+                    evaluated_agent_id = agent["id"] if evaluated["id"] == task["id"] else task_state["agent_id"]
+                    evaluated_agent = state["agents"][evaluated_agent_id]
+                    evaluated_box = (integration.path / evaluated_agent["box"]).resolve()
+                    for command in evaluated["verification"]:
+                        check = await self._run_check(
+                            evaluated_box, command, assignment, workspace_root=integration.path,
+                            phase="integration",
+                            trust_tier=evaluated_agent.get("trust_tier", "developer_trusted"),
+                            evaluated_task_id=evaluated["id"],
+                        )
+                        check.update(
+                            evaluator_digest=bundle.evaluator_digest,
+                            workspace_id=integration.receipt.workspace_id,
+                        )
+                        integration_checks.append(check)
+                after_integration = self._salvage_fingerprint(self.workspaces.salvage(integration))
+                if after_integration != before_integration:
+                    integration_checks.append({
+                        "purpose": "Evaluator must not mutate integration context",
+                        "phase": "integration", "passed": False, "exit_code": None,
+                        "error": "evaluator mutated the integration workspace", "artifact_refs": [],
+                        "evaluator_digest": bundle.evaluator_digest,
+                        "workspace_id": integration.receipt.workspace_id,
+                    })
+                if integration_checks and all(check.get("passed") is True for check in integration_checks):
+                    receipt = IntegrationReceipt(
+                        integration_id="integration-" + uuid4().hex,
+                        run_id=run_id, task_id=task["id"], candidate_id=candidate.candidate_id,
+                        evaluator_digest=bundle.evaluator_digest, revision=revision,
+                        workspace=self.workspaces.refresh_receipt(integration),
+                        checks_digest=canonical_digest([
+                            {key: value for key, value in check.items() if key != "artifact_refs"}
+                            for check in integration_checks
+                        ]),
+                        accepted_at=datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                    )
+                    self.orchestrator.accept_integration(run_id, assignment, receipt)
+            except (WorkspaceError, EvaluationError) as error:
+                integration_checks.append({
+                    "purpose": "Apply candidate to isolated integration generation",
+                    "phase": "integration", "passed": False, "exit_code": None,
+                    "error": str(error), "artifact_refs": [],
+                    "evaluator_digest": bundle.evaluator_digest,
+                })
+        for check in integration_checks:
+            self._record_verifier_check(run_id, assignment, check)
+        checks.extend(integration_checks)
+        if not integration_checks or not all(check.get("passed") is True for check in integration_checks):
+            self._counterexample(run_id, candidate, "integration", integration_checks)
+        self._record_evaluator_result(run_id, assignment, checks)
         return self.orchestrator.record_verification(run_id, assignment, checks)
 
     def _record_observed(
@@ -424,7 +684,7 @@ class HarnessRunner:
                     )
                     return
                 self.orchestrator.succeed_task(run_id, assignment)
-            except StateTransitionError as error:
+            except (StateTransitionError, EvaluationError, WorkspaceError) as error:
                 self.orchestrator.retry_or_block(run_id, assignment, str(error))
             return
 
@@ -441,7 +701,11 @@ class HarnessRunner:
             except StateTransitionError as error:
                 self.orchestrator.retry_or_block(run_id, assignment, str(error))
             return
-        passed = await self._verify(run_id, assignment)
+        try:
+            passed = await self._verify(run_id, assignment)
+        except (EvaluationError, WorkspaceError) as error:
+            self.orchestrator.retry_or_block(run_id, assignment, str(error))
+            return
         if not passed:
             self.orchestrator.retry_or_block(run_id, assignment, "verification failed after resume")
             return
@@ -485,6 +749,16 @@ class HarnessRunner:
             self._handles[key] = handle
         return handle.path
 
+    def _ensure_evaluator(self, run_id: str) -> Optional[EvaluatorBundle]:
+        if self.evaluators is None:
+            return None
+        state = self.orchestrator.state(run_id)
+        bundle = self.evaluators.compile(
+            state["runbook"], self.workspace, state["plan_digest"]
+        )
+        self._evaluator_bundle = bundle
+        return bundle
+
     def _ensure_admissions(self, run_id: str) -> None:
         if self.workspaces is None:
             return
@@ -505,6 +779,7 @@ class HarnessRunner:
             self.workspaces,
             clock=self.orchestrator.clock,
         )
+        integration_base = state.get("integration_head") or self.workspaces.head_revision()
         tasks = [
             task for task in state["tasks"].values()
             if task["status"] in {"pending", "waiting"}
@@ -539,6 +814,10 @@ class HarnessRunner:
                     task=task,
                     agent=agent,
                     granted_by=state["approved_by"],
+                    base_revision=integration_base,
+                    expected_evaluator_digest=(
+                        self._evaluator_bundle.evaluator_digest if self._evaluator_bundle else None
+                    ),
                 )
             except (AdmissionError, WorkspaceError, SandboxError) as error:
                 code = "WORKSPACE_CONFLICT" if isinstance(error, WorkspaceError) else "POLICY_DENIED"
@@ -609,9 +888,9 @@ class HarnessRunner:
         *,
         should_drain: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
-        self.orchestrator.start(run_id)
         if self.workspaces is not None:
-            self.workspaces.prepare_integration(run_id)
+            self._ensure_evaluator(run_id)
+        self.orchestrator.start(run_id)
         while True:
             state = self.orchestrator.state(run_id)
             if state["status"] in {"completed", "blocked"}:

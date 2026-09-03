@@ -167,7 +167,9 @@ def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = No
 
     repo_facts = shared_outcomes.get("source.repository")
     evaluator_facts = shared_outcomes.get("evaluator.bundle")
-    evaluator_digest = (evaluator_facts.facts.get("evaluator_digest") if evaluator_facts else None) or canonical_digest(EvaluatorBundleProbe.bundle(runbook))
+    evaluator_digest = (
+        evaluator_facts.facts.get("evaluator_digest") if evaluator_facts else None
+    ) or canonical_digest({"definition": EvaluatorBundleProbe.bundle(runbook), "assets_valid": False})
 
     tasks_report: List[Dict[str, Any]] = []
     all_ready = True

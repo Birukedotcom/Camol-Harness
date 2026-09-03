@@ -1,6 +1,7 @@
 # Evaluation and benchmark program
 
-Status: specified, not implemented.
+Status: V0 evaluator/refinement kernel and matched-pair contract implemented. Public
+suite adapters, scheduled campaigns, and statistically powered reports remain planned.
 
 Camol uses coding benchmarks as repeatable outside pressure on the harness, not as a
 replacement for the active plan's invariants or the target repository's own tests.

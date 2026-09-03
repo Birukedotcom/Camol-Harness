@@ -9,14 +9,15 @@ complete runnable example.
 
 ## Schema versions
 
-Three `schema_version` values are readable. Any other value is rejected with
+Four `schema_version` values are readable. Any other value is rejected with
 `unsupported schema_version`.
 
 | Version | Status | Differences |
 |---|---|---|
 | `1` | frozen; digests pinned in `tests/test_runbook.py` | Accepts the legacy `run.max_agents` alias, ignores unknown fields, and has no readiness fields. Normalization is byte-identical to the pre-M0 kernel, so existing frozen plans still resume. |
 | `2` | frozen | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, rejects booleans in integer fields, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
-| `3` | current | Preserves v2 semantics and adds a provider-neutral hosted-adapter shape: `kind`, workspace-relative `profile`, and `timeout_seconds`. Process adapters retain `kind`, `argv`, and `timeout_seconds`. |
+| `3` | frozen | Preserves v2 semantics and adds a provider-neutral hosted-adapter shape: `kind`, workspace-relative `profile`, and `timeout_seconds`. Process adapters retain `kind`, `argv`, and `timeout_seconds`. |
+| `4` | current | Preserves v3 semantics and requires an explicit `evaluator_assets` list on every task. Their canonical manifests and bytes are frozen outside builder authority; changed workspace copies cannot pass. |
 
 A v1 file that contains a v2 field (`readiness_policy` or `trust_tier`) is rejected
 rather than partially reinterpreted. Upgrading is explicit:
@@ -58,6 +59,18 @@ Hosted adapters cannot supply arbitrary `argv`; invocation authority lives in
 the versioned profile and adapter implementation. See
 [Provider and model adapters](provider-adapters.md).
 
+Migration from v3 to v4 requires an explicit choice for every task—even when a
+self-contained evaluator has no external assets:
+
+```python
+from camol.runbook import migrate_runbook_v3_to_v4
+
+v4 = migrate_runbook_v3_to_v4(
+    v3,
+    evaluator_assets={"build": ["tests/frozen"], "docs": []},
+)
+```
+
 The v2 additions look like this:
 
 ```json
@@ -84,10 +97,9 @@ There is no plan field that turns readiness proof off. `require_readiness_receip
 is rejected explicitly, whatever its value; `READY_TO_LEASE` is a kernel invariant,
 not a runbook option.
 
-> Enforcement status: the scheduler records `readiness_policy` and `trust_tier` in
-> the frozen plan but does not act on them yet. A v2 plan is still leased without
-> any receipt. That gap is characterized in `tests/test_readiness.py` and closes in
-> M3.
+The scheduler enforces both fields. A task cannot lease without a fresh task/worker/
+target-bound admission bundle, and the selected sandbox backend must satisfy the
+declared trust tier.
 
 Plan digests use `camol.schema.canonical_digest`: sorted keys, `,`/`:` separators,
 ASCII-escaped UTF-8, SHA-256, and a hard rejection of NaN, infinities, non-string
@@ -192,10 +204,17 @@ Each task declares:
 - `required_evidence` — required kinds before success;
 - `max_attempts` — bounded retry count;
 - `steps` — ordered agent instructions and expected commands;
-- `verification` — commands the orchestrator runs outside the agent claim.
+- `verification` — commands the orchestrator runs outside the agent claim;
+- `evaluator_assets` (v4) — repository-relative evaluator files/directories whose
+  canonical bytes are stored outside builder write authority.
 
 Tasks may only depend on tasks declared earlier. This makes cycles structurally
-impossible in v1.
+impossible in every schema version.
+
+In v4, `verification` commands and human-approved acceptance/rule text are compiled
+with the expanded evaluator-asset manifest. Their digest is bound into readiness and
+the lease. The candidate runs in a separate verifier worktree; a protected asset
+change is a counterexample and the command is not launched.
 
 ## Steps and commands
 
@@ -237,6 +256,7 @@ task goal + acceptance + remaining steps
 verified dependency receipts
 latest checkpoint
 latest verification failure
+latest evaluator counterexample
 turn and run token budgets
 structured return contract
 ```
@@ -275,9 +295,10 @@ The adapter must write JSON to `{result}`:
 }
 ```
 
-Evidence kinds are `command`, `tool_call`, `transcript`, `environment`, `artifact`,
-`diff`, `test_result`, and `claim`. Store sensitive or large bodies outside SQLite;
-put redacted metadata and content hashes in the result.
+Evidence kinds are `command`, `tool_call`, `model_request`, `model_usage`,
+`transcript`, `environment`, `artifact`, `diff`, `test_result`, and `claim`. Store
+sensitive or large bodies outside SQLite; put redacted metadata and content hashes
+in the result.
 
 In production, the adapter wrapper should populate token counts from provider/runtime
 usage receipts rather than asking the reasoning model to estimate its own consumption.
@@ -291,7 +312,9 @@ channels.
 ```text
 RUN:  draft -> ready -> running -> completed | blocked
 
-TASK: pending -> leased -> running -> verifying -> succeeded
+TASK: pending <-> waiting
+         |
+         +-> leased -> running -> verifying -> succeeded
                              |           |
                              +-> retry <-+
                              |
@@ -316,7 +339,9 @@ python3 -m camol init runbook.json --db .camol/run.sqlite3
 python3 -m camol approve --db .camol/run.sqlite3 --run-id RUN --by NAME
 
 # Execute or resume until a declared terminal state
-python3 -m camol run runbook.json --db .camol/run.sqlite3 --workspace .
+python3 -m camol run runbook.json --workspace . \
+  --state-dir /absolute/path/outside/repository/state \
+  --db /absolute/path/outside/repository/state/run.sqlite3
 
 # Prove task-specific readiness without starting work (read-only; exit 0/2/3)
 python3 -m camol doctor runbook.json --workspace . --state-dir /outside/repo --json

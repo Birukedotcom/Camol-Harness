@@ -795,20 +795,43 @@ class ToolsProbe(Probe):
 class EvaluatorBundleProbe(Probe):
     probe_id = "evaluator.bundle"
     kind = "evaluator"
-    VERSION = 2
+    VERSION = 3
 
     @staticmethod
     def bundle(runbook: Dict[str, Any]) -> Dict[str, Any]:
-        return {task["id"]: task["verification"] for task in runbook["tasks"]}
+        # Local import avoids a module cycle: evaluator storage builds on the
+        # workspace layer, whose read-only utilities also use probe helpers.
+        from .evaluation import evaluator_definition
+        return evaluator_definition(runbook)
+
+    @staticmethod
+    def digest(runbook: Dict[str, Any], workspace: Path) -> str:
+        from .evaluation import evaluator_digest
+        return evaluator_digest(runbook, workspace)
 
     def observe(self, context):
         bundle = self.bundle(context.runbook)
-        digest = canonical_digest(bundle)
-        resolved_map, missing = _check_command_binaries([command["argv"] for commands in bundle.values() for command in commands], context)
-        facts = {"evaluator_digest": digest, "tasks": len(bundle), "binaries": resolved_map}
+        try:
+            digest = self.digest(context.runbook, context.workspace)
+        except Exception as error:
+            invalid_digest = canonical_digest({"definition": bundle, "assets_valid": False})
+            return self.red(
+                context, "evaluator assets could not be frozen: {}".format(error),
+                reason="EVALUATOR_NOT_READY", wake="restore or correct the declared evaluator assets",
+                missing=["valid immutable evaluator assets"], method="filesystem",
+                facts={"tasks": len(bundle["tasks"]), "evaluator_digest": invalid_digest},
+            )
+        commands = [command["argv"] for task in bundle["tasks"] for command in task["verification"]]
+        resolved_map, missing = _check_command_binaries(commands, context)
+        facts = {
+            "evaluator_digest": digest,
+            "tasks": len(bundle["tasks"]),
+            "protected_assets": sum(len(task["evaluator_assets"]) for task in bundle["tasks"]),
+            "binaries": resolved_map,
+        }
         if missing:
             return self.red(context, "evaluator commands are not launchable", reason="EVALUATOR_NOT_READY", wake="install or restore: {}".format("; ".join(missing)), missing=missing, method="filesystem", facts=facts)
-        return self.green(context, "evaluator bundle for {} tasks is frozen (digest recorded) and launchable; not executed".format(len(bundle)), method="filesystem", facts=facts)
+        return self.green(context, "evaluator bundle for {} tasks is frozen (digest recorded) and launchable; not executed".format(len(bundle["tasks"])), method="filesystem", facts=facts)
 
 
 class DiskHeadroomProbe(Probe):

@@ -12,6 +12,7 @@ from typing import Any, Dict
 
 from .orchestrator import Orchestrator, StateTransitionError
 from .artifacts import ArtifactError, ArtifactStore, RunArchive
+from .benchmark import BenchmarkError, BenchmarkTrial, compare_trials
 from .runner import HarnessRunner, summary
 from .doctor import DoctorOptions, run_doctor
 from .runbook import RunbookError, load_runbook
@@ -249,6 +250,13 @@ def command_control(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_bench_compare(args: argparse.Namespace) -> int:
+    direct = BenchmarkTrial.from_dict(json.loads(Path(args.direct).read_text(encoding="utf-8")))
+    camol = BenchmarkTrial.from_dict(json.loads(Path(args.camol).read_text(encoding="utf-8")))
+    _write_json(compare_trials(direct, camol))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="camol", description="Persistent plan-driven agent orchestration harness"
@@ -361,6 +369,13 @@ def build_parser() -> argparse.ArgumentParser:
     control.add_argument("--state-dir", required=True)
     control.add_argument("--by", default="operator")
     control.set_defaults(handler=command_control)
+
+    bench = subparsers.add_parser(
+        "bench-compare", help="compare a direct-Claude and Camol trial under matched conditions"
+    )
+    bench.add_argument("--direct", required=True, help="claude_direct benchmark-trial JSON")
+    bench.add_argument("--camol", required=True, help="camol_one or camol_adaptive benchmark-trial JSON")
+    bench.set_defaults(handler=command_bench_compare)
     return parser
 
 
@@ -371,7 +386,7 @@ def main(argv: Any = None) -> int:
         return args.handler(args)
     except (
         ArtifactError, RunbookError, SchemaError, StateTransitionError,
-        WorkspaceError, ProviderError, SupervisorError, OSError, json.JSONDecodeError,
+        WorkspaceError, ProviderError, SupervisorError, BenchmarkError, OSError, json.JSONDecodeError,
     ) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2

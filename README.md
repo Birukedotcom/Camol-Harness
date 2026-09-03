@@ -11,10 +11,10 @@ and evaluators are replaceable components. The kernel owns durable truth about
 plans, state, readiness, authority, leases, evidence, budgets, retries, integration,
 and completion.
 
-> Project status: `v0.0 / SPECULATIVE`. The repository contains a tested deterministic
-> kernel simulator. It is not yet safe to run a real coding agent because
-> task-specific readiness, worktree/process isolation, and fenced leases are still
-> being implemented.
+> Project status: `v0.1 / PROVISIONAL` for the deterministic local-process kernel;
+> `SPECULATIVE` for the hosted Claude/Fable profile until an opt-in live run supplies
+> account, model-resolution, cost, and recovery evidence. This is developer software,
+> not a production-safe remote execution or deployment system.
 
 <table>
   <tr>
@@ -137,8 +137,9 @@ directly into `main`.
 Repository isolation is not process security. Real workers must also launch through
 a sandbox with explicit filesystem, process, environment, network, and credential
 grants. An unsandboxed local process is labeled `developer_trusted` and cannot earn a
-public or production-safe maturity claim. Evaluators and their frozen fixtures remain
-outside builder write authority.
+public or production-safe maturity claim. The canonical evaluator definition and
+asset blobs remain outside builder write authority; changed workspace copies are
+rejected before evaluator execution and before readmission.
 
 ## Models and execution targets
 
@@ -209,27 +210,36 @@ The executable Python slice currently provides:
 - versioned, validated `ProbeResult`, `ReadinessReceipt`, `WorkspaceReceipt`,
   `CapacityReservation`, `CapabilityGrant`, and `LeaseFence` contracts
   (`camol.readiness`), plus the twelve typed non-runnable reasons;
-- runbook schema v2 with an explicit v1-to-v2 migration and pinned v1 digests;
+- runbook schemas v1-v4 with explicit migrations, strict current fields, and pinned
+  v1 digests;
 - `READINESS_RECORDED`, `TASK_WAITING`, and `TASK_WAIT_CLEARED` ledger events;
 - a `BoxBinding`, `AuthorityPolicy`, and `ProbePolicy` identity model that binds every
   proof record to one lease subject, plus the pure `READY_TO_LEASE` predicate; and
 - `camol doctor`: a read-only probe registry that proves task-specific readiness
   (state directory, artifact sink, Git, repository revision and dirty state, adapter
   and tool binaries, evaluator bundle, disk, capacity) and emits candidate readiness
-  receipts without launching, downloading, authenticating, or spending anything.
+  receipts without launching, downloading, authenticating, or spending anything;
+- task-specific isolated Git worktrees, enforced sandbox policies, reservations,
+  fenced leases, pre-launch rechecks, typed waits, and N-box scheduling;
+- complete redacted command/tool/transcript/diff evidence and content-addressed
+  export verification;
+- a modular Claude CLI adapter with explicit spend preflight and requested-versus-
+  resolved model identity;
+- a detached single-writer supervisor with authenticated local control, drain,
+  salvage, orphan-process reconciliation, and no-blind-retry external effects; and
+- evaluator bundles compiled outside builder authority, protected evaluator assets,
+  separate candidate-verifier worktrees, generation-based integration, visible
+  counterexamples/refinement, and matched vector-valued benchmark comparison.
 
-The current box directory is not yet a Git worktree or security sandbox. The current
-scheduler can still lease an idle static capability match without a task-specific
-readiness receipt; `tests/test_readiness.py` characterizes that unsafe boundary
-explicitly, and the contracts are recorded but not yet enforced by the scheduler.
 A green `camol doctor` is not a lease: it proves readiness dimensions only, shows
 that a grant and a reservation are still missing, and is possible only for a
 verified local interpreter adapter. Any hosted or unverified adapter additionally
 requires provider and network proof, which no probe adapter can supply yet, so
 such runbooks exit 2. Receipts produced with `--now` are synthetic fixtures that
 the lease predicate rejects. Consequently, the
-included fake-agent demo tests kernel semantics only; replacing its command with a
-real coding agent is not yet supported or safe. See [docs/readiness.md](docs/readiness.md).
+included fake-agent and deterministic dogfood runs prove kernel semantics only. A
+hosted-model run additionally needs explicit provider readiness and spend approval.
+See [docs/readiness.md](docs/readiness.md).
 
 ## Build path
 
@@ -244,7 +254,7 @@ The implementation sequence is deliberately narrow:
 | M4 (implemented) | Complete redacted event and content-addressed artifact capture |
 | M5 (implemented; live proof pending) | Modular Claude CLI adapter and speculative Fable profile |
 | M6 (implemented locally) | Detachable client, supervised daemon, recovery, drain, and effect reconciliation |
-| M7 | Frozen evaluator, controlled failure injection, and first Camol-on-Camol dogfood proof |
+| M7 (kernel implemented; hosted proof pending) | Frozen evaluator, controlled failure injection, matched-trial contract, and deterministic Camol-on-Camol proof |
 
 The [v0 build plan](docs/v0-build-plan.md) gives each milestone its expected files,
 tests, failure cases, and exit gate. Dynamic VM provisioning, multi-provider routing,
@@ -261,21 +271,38 @@ python3 -m unittest discover -v
 python3 -m camol validate examples/three-agent-runbook.json
 python3 -m camol doctor examples/three-agent-runbook.json --workspace . --state-dir /path/outside/repo
 python3 -m camol run examples/three-agent-runbook.json \
-  --db .camol/demo.sqlite3 \
   --workspace . \
+  --state-dir /path/outside/repo/demo-state \
   --approve-by "$USER"
+```
+
+Run the reproducible Camol-on-Camol kernel proof from a clean checkout:
+
+```bash
+python3 scripts/run_v0_proof.py --output /path/outside/repo/v0-proof
+```
+
+Or detach a draft run, inspect it, approve the exact plan, and let the daemon continue
+after the client exits:
+
+```bash
+python3 -m camol start examples/three-agent-runbook.json \
+  --workspace . --state-dir /path/outside/repo/supervised-state
+python3 -m camol ctl status --state-dir /path/outside/repo/supervised-state
+python3 -m camol ctl approve --state-dir /path/outside/repo/supervised-state --by "$USER"
 ```
 
 Inspect the replayed projection and immutable event stream:
 
 ```bash
-python3 -m camol status --db .camol/demo.sqlite3 --run-id three-agent-demo
-python3 -m camol events --db .camol/demo.sqlite3 --run-id three-agent-demo
+python3 -m camol status --db /path/outside/repo/demo-state/camol.sqlite3 --run-id three-agent-demo
+python3 -m camol events --db /path/outside/repo/demo-state/camol.sqlite3 --run-id three-agent-demo
 ```
 
 The example happens to register three fake workers so concurrency is easy to observe;
-three is not a product assumption. Do not replace the fake adapter with a real agent
-until the M0-M4 readiness and isolation gates are implemented.
+three is not a product assumption. Use a schema-v3/v4 hosted profile, successful
+provider preflight, an enforcing trust tier, and explicit budget approval before a
+real hosted-agent run.
 
 ## Documentation map
 
@@ -283,6 +310,8 @@ until the M0-M4 readiness and isolation gates are implemented.
   invariant model, transparency, evaluation, security, and reference profiles.
 - [v0 build plan](docs/v0-build-plan.md): PR-sized implementation order and exit
   gates for the first readiness-safe Fable dogfood run.
+- [V0 verification](docs/v0-verification.md): reproducible proof, failure-injection
+  map, maturity boundaries, and matched-comparison rules.
 - [Architecture](docs/architecture.md): executable kernel objects, events, delegation,
   bounded context, and feedback loops.
 - [Execution topology](docs/execution-topology.md): terminal/target/worker/workspace/box

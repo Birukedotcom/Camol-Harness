@@ -114,6 +114,38 @@ class WorkspaceManagerTests(unittest.TestCase):
             manager.cleanup(handle, salvage)
         self.assertTrue(handle.path.exists())
 
+    def test_worker_commit_cannot_hide_changes_from_candidate_salvage(self):
+        manager = WorkspaceManager(self.source, self.state)
+        handle = manager.prepare_task("run", "task", "box")
+        (handle.path / "tracked.txt").write_text("committed by worker\n", encoding="utf-8")
+        git(handle.path, "add", "tracked.txt")
+        git(handle.path, "commit", "-q", "-m", "worker commit")
+        salvage = manager.salvage(handle, created_at="2026-09-03T00:00:00Z")
+        self.assertGreater(salvage.patch_bytes, 0)
+        verifier = manager.prepare_verifier(
+            "run", "task", "candidate-proof", base_revision=handle.receipt.base_revision,
+        )
+        manager.materialize_candidate(salvage, verifier)
+        self.assertEqual((verifier.path / "tracked.txt").read_text(encoding="utf-8"), "committed by worker\n")
+
+    def test_integration_generation_role_is_persisted_and_reloaded(self):
+        manager = WorkspaceManager(self.source, self.state)
+        base = git(self.source, "rev-parse", "HEAD")
+        generation = manager.prepare_integration_generation(
+            "run", "task", "candidate-proof", base_revision=base,
+        )
+        again = manager.prepare_integration_generation(
+            "run", "task", "candidate-proof", base_revision=base,
+        )
+        record = json.loads(
+            (self.state / "records" / "workspaces" / (generation.receipt.workspace_id + ".json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertTrue(generation.integration)
+        self.assertTrue(again.integration)
+        self.assertTrue(record["integration"])
+
     def test_cleanup_never_destroys_adopted_workspace(self):
         manager = WorkspaceManager(self.source, self.state)
         handle = manager.prepare_task("run", "task", "box")

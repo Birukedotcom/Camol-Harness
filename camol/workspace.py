@@ -198,14 +198,18 @@ class WorkspaceManager:
             if _nested(self.state_dir, protected):
                 raise WorkspaceError("state directory must be outside the source repository and Git common directory")
 
-    def _git_result(self, *args: str, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess:
+    def _git_result(
+        self, *args: str, check: bool = True, timeout: int = 120,
+        input_bytes: Optional[bytes] = None,
+    ) -> subprocess.CompletedProcess:
         git = shutil.which("git")
         if not git:
             raise WorkspaceError("git is not installed")
         try:
             result = subprocess.run(
                 [git] + list(GIT_SAFETY_ARGS) + list(args),
-                stdin=subprocess.DEVNULL,
+                input=input_bytes,
+                stdin=subprocess.DEVNULL if input_bytes is None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=sanitized_environment(),
@@ -263,6 +267,8 @@ class WorkspaceManager:
             payload = json.loads(record_path.read_text(encoding="utf-8"))
             if payload.get("run_id") != run_id or payload.get("task_id") != task_id or payload.get("box_id") != box_id:
                 raise WorkspaceError("workspace record belongs to a different subject")
+            if payload.get("integration") is not integration:
+                raise WorkspaceError("workspace record has the wrong workspace role")
             receipt = WorkspaceReceipt.from_dict(payload["receipt"])
         except (OSError, ValueError, KeyError) as error:
             if isinstance(error, WorkspaceError):
@@ -292,6 +298,42 @@ class WorkspaceManager:
     ) -> WorkspaceHandle:
         return self._prepare(
             run_id, "integration", "integration", base_revision=base_revision, created_at=created_at, integration=True
+        )
+
+    def prepare_verifier(
+        self, run_id: str, task_id: str, candidate_id: str, *, base_revision: str
+    ) -> WorkspaceHandle:
+        suffix = _component(candidate_id)[-24:]
+        return self.prepare_task(run_id, "verify-" + _component(task_id), "candidate-" + suffix, base_revision=base_revision)
+
+    def prepare_integration_generation(
+        self, run_id: str, task_id: str, candidate_id: str, *, base_revision: str
+    ) -> WorkspaceHandle:
+        suffix = _component(candidate_id)[-24:]
+        generation_task = "integrate-" + _component(task_id)
+        generation_box = "candidate-" + suffix
+        workspace_id = "ws-{}-{}-{}".format(
+            _component(run_id), _component(generation_task), _component(generation_box)
+        )
+        record_path = self._record_path(workspace_id)
+        if record_path.exists():
+            return self._load_existing(
+                record_path,
+                run_id=run_id,
+                task_id=generation_task,
+                box_id=generation_box,
+                integration=True,
+            )
+        handle = self._prepare(
+            run_id, generation_task, generation_box,
+            base_revision=base_revision, created_at=None, integration=False,
+        )
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+        payload["integration"] = True
+        self._atomic_json(record_path, payload)
+        return WorkspaceHandle(
+            handle.run_id, handle.task_id, handle.box_id, handle.path,
+            handle.branch, handle.receipt, True,
         )
 
     def _prepare(
@@ -387,7 +429,9 @@ class WorkspaceManager:
     def diff_snapshot(self, handle: WorkspaceHandle) -> Tuple[bytes, Tuple[Path, ...], Tuple[str, ...]]:
         """Return the tracked binary patch, changed regular files, and status lines."""
         self._validate_handle(handle)
-        patch = self._git_result("-C", str(handle.path), "diff", "--binary", "HEAD").stdout
+        patch = self._git_result(
+            "-C", str(handle.path), "diff", "--binary", handle.receipt.base_revision
+        ).stdout
         status_lines = tuple(
             sorted(
                 line
@@ -397,9 +441,14 @@ class WorkspaceManager:
                 if line.strip()
             )
         )
-        names = self._git_result(
-            "-C", str(handle.path), "ls-files", "-z", "--modified", "--others", "--exclude-standard"
-        ).stdout.split(b"\0")
+        names = (
+            self._git_result(
+                "-C", str(handle.path), "diff", "--name-only", "-z", handle.receipt.base_revision
+            ).stdout
+            + self._git_result(
+                "-C", str(handle.path), "ls-files", "-z", "--others", "--exclude-standard"
+            ).stdout
+        ).split(b"\0")
         files = []
         for raw in names:
             if not raw:
@@ -442,7 +491,9 @@ class WorkspaceManager:
 
     def salvage(self, handle: WorkspaceHandle, *, created_at: Optional[str] = None) -> SalvageReceipt:
         self._validate_handle(handle)
-        patch = self._git_result("-C", str(handle.path), "diff", "--binary", "HEAD").stdout
+        patch = self._git_result(
+            "-C", str(handle.path), "diff", "--binary", handle.receipt.base_revision
+        ).stdout
         patch_digest = self._write_blob(patch)
         raw_untracked = self._git_result(
             "-C", str(handle.path), "ls-files", "--others", "--exclude-standard", "-z"
@@ -481,6 +532,57 @@ class WorkspaceManager:
         record = self.state_dir / "salvage" / "receipts" / (handle.receipt.workspace_id + ".json")
         self._atomic_json(record, receipt.to_dict())
         return receipt
+
+    def _read_salvage_blob(self, digest: str) -> bytes:
+        validated = require_digest(digest, "salvage blob digest")
+        path = self.state_dir / "salvage" / "blobs" / validated[7:9] / validated[7:]
+        if path.is_symlink() or not path.is_file():
+            raise WorkspaceError("candidate salvage blob is missing")
+        content = path.read_bytes()
+        if "sha256:" + hashlib.sha256(content).hexdigest() != validated:
+            raise WorkspaceError("candidate salvage blob is corrupt")
+        return content
+
+    def materialize_candidate(self, salvage: SalvageReceipt, destination: WorkspaceHandle) -> None:
+        """Replay a captured candidate into a clean verifier/integration generation."""
+        self._validate_handle(destination)
+        if self._git("-C", str(destination.path), "status", "--porcelain", "--untracked-files=all"):
+            raise WorkspaceError("candidate destination is not clean")
+        patch = self._read_salvage_blob(salvage.patch_digest)
+        if len(patch) != salvage.patch_bytes:
+            raise WorkspaceError("candidate patch length does not match its receipt")
+        if patch:
+            self._git_result(
+                "-C", str(destination.path), "apply", "--3way", "--index", "-",
+                input_bytes=patch, timeout=300,
+            )
+        for item in salvage.untracked:
+            relative = Path(item["path"])
+            target = destination.path / relative
+            if target.is_symlink() or not _inside(target, destination.path):
+                raise WorkspaceError("candidate untracked path escaped its destination")
+            content = self._read_salvage_blob(item["digest"])
+            if len(content) != item["bytes"]:
+                raise WorkspaceError("candidate untracked length does not match its receipt")
+            if target.exists():
+                if not target.is_file() or target.read_bytes() != content:
+                    raise WorkspaceError("candidate untracked path conflicts with integration state")
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+
+    def commit_workspace(self, handle: WorkspaceHandle, message: str) -> str:
+        """Commit one Camol-owned integration generation and return its exact revision."""
+        self._validate_handle(handle)
+        if not isinstance(message, str) or not message.strip():
+            raise WorkspaceError("integration commit message is required")
+        self._git("-C", str(handle.path), "add", "-A")
+        self._git("-C", str(handle.path), "commit", "--allow-empty", "-m", message, timeout=300)
+        return self._git("-C", str(handle.path), "rev-parse", "HEAD")
+
+    def head_revision(self, handle: Optional[WorkspaceHandle] = None) -> str:
+        target = handle.path if handle is not None else self.source
+        return self._git("-C", str(target), "rev-parse", "HEAD")
 
     def cleanup(self, handle: WorkspaceHandle, salvage: SalvageReceipt) -> None:
         """Remove a Camol-created worktree only after validating its salvage receipt."""

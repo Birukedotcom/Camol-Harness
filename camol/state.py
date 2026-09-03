@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterable
 
 from .admission import AdmissionBundle
 from .effects import EffectOutcome, EffectRequest
+from .evaluation import CandidateRecord, CounterexampleRecord, IntegrationReceipt
 from .evidence import EvidenceRecord
 from .readiness import LeaseFence, ReadinessReceipt, WaitingReason
 from .schema import reject_unknown_fields, require_digest, require_string
@@ -33,6 +34,10 @@ def empty_state() -> Dict[str, Any]:
         "heartbeats": {},
         "effects": {},
         "salvages": [],
+        "candidates": {},
+        "counterexamples": [],
+        "integrations": [],
+        "integration_head": None,
         "total_tokens": 0,
         "last_seq": 0,
     }
@@ -421,11 +426,82 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         admission = AdmissionBundle.from_dict(
             next_state["admissions"]["{}:{}".format(payload["task_id"], payload["agent_id"])]
         )
-        if salvage.workspace_digest != admission.workspace.digest():
-            raise ValueError("WORKSPACE_SALVAGED does not bind the admitted workspace")
+        if (
+            salvage.workspace_id != admission.workspace.workspace_id
+            or salvage.base_revision != admission.workspace.base_revision
+        ):
+            raise ValueError("WORKSPACE_SALVAGED does not identify the admitted workspace")
         normalized = dict(payload)
         normalized["salvage"] = salvage.to_dict()
         next_state["salvages"].append(normalized)
+    elif event_type == "CANDIDATE_CAPTURED":
+        candidate = CandidateRecord.from_dict(payload["candidate"])
+        if candidate.digest() != require_digest(payload.get("candidate_digest"), "candidate record digest"):
+            raise ValueError("CANDIDATE_CAPTURED digest is invalid")
+        if candidate.run_id != event["run_id"] or candidate.candidate_id in next_state["candidates"]:
+            raise ValueError("CANDIDATE_CAPTURED has a foreign or duplicate identity")
+        task = next_state["tasks"].get(candidate.task_id)
+        if (
+            task is None or task["status"] != "verifying"
+            or task["agent_id"] != candidate.agent_id
+            or task["lease_id"] != candidate.lease_id
+            or task["fence_digest"] != candidate.fence_digest
+        ):
+            raise ValueError("CANDIDATE_CAPTURED does not match the active fenced lease")
+        admission = AdmissionBundle.from_dict(
+            next_state["admissions"]["{}:{}".format(candidate.task_id, candidate.agent_id)]
+        )
+        if (
+            candidate.evaluator_digest != admission.evaluator_digest
+            or candidate.salvage.workspace_id != admission.workspace.workspace_id
+            or candidate.salvage.base_revision != admission.workspace.base_revision
+        ):
+            raise ValueError("CANDIDATE_CAPTURED does not bind the admitted evaluator/workspace")
+        next_state["candidates"][candidate.candidate_id] = candidate.to_dict()
+    elif event_type == "COUNTEREXAMPLE_RECORDED":
+        record = CounterexampleRecord.from_dict(payload)
+        candidate = next_state["candidates"].get(record.candidate_id)
+        if candidate is None or record.run_id != event["run_id"] or record.task_id != candidate["task_id"]:
+            raise ValueError("COUNTEREXAMPLE_RECORDED does not bind a candidate in this run")
+        if record.evaluator_digest != candidate["evaluator_digest"]:
+            raise ValueError("COUNTEREXAMPLE_RECORDED evaluator digest changed")
+        next_state["counterexamples"].append(record.to_dict())
+    elif event_type == "INTEGRATION_ACCEPTED":
+        receipt = IntegrationReceipt.from_dict(payload["receipt"])
+        if receipt.digest() != require_digest(payload.get("receipt_digest"), "integration receipt digest"):
+            raise ValueError("INTEGRATION_ACCEPTED digest is invalid")
+        candidate = next_state["candidates"].get(receipt.candidate_id)
+        if (
+            receipt.run_id != event["run_id"] or candidate is None
+            or receipt.task_id != candidate["task_id"]
+            or receipt.evaluator_digest != candidate["evaluator_digest"]
+        ):
+            raise ValueError("INTEGRATION_ACCEPTED does not bind its candidate")
+        if any(item["candidate_id"] == receipt.candidate_id for item in next_state["integrations"]):
+            raise ValueError("INTEGRATION_ACCEPTED duplicates an accepted candidate")
+        task = next_state["tasks"].get(receipt.task_id)
+        if (
+            task is None or task["status"] != "verifying"
+            or task["agent_id"] != candidate["agent_id"]
+            or task["lease_id"] != candidate["lease_id"]
+            or task["fence_digest"] != candidate["fence_digest"]
+        ):
+            raise ValueError("INTEGRATION_ACCEPTED requires the candidate's active fenced lease")
+        admission = AdmissionBundle.from_dict(
+            next_state["admissions"]["{}:{}".format(candidate["task_id"], candidate["agent_id"])]
+        )
+        expected_base = next_state["integration_head"] or candidate["salvage"]["base_revision"]
+        if receipt.workspace.base_revision != expected_base:
+            raise ValueError("INTEGRATION_ACCEPTED does not extend the current integration head")
+        if (
+            receipt.workspace.workspace_id == candidate["salvage"]["workspace_id"]
+            or receipt.workspace.repository_id != admission.workspace.repository_id
+        ):
+            raise ValueError("INTEGRATION_ACCEPTED does not identify an isolated workspace in the admitted repository")
+        if receipt.revision == expected_base:
+            raise ValueError("INTEGRATION_ACCEPTED revision does not contain a candidate commit")
+        next_state["integrations"].append(receipt.to_dict())
+        next_state["integration_head"] = receipt.revision
     else:
         raise ValueError("projection does not handle {}".format(event_type))
 
