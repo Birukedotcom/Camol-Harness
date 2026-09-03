@@ -15,12 +15,12 @@ application, and the durable graph model is independent of the eventual TUI libr
 The main view reserves the upper-right for a compact dependency rail:
 
 ```text
-┌ CAMOL / ORCHESTRATOR ─────────── docker ✓  git ✓  gcp !auth  models 2✓ 1↓ ┐
+┌ CAMOL / ORCHESTRATOR ───────────── DOCKER ■  GIT ■  GCP □  MODELS ■■↓ ┐
 │ objective, current state, approvals, cost                                  │
 ├ boxes ──────────────────────────────┬ repository graph ─────────────────────┤
-│ 1 builder     EXECUTING             │ api ──requires──▶ database            │
-│ 2 verifier    EVALUATING            │  │                 ▲                  │
-│ 3 watcher     WAITING               │  └──deploys──▶ cloud-run              │
+│ ■ 1 builder     EXECUTING           │ api ──requires──▶ database            │
+│ ■ 2 verifier    EVALUATING          │  │                 ▲                  │
+│ □ 3 watcher     DISCONNECTED        │  └──deploys──▶ cloud-run              │
 ├ selected evidence / dependency detail┴──────────────────────────────────────┤
 │ camol>                                                                     │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -41,9 +41,14 @@ docker
 Statuses have both text and glyphs so meaning never depends on color:
 
 ```text
-✓ READY        ~ PRESENT_UNVERIFIED     ↓ DOWNLOADABLE
-! ACTION_REQUIRED     × UNAVAILABLE     ↻ STALE
+■ CONNECTED_AND_READY     □ PRESENT_NOT_CONNECTED     ↓ DOWNLOADABLE
+! ACTION_REQUIRED        × UNAVAILABLE                ↻ PROBING_OR_REFRESHING
 ```
+
+The ready mark is a solid white square in the default dark theme. On a light terminal
+it uses the terminal foreground color so it remains visible. The square is the quick
+signal; the expanded dependency detail still states the full status in text. The same
+mark appears beside connected worker boxes and ready repository/runtime nodes.
 
 "Installed" and "connected" are not synonyms. Docker can have a CLI with no daemon;
 gcloud can have a configured project with expired OAuth; a local-model runtime can be

@@ -104,12 +104,19 @@ The upper-right contains a compact dependency rail. It answers whether a capabil
 is usable now, rather than merely whether a binary exists:
 
 ```text
-docker READY   git READY   gcp AUTH_REQUIRED   models 2 READY / 1 DOWNLOADABLE
+DOCKER ■   GIT ■   GCP □   MODELS ■■↓
 ```
 
 Selecting a dependency opens its layered readiness evidence, such as CLI presence,
 version, daemon reachability, authentication, target scope, required artifacts, and
 freshness. Secret values and account identifiers are never rendered there.
+
+`■` is a solid white status box in Camol's default dark terminal theme and means the
+dependency is connected and task-ready. `□` means it is known or installed but not
+connected/ready; `↓` means its artifact is available to download; `!` means human
+action is required; and `↻` means Camol is probing or refreshing it. The glyph and
+text detail carry status independently of color. Worker boxes use the same solid-box
+language so a glance across the header and box list is consistent.
 
 Camol also has a repository graph view backed by a read-only Python crawler. It keeps
 three graph layers distinct:
