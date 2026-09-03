@@ -50,13 +50,15 @@ Small function-generation suites may be useful as adapter smoke tests, but they 
 not primary Camol metrics because they do not exercise planning, terminal work,
 delegation, recovery, or integration.
 
-Public suites are complemented by a Camol-owned workflow corpus. Its first long-run
-scenario family comes from sanitized Buckeye work patterns: inspect a repository,
+Public suites are complemented by a Camol-owned, technology-diverse workflow corpus.
+One initial long-run scenario family comes from sanitized Buckeye work patterns:
+inspect a repository,
 let the plan choose an appropriate N-box topology within a frozen resource envelope,
 implement and integrate a change, forward-deploy to an isolated GCP target, observe a
 voice-agent boundary, diagnose a seeded failure, recover from an orchestrator restart,
-and produce replayable evidence. This internal corpus measures product fit that a
-public leaderboard cannot.
+and produce replayable evidence. Additional profiles cover local repair,
+multi-language builds, multi-service integration, and local-model work. This internal
+corpus measures product fit that a public leaderboard cannot.
 
 ## 3. Benchmark adapter contract
 

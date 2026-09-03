@@ -2,9 +2,10 @@
 
 Status: specified; the local registered-worker subset is executable.
 
-Camol delegates to as many boxes as a plan can justify within its approved resource
-envelope. There is no product-level box-count constant. Every actual run still has a
-finite concurrency, cost, authority, and infrastructure ceiling.
+Camol's replaceable orchestration agent may propose as many boxes as a plan can
+justify within its approved resource envelope. The deterministic harness admits and
+leases them. There is no product-level box-count constant. Every actual run still has
+a finite concurrency, cost, authority, and infrastructure ceiling.
 
 ## 1. Do not confuse the terminal with the machine
 
@@ -83,7 +84,7 @@ endpoint subject to its queue and memory limits.
 
 ## 4. Choosing N
 
-N is an orchestration decision constrained by deterministic admission control. The
+N is an orchestration proposal constrained by deterministic admission control. The
 human approves a resource envelope rather than a universal box count:
 
 ```text
@@ -96,14 +97,18 @@ repository write and integration concurrency
 network, credential, region, and data-residency policy
 ```
 
-The orchestrator proposes tasks and topology. The kernel may activate another box
-only when:
+The default `saturate_connected` policy uses the maximum useful capacity the user has
+already connected. The orchestration agent proposes tasks and topology. The kernel
+may activate another box only when:
 
 1. a plan-backed task or candidate attempt is ready;
 2. an eligible worker or permitted provisioning path exists;
 3. isolation, authority, and dependency probes pass;
 4. the approved resource envelope has capacity; and
 5. expected marginal value exceeds the plan's scale-out threshold.
+
+New paid provisioning, model downloads/loads, or broader provider scope are separate
+capabilities and are not implied by `saturate_connected`.
 
 Useful topologies include partitioned subtasks, parallel candidates, map/reduce,
 pipelines, independent verification, specialist escalation, and durable observation.

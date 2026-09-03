@@ -13,13 +13,18 @@ terminal panes, repo-local skills, human memory, and ad hoc status messages. The
 is not a more elaborate prompt. The fix is a control plane that makes work and its
 evidence explicit.
 
-Camol has one authoritative orchestrator and an N-box worker pool. Each run has a
-finite human-approved resource envelope, and the orchestrator activates only the
-boxes its plan can justify inside that envelope. Workers may run beside the control
-plane or on remote execution targets, but they never become independent sources of
-truth. They lease plan-selected tasks, emit evidence, ask questions, propose
-follow-up work, and return claims. The orchestrator decides what enters the run and
-what is accepted.
+Camol has one authoritative control plane and an N-box worker pool. Each run has a
+finite human-approved resource envelope. A replaceable orchestration agent proposes
+the boxes its plan can justify inside that envelope; the kernel admits and leases
+them. Workers may run beside the control plane or on remote execution targets, but
+they never become independent sources of truth. They lease plan-selected tasks, emit
+evidence, ask questions, propose follow-up work, and return claims. The kernel decides
+what enters the run and what is accepted.
+
+Camol itself is the harness, not the reasoning agent. In this document,
+"orchestrator" means the replaceable orchestration-agent component operating through
+the deterministic control plane. Agent proposals are inputs to kernel decisions, not
+authoritative state mutations.
 
 The first reusable proof case is Sarah in Enrollment Hub:
 
@@ -40,10 +45,10 @@ general harness protocol.
                                      |
                                      v
                          +-----------------------+
-                         |     ORCHESTRATOR      |
-                         | goal, DAG, leases,    |
-                         | evidence, review,     |
-                         | budgets, promotion   |
+                         | CAMOL CONTROL PLANE   |
+                         | orchestration adapter |
+                         | DAG, leases, evidence |
+                         | gates, budget, state  |
                          +----+----------+-------+
                               |          ^
                    task lease |          | events / claims / questions
@@ -106,6 +111,10 @@ semantics live in [`execution-topology.md`](execution-topology.md).
 - credentials and high-impact approvals;
 - whether a changed behavior is actually desirable;
 - exceptions to budgets, safety gates, and promotion rules.
+
+Provider accounts used during development are test connections owned by the
+developer. Public Camol installations use user-owned provider or local-model
+connections; no owner credential is part of the product.
 
 ## 4. Durable primitives, not skills
 

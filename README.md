@@ -4,6 +4,11 @@ Camol is a restart-safe Python control plane for one human-guided orchestrator a
 N-box worker pool. Each run activates only the boxes its plan can justify within a
 human-approved concurrency, cost, infrastructure, and authority envelope.
 
+Camol is the harness, not an agent or provider. It uses replaceable orchestration and
+worker-agent adapters, discovers the capacity a user has connected, and matches that
+capacity to plan work. Development accounts are test inputs; public use is based on
+user-owned provider connections or local models.
+
 The consolidated product direction, trust model, transparent tool-log protocol,
 invariant gates, cmux/GCP compatibility target, and implementation roadmap live in
 [SPEC.md](SPEC.md). That document is authoritative for product decisions; the files
@@ -70,6 +75,9 @@ coding-suite adapters, long-horizon campaigns, and matched harness comparisons a
 The distinction between terminals, execution targets, workers, workspaces, boxes, and
 leases—and the N-box scaling contract—is in
 [docs/execution-topology.md](docs/execution-topology.md).
+Capacity discovery, agent/model suitability, bring-your-own accounts, and generic
+workflow profiles are specified in
+[docs/capacity-and-provider-model.md](docs/capacity-and-provider-model.md).
 
 ## Run the deterministic three-agent proof
 

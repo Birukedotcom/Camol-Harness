@@ -28,6 +28,11 @@ human-approved resource envelope. The harness continues until state gates are
 satisfied, a human decision is required, or an owner-defined pause condition is
 reached.
 
+Camol is the harness, not an agent or model. A replaceable orchestration agent reasons
+about plans, decomposition, placement, and reconciliation through an adapter. Worker
+agents execute leases through other adapters. The deterministic Camol kernel decides
+whether any proposal is authorized and whether its evidence can advance state.
+
 Camol is not primarily a chat interface, a prompt collection, a web application, or
 a terminal multiplexer. Its product is the durable combination of:
 
@@ -41,8 +46,9 @@ a terminal multiplexer. Its product is the durable combination of:
 - evaluation, debugging, and hill-climb feedback loops; and
 - replaceable execution-target, transport, runtime, model, and cloud adapters.
 
-The orchestrator reasons. The deterministic kernel owns truth about state, leases,
-revisions, evidence, approvals, retries, wakeups, and terminal conditions.
+The selected orchestration agent reasons. The deterministic kernel owns truth about
+state, leases, revisions, evidence, approvals, retries, wakeups, and terminal
+conditions.
 
 ## 2. Product maturity and the replacement threshold
 
@@ -55,8 +61,12 @@ Camol must describe its maturity truthfully:
 | `BACKED` | Camol has executed the workflow successfully with complete replayable evidence, including a controlled failure and recovery. |
 | `PROVEN` | Repeated real runs meet the declared quality, cost, liveness, and recovery thresholds. |
 
-The v1 product is not `BACKED` until it can replace the owner's current cmux workflow
-for ordinary engineering work. The acceptance workflow is:
+Maturity is scope-qualified: `core`, each adapter, and each workflow profile receive
+their own status. The core is not `BACKED` merely because one vendor or repository
+works, and one speculative adapter cannot downgrade already backed core behavior.
+
+The Buckeye/cmux/GCP/voice flow is the first demanding reference and migration
+profile, not Camol's product definition. Its profile acceptance workflow is:
 
 1. Open an orchestrator session in the CLI.
 2. Use `/grill` to convert an objective into a human-confirmed plan.
@@ -197,12 +207,13 @@ Humans own goals, intended behavior, business truth, invariant confirmation,
 high-impact credentials, irreversible actions, plan expansion, exceptions, and the
 final acceptance of consequential behavior.
 
-### Orchestrator authority
+### Orchestration-agent authority
 
-The orchestrator proposes plans and invariants, decomposes work, attaches context,
-routes messages, evaluates discoveries, proposes amendments, integrates candidates,
-and requests human decisions. It may exercise only authority already granted by the
-frozen plan and gate policies.
+The replaceable orchestration agent proposes plans and invariants, decomposes work,
+attaches context, routes messages, evaluates discoveries, proposes amendments,
+integrates candidates, and requests human decisions. It may exercise only authority
+already granted by the frozen plan and gate policies. It is a component used by
+Camol, not Camol's identity or source of durable truth.
 
 ### Kernel authority
 
@@ -385,6 +396,14 @@ rate-limit, and concurrency ceilings. Boxes are role-neutral execution container
 roles, tasks, and models are plan assignments rather than permanent identities. A
 model can strategize on one task and build on another, but consequential self-approval
 is forbidden.
+
+The default allocation policy is `saturate_connected`: use the maximum already
+connected, eligible, and unreserved capacity that can advance ready plan work without
+crossing cost, token, time, provider, infrastructure, security, workspace, or
+integration limits. It does not invent tasks to occupy capacity. Loading a local
+model or provisioning a new paid target requires the corresponding plan authority.
+Every allocation records the capacity snapshot, rejected candidates, selected N, and
+the reason another lease was expected to help.
 
 The orchestrator may choose any plan-backed topology:
 
@@ -648,6 +667,14 @@ supported provider APIs, CLIs, OAuth/device flows, or local endpoints; Camol doe
 scrape consumer browser sessions. Credentials live in the OS keychain or a dedicated
 secret manager and are granted per adapter and task.
 
+Development may use the owner's accounts for adapter testing, but those accounts are
+never Camol infrastructure or distribution credentials. Public use is bring-your-own
+connection: provider keys, supported OAuth/device authorization, workload identity,
+existing permitted CLI login, or a local endpoint. Agent and model selection is based
+on task requirements, observed readiness, policy, cost/latency, and version-scoped
+evaluation evidence. The full capacity, suitability, public credential, and workflow
+profile contract lives in `docs/capacity-and-provider-model.md`.
+
 Selection considers context size, tool support, structured output, latency, cost,
 local hardware, privacy, and task capability. Placement policies include
 `local_only`, `local_first`, `private_data_local`, `cost_first`, and
@@ -717,6 +744,7 @@ The following specification areas are not yet implemented and remain speculative
 - the full tool-invocation envelope and artifact store;
 - epistemic evidence status, observer-readiness gates, and evidence-conflict states;
 - durable cursor-based watchers and cross-system identity correlation;
+- connected-capacity inventory, reservations, and suitability-based agent/model selection;
 - dynamic worker discovery, authenticated adoption, and provisioning;
 - marginal-value scale-out, admission control, drain, and backpressure policies;
 - salvage-gated teardown and remote-effect reconciliation;
@@ -734,31 +762,35 @@ The following specification areas are not yet implemented and remain speculative
 
 ## 16. Build sequence
 
-1. Convert the external worklog into the sanitized requirements in section 19 while
-   retaining its `BUNDLE_REPORTED` provenance.
-2. Capture one intact current cmux-to-GCP workflow using the frozen profile in
-   section 18, including underlying tool invocations and one controlled voice-agent
-   case; do not promote the partial historical reconstruction as captured evidence.
-3. Add invariant, obligation, gate, approval, epistemic-status, observer-readiness,
-   and plan-revision schemas to the kernel.
-4. Add the complete tool-event envelope, central event streaming, and
+1. Stabilize generic invariant, obligation, gate, approval, epistemic-status,
+   resource-envelope, and plan-revision schemas with migration tests.
+2. Add the complete tool-event envelope, central event streaming, and
    content-addressed artifact storage.
-5. Add arbitrary worker discovery/adoption, task readiness, plan-approved dynamic
-   concurrency, admission control, and salvage-gated teardown.
-6. Prepare N isolated Git worktrees and real local agent adapters under a bounded
-   scale test.
-7. Add read-only box inspection and replayable terminal/model/tool streams.
+3. Add connected-capacity inventory, reservations, suitability matching, and the
+   `saturate_connected` allocation policy.
+4. Wrap real Claude, Codex, and local-model agents through the same versioned adapter
+   contract using owner-provided test connections without embedding those accounts.
+5. Split the supervised control-plane daemon from detachable CLI/TUI clients and add
+   the authenticated execution-target/worker protocol.
+6. Add dynamic worker discovery/adoption/provisioning, task readiness, admission
+   control, N isolated workspaces, drain, salvage, and teardown.
+7. Implement `/grill`, plan amendments/migrations, read-only box inspection, and
+   replayable terminal/model/tool streams.
 8. Add dependency readiness probes, repository crawl snapshots, impact queries, and
-   the first terminal graph view.
-9. Implement cursor-based watchers, plan migration, reconciliation, evidence
-   invalidation, and liveness heartbeats.
-10. Wrap cmux/SSH and the actual GCP deployment/observation path, including
-   deployment identities, effect reconciliation, and expiring waivers.
-11. Implement the evaluator compiler, observation contracts, statistical voice
-    campaigns, and adaptive counterexample loop.
-12. Run the vertical slice in section 20, force failures, recover, and promote the
-    milestone from `MAPPED` to `BACKED`.
-13. Add the polished TUI, supplied Camol branding, packaging, and Homebrew formula.
+   the terminal graph/fleet views.
+9. Implement cursor-based watchers, reconciliation, evidence invalidation, liveness
+   heartbeats, event backpressure, and multi-run resource accounting.
+10. Implement the evaluator compiler, adaptive counterexample loop, coding-suite
+    adapters, and direct-agent versus Camol benchmark campaigns.
+11. Back the generic local-repository and multi-service reference profiles, including
+    worker/daemon interruption and clean replay.
+12. Treat the reconstructed Buckeye worklog as one sanitized profile input; then
+    capture and back its intact cmux/GCP/voice path without making those technologies
+    core dependencies.
+13. Add signed packaging, Homebrew distribution, provider-connection documentation,
+    migration/recovery testing, and the public-use security boundary.
+14. Add the polished TUI with the supplied Camol branding after the control plane and
+    evidence semantics are backed.
 
 Post-v1, add an optional spatial build visualizer that projects repository topology,
 box placement, task flow, build artifacts, and evaluation state into a navigable
@@ -768,6 +800,8 @@ views remain terminal-native and two-dimensional.
 
 ## 17. Decisions frozen for the initial build
 
+- Camol is the harness and deterministic control plane, not an agent, model, or
+  provider account. Orchestration and worker agents are replaceable adapters.
 - All evals, generators, thresholds, results, tool calls, and approval reasons are
   visible to authorized humans.
 - Human-confirmed invariants gate plan-defined domain states.
@@ -781,6 +815,11 @@ views remain terminal-native and two-dimensional.
   justified active count within it. Boxes may receive different tasks, distinct
   candidate tasks for the same logical objective, or mixed roles. Multiple
   implementations are optional and explicitly requested or approved by the plan.
+- The default allocation mode maximizes useful already-connected capacity for ready
+  work; loading models or provisioning paid targets requires plan authority.
+- Owner accounts may validate adapters during development but are never embedded in
+  Camol. Public distribution uses bring-your-own provider or local-model connections.
+- Buckeye/GCP/voice/cmux is a reference profile, not Camol's universal workflow.
 - Local-only, hybrid, cmux-compatible, and VM-backed execution use the same protocol.
 - Integration is orchestrator-owned and every synthesized artifact is reevaluated.
 - Long-running sessions are owner-controlled and pause on declared lack of verified
@@ -1151,10 +1190,11 @@ only under a visible preauthorized policy. Plan expansion, weaker invariants,
 consequential ambiguity, production mutation, live waivers, and final acceptance
 remain human decisions.
 
-## 20. Backed vertical slice
+## 20. Buckeye reference-profile vertical slice
 
-Camol earns `BACKED` for the core Buckeye workflow only after one real run completes
-this sequence with replayable evidence:
+The `profile:buckeye` maturity claim earns `BACKED` only after one real run completes
+this sequence with replayable evidence. Passing it does not automatically back the
+core, another workflow profile, or every adapter:
 
 ```text
 human /grill session
