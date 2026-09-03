@@ -114,6 +114,27 @@ class RedactorTests(unittest.TestCase):
                 self.assertIn(REDACTED, text)
         self.assertIn("public-value", self.redactor.text("HARMLESS=public-value"))
 
+    def test_common_short_secret_aliases_are_environment_denylist_inputs(self):
+        aliases = {
+            "DB_PASS": "ordinary-db-secret",
+            "GH_PAT": "ordinary-github-secret",
+            "STRIPE_SK": "ordinary-stripe-secret",
+            "SERVICE_PWD": "ordinary-password-secret",
+            "SIGNING_KEY": "ordinary-signing-secret",
+            "PUBLIC_LABEL": "ordinary-public-value",
+        }
+        redactor = Redactor(aliases)
+        for name in ("DB_PASS", "GH_PAT", "STRIPE_SK", "SERVICE_PWD", "SIGNING_KEY"):
+            self.assertEqual(redactor.text(aliases[name]), REDACTED, name)
+        self.assertEqual(redactor.text(aliases["PUBLIC_LABEL"]), aliases["PUBLIC_LABEL"])
+        shape_only = Redactor({})
+        for assignment in ("DB_PASS=plain-value", "GH_PAT: plain-value", "STRIPE_SK=plain-value"):
+            self.assertNotIn("plain-value", shape_only.text(assignment), assignment)
+        self.assertEqual(
+            shape_only.argv(["tool", "--gh-pat", "plain-value", "--stripe-sk=plain-value"]),
+            ["tool", "--gh-pat", REDACTED, "--stripe-sk=" + REDACTED],
+        )
+
     def test_known_token_shapes_and_headers_are_removed_even_without_env(self):
         clean = Redactor({})
         for hostile in HOSTILE_STRINGS:

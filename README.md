@@ -319,6 +319,8 @@ real hosted-agent run.
   gates for the first readiness-safe Fable dogfood run.
 - [V0 verification](docs/v0-verification.md): reproducible proof, failure-injection
   map, maturity boundaries, and matched-comparison rules.
+- [V0 independent review](docs/v0-independent-review.md): read-only adversarial
+  scope, verdict, disclosed limits, finding, and remediation.
 - [Architecture](docs/architecture.md): executable kernel objects, events, delegation,
   bounded context, and feedback loops.
 - [Execution topology](docs/execution-topology.md): terminal/target/worker/workspace/box

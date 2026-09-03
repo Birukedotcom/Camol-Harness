@@ -90,14 +90,15 @@ class ProbeExecutionError(RuntimeError):
 # --------------------------------------------------------------------------- redaction
 
 REDACTED = "[REDACTED]"
-_SECRET_NAME = re.compile(r"(SECRET|TOKEN|PASSW|API_?KEY|COOKIE|AUTH|CREDENTIAL|PRIVATE_?KEY|SESSION)", re.IGNORECASE)
+_SECRET_NAME = re.compile(
+    r"(SECRET|TOKEN|PASSW|API_?KEY|COOKIE|AUTH|CREDENTIAL|PRIVATE_?KEY|SESSION"
+    r"|(?:^|[_-])(?:PASS|PWD|PAT|SK|KEY|CRED|DSN)(?:$|[_-]))",
+    re.IGNORECASE,
+)
 _URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<userinfo>[^/@\s]+)@")
 _AUTH_SCHEME = re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}")
 _COOKIE_HEADER = re.compile(r"(?i)\b(cookie|set-cookie)\s*:\s*[^\n]+")
-_SECRET_KV = re.compile(
-    r"(?i)\b([A-Za-z0-9_-]*(?:secret|token|passw(?:or)?d|api[_-]?key|cookie|authorization|credential|private[_-]?key)[A-Za-z0-9_-]*)(\s*[=:]\s*)(\S+)"
-)
-_SECRET_FLAG = re.compile(r"(?i)^--?[A-Za-z0-9_-]*(?:secret|token|passw(?:or)?d|api[_-]?key|cookie|auth|credential)[A-Za-z0-9_-]*$")
+_KEY_VALUE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_-]*)(\s*[=:]\s*)(\S+)")
 _PEM_BLOCK = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL)
 _TOKEN_SHAPES = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
@@ -133,7 +134,13 @@ class Redactor:
         text = _URL_USERINFO.sub(lambda match: "{}{}@".format(match.group("scheme"), REDACTED), text)
         text = _COOKIE_HEADER.sub(lambda match: "{}: {}".format(match.group(1), REDACTED), text)
         text = _AUTH_SCHEME.sub(lambda match: "{} {}".format(match.group(1), REDACTED), text)
-        text = _SECRET_KV.sub(lambda match: "{}{}{}".format(match.group(1), match.group(2), REDACTED), text)
+        text = _KEY_VALUE.sub(
+            lambda match: (
+                "{}{}{}".format(match.group(1), match.group(2), REDACTED)
+                if _SECRET_NAME.search(match.group(1)) else match.group(0)
+            ),
+            text,
+        )
         for shape in _TOKEN_SHAPES:
             text = shape.sub(REDACTED, text)
         return text
@@ -146,11 +153,13 @@ class Redactor:
                 redacted.append(REDACTED)
                 mask_next = False
                 continue
-            if _SECRET_FLAG.match(item):
+            flag_name = item.split("=", 1)[0]
+            secret_flag = flag_name.startswith("-") and _SECRET_NAME.search(flag_name.lstrip("-"))
+            if secret_flag and "=" not in item:
                 redacted.append(item)
                 mask_next = True
                 continue
-            if "=" in item and _SECRET_FLAG.match(item.split("=", 1)[0]):
+            if "=" in item and secret_flag:
                 redacted.append(item.split("=", 1)[0] + "=" + REDACTED)
                 continue
             redacted.append(self.text(item))

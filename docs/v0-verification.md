@@ -55,3 +55,9 @@ vector. One pair is always labeled descriptive and `statistical_claim: false`.
 No direct-Claude/Fable numbers ship in V0 because no matched, owner-authorized live
 pair has been run. Adding fabricated or unmatched numbers would be weaker than
 leaving this evidence cell explicitly empty.
+
+Redaction is defense in depth, not a production DLP claim. V0 removes configured
+credential-reference values, common secret-named environment values (including
+short aliases such as `*_PASS`, `*_PAT`, and `*_SK`), known token shapes, auth/cookie
+headers, URL userinfo, and private-key blocks. A future public or real-credential
+profile still requires a dedicated secret-flow review and adversarial corpus.
