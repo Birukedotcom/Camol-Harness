@@ -35,11 +35,14 @@ writer and keeps running.
    and reconnects. `/stop` drains and stops the supervisor without deleting evidence.
 
 Enter sends the composer. Shift+Enter or Ctrl+J inserts a newline. Typing `/` opens
-the keyboard command palette; safe inspection commands execute when selected, while
-commands needing values return to the composer. `/skills` shows the built-in Camol
-protocols. `/history [COUNT]` displays retained transcript entries, and `/clear`
-clears only the current terminal surface. A reopened client starts with an explicit
-reattach summary and does not flood the new terminal with old output.
+the keyboard command-and-skill palette. Its focused input supports continued typing,
+including spaces, and filters the visible choices; ↑/↓ changes the selection, Tab
+completes it, and Enter accepts it. Safe inspection commands execute when selected,
+while commands needing values return to the composer. `/skills` shows the built-in
+Camol protocols. `/history [COUNT]` displays retained transcript entries, and
+`/clear` clears only the current terminal surface. A reopened client starts with an
+explicit reattach summary and does not flood the new terminal with old output. The
+V0 terminal theme is deep matrix green, charcoal, gray, and white.
 
 Changing `/model` or `/effort` after a proposal clears that proposal and its approval.
 `/btw` is durable context but intentionally cannot mutate a frozen plan. If a note

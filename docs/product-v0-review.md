@@ -120,6 +120,13 @@ and `/skills`, `/history`, and `/clear` make the terminal discoverable without a
 their rendered output to model context. Reattachment retains durable state while
 presenting a fresh, explicit boundary instead of replaying the old terminal surface.
 
+A third interaction pass kept focus in a dedicated palette input so users can type
+and filter slash commands directly. Space is now ordinary input rather than a scroll
+action; arrows move the choice, Tab completes it, and Enter accepts either the typed
+command or highlighted result. The UI was also rethemed with an explicit green,
+charcoal, gray, and white palette, including prompts, modals, scrollbars, and footer
+bindings.
+
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python
 compilation, focused static checks, and `git diff --check`. Live Fable performance,

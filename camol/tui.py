@@ -3,6 +3,7 @@
 import shutil
 import subprocess
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
@@ -11,7 +12,7 @@ from textual import work
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
+from textual.widgets import Footer, Input, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .app import SLASH_COMMANDS, CommandResponse, InteractiveController, SlashCommand
@@ -71,19 +72,32 @@ class LoginProviderScreen(ModalScreen):
     CSS = """
     LoginProviderScreen {
         align: center middle;
-        background: rgba(0, 0, 0, 0.72);
+        background: rgba(0, 4, 1, 0.82);
     }
     #login-dialog {
         width: 58;
         height: auto;
         max-height: 16;
-        border: round #6e7d79;
-        background: #121819;
+        border: round #2fbd62;
+        background: #07100a;
         padding: 1 2;
     }
-    #login-title { height: 1; color: #eef2f1; text-style: bold; }
-    #login-help { height: 2; color: #9ca9a6; margin-bottom: 1; }
-    #login-options { height: 6; background: #121819; border: none; }
+    #login-title { height: 1; color: #f4fff7; text-style: bold; }
+    #login-help { height: 2; color: #83a58d; margin-bottom: 1; }
+    #login-options {
+        height: 6;
+        color: #dce7df;
+        background: #07100a;
+        border: none;
+        scrollbar-size-vertical: 1;
+        scrollbar-color: #1f713c;
+        scrollbar-background: #09100b;
+    }
+    #login-options > .option-list--option-highlighted {
+        color: #ffffff;
+        background: #123a20;
+        text-style: bold;
+    }
     """
 
     LABELS = {"claude": "Claude Code", "codex": "Codex CLI"}
@@ -118,26 +132,62 @@ class LoginProviderScreen(ModalScreen):
         self.dismiss(None)
 
 
-class SlashCommandScreen(ModalScreen):
-    """Discoverable slash-command palette opened by typing `/`."""
+@dataclass(frozen=True)
+class SlashSelection:
+    command: SlashCommand
+    text: str
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+class SlashCommandScreen(ModalScreen):
+    """Typeable slash-command palette opened by entering `/`."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+        Binding("up", "cursor(-1)", "Previous", show=False, priority=True),
+        Binding("down", "cursor(1)", "Next", show=False, priority=True),
+        Binding("tab", "complete", "Complete", show=False, priority=True),
+    ]
     CSS = """
     SlashCommandScreen {
         align: center middle;
-        background: rgba(0, 0, 0, 0.72);
+        background: rgba(0, 4, 1, 0.82);
     }
     #command-dialog {
         width: 78;
-        height: 24;
+        height: 26;
         max-height: 90%;
-        border: round #6e7d79;
-        background: #121819;
+        border: round #2fbd62;
+        background: #07100a;
         padding: 1 2;
     }
-    #command-title { height: 1; color: #eef2f1; text-style: bold; }
-    #command-help { height: 2; color: #9ca9a6; margin-bottom: 1; }
-    #command-options { height: 1fr; background: #121819; border: none; }
+    #command-title { height: 1; color: #f4fff7; text-style: bold; }
+    #command-help { height: 2; color: #83a58d; margin-bottom: 1; }
+    #command-input {
+        height: 3;
+        color: #ffffff;
+        background: #030705;
+        border: tall #1a773c;
+        margin-bottom: 1;
+    }
+    #command-input:focus { border: tall #45e07a; }
+    #command-options {
+        height: 1fr;
+        color: #dce7df;
+        background: #07100a;
+        border: none;
+        scrollbar-size-vertical: 1;
+        scrollbar-color: #1f713c;
+        scrollbar-color-hover: #32a85a;
+        scrollbar-color-active: #52e27e;
+        scrollbar-background: #09100b;
+        scrollbar-background-hover: #09100b;
+        scrollbar-background-active: #09100b;
+    }
+    #command-options > .option-list--option-highlighted {
+        color: #ffffff;
+        background: #123a20;
+        text-style: bold;
+    }
     """
 
     def __init__(self, commands: Sequence[SlashCommand]):
@@ -146,24 +196,80 @@ class SlashCommandScreen(ModalScreen):
         self.command_by_id = {
             "command-{}".format(index): command for index, command in enumerate(self.commands)
         }
+        self.filtered = self.commands
+
+    def _options(self) -> Sequence[Option]:
+        return tuple(
+            Option(
+                "{:<14} {}".format(command.command, command.description),
+                id="command-{}".format(self.commands.index(command)),
+            )
+            for command in self.filtered
+        )
 
     def compose(self) -> ComposeResult:
         with Vertical(id="command-dialog"):
             yield Static("COMMANDS & BUILT-IN PROTOCOLS", id="command-title")
-            yield Static("Use ↑/↓ and Enter. Commands needing a value return to the prompt.", id="command-help")
-            yield OptionList(
-                *(
-                    Option(
-                        "{:<14} {}".format(command.command, command.description),
-                        id=command_id,
-                    )
-                    for command_id, command in self.command_by_id.items()
-                ),
-                id="command-options",
-            )
+            yield Static("Type to filter · Space stays text · ↑/↓ choose · Tab completes · Enter accepts", id="command-help")
+            yield Input(value="/", placeholder="Type a command or skill", id="command-input", select_on_focus=False)
+            yield OptionList(*self._options(), id="command-options")
+
+    def on_mount(self) -> None:
+        command_input = self.query_one("#command-input", Input)
+        command_input.cursor_position = len(command_input.value)
+        command_input.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "command-input":
+            return
+        token = event.value.strip().partition(" ")[0].lower()
+        self.filtered = tuple(
+            command for command in self.commands if command.command.startswith(token)
+        )
+        options = self.query_one("#command-options", OptionList)
+        options.set_options(self._options())
+        options.highlighted = 0 if self.filtered else None
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "command-input":
+            self._accept(event.value)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(self.command_by_id[event.option.id])
+        command = self.command_by_id[event.option.id]
+        self.dismiss(SlashSelection(command, command.command))
+
+    def action_cursor(self, direction: int) -> None:
+        options = self.query_one("#command-options", OptionList)
+        if direction < 0:
+            options.action_cursor_up()
+        else:
+            options.action_cursor_down()
+
+    def action_complete(self) -> None:
+        command = self._highlighted_command()
+        if command is None:
+            return
+        command_input = self.query_one("#command-input", Input)
+        command_input.value = command.command + (" " if command.takes_value else "")
+        command_input.cursor_position = len(command_input.value)
+
+    def _highlighted_command(self) -> Optional[SlashCommand]:
+        options = self.query_one("#command-options", OptionList)
+        highlighted = options.highlighted
+        if highlighted is None or highlighted >= len(self.filtered):
+            return None
+        return self.filtered[highlighted]
+
+    def _accept(self, value: str) -> None:
+        text = value.strip()
+        token = text.partition(" ")[0].lower()
+        exact = next((command for command in self.commands if command.command == token), None)
+        command = exact or self._highlighted_command()
+        if command is None:
+            return
+        if exact is None:
+            text = command.command
+        self.dismiss(SlashSelection(command, text))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -173,27 +279,45 @@ class CamolApp(App):
     TITLE = "Camol"
     SUB_TITLE = "persistent orchestration harness"
     CSS = """
-    Screen { background: #090b0c; color: #e8eceb; }
+    Screen { background: #030604; color: #e7eee9; }
     BootScreen { align: left top; padding: 1 1; }
-    #boot-art { width: 100%; height: 100%; color: #f4f5f4; }
-    #dependency-rail { height: 1; background: #111719; color: #9ca9a6; padding: 0 1; }
-    #context { height: 1; background: #182022; color: #d5dfdc; padding: 0 1; }
+    #boot-art { width: 100%; height: 100%; color: #68e892; }
+    #dependency-rail { height: 1; background: #07100a; color: #79d996; padding: 0 1; }
+    #context { height: 1; background: #0b1710; color: #f1f7f3; padding: 0 1; }
     #transcript {
         height: 1fr;
         padding: 1 2;
         scrollbar-size-vertical: 1;
-        scrollbar-color: #6e7d79;
-        scrollbar-color-hover: #83938f;
-        scrollbar-color-active: #9baba7;
-        scrollbar-background: #1e1e1e;
-        scrollbar-background-hover: #1e1e1e;
-        scrollbar-background-active: #1e1e1e;
-        scrollbar-corner-color: #1e1e1e;
+        scrollbar-color: #1f713c;
+        scrollbar-color-hover: #32a85a;
+        scrollbar-color-active: #52e27e;
+        scrollbar-background: #09100b;
+        scrollbar-background-hover: #09100b;
+        scrollbar-background-active: #09100b;
+        scrollbar-corner-color: #09100b;
     }
-    #stream { height: auto; max-height: 5; color: #b8c7c3; padding: 0 2; }
-    #prompt { height: 5; border: solid #62716d; margin: 0 1; background: #0e1314; }
-    #fleet { height: 2; background: #111719; color: #c8d1cf; padding: 0 1; }
-    Footer { background: #182022; }
+    #stream { height: auto; max-height: 5; color: #68e892; padding: 0 2; }
+    #prompt {
+        height: 5;
+        color: #ffffff;
+        border: solid #1f713c;
+        margin: 0 1;
+        background: #050b07;
+    }
+    #prompt:focus { border: solid #45e07a; }
+    #fleet { height: 2; background: #07100a; color: #b7c3ba; padding: 0 1; }
+    Footer { background: #0b1710; color: #dce7df; }
+    FooterKey {
+        background: #0b1710;
+        .footer-key--key {
+            color: #68e892;
+            background: #0b1710;
+        }
+        .footer-key--description {
+            color: #aab7ae;
+            background: #0b1710;
+        }
+    }
     """
     BINDINGS = [
         Binding("ctrl+enter", "submit", "Send", show=False, priority=True),
@@ -417,15 +541,18 @@ class CamolApp(App):
         self._slash_palette_open = True
         self.push_screen(SlashCommandScreen(SLASH_COMMANDS), self._slash_command_selected)
 
-    def _slash_command_selected(self, command: Optional[SlashCommand]) -> None:
+    def _slash_command_selected(self, selection: Optional[SlashSelection]) -> None:
         self._slash_palette_open = False
         prompt = self.query_one("#prompt", PromptArea)
-        if command is None:
+        if selection is None:
             prompt.focus()
             return
-        if command.run_from_palette:
+        command = selection.command
+        text = selection.text
+        has_arguments = bool(text.partition(" ")[2].strip())
+        if command.run_from_palette or has_arguments:
             prompt.clear()
-            self._dispatch_input(command.command)
+            self._dispatch_input(text)
             return
         value = command.command + (" " if command.takes_value else "")
         prompt.load_text(value)

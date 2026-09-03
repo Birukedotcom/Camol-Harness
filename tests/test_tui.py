@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
+from textual.widgets import Input, OptionList
+
 from camol.app import InteractiveController
 from camol.connections import _record
 from camol.tui import CamolApp, LoginProviderScreen, PromptArea, SlashCommandScreen
@@ -26,7 +28,10 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#prompt", PromptArea).styles.height.value, 5)
             transcript_styles = app.query_one("#transcript").styles
             self.assertEqual(transcript_styles.scrollbar_size_vertical, 1)
-            self.assertEqual(transcript_styles.scrollbar_background.hex, "#1E1E1E")
+            self.assertEqual(transcript_styles.scrollbar_background.hex, "#09100B")
+            self.assertEqual(transcript_styles.scrollbar_color.hex, "#1F713C")
+            self.assertEqual(app.query_one("#prompt", PromptArea).styles.background.hex, "#050B07")
+            self.assertEqual(app.screen.styles.background.hex, "#030604")
             self.assertIn("ORCH[Alt+0]", str(app.query_one("#fleet").render()))
             prompt = app.query_one("#prompt", PromptArea)
             prompt.load_text("/help")
@@ -132,6 +137,36 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("down", "enter")
             await pilot.pause()
             app._submit.assert_called_once_with("/skills")
+
+    async def test_palette_filters_as_the_user_types_a_command(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        app._submit = Mock()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause(0.2)
+            command_input = app.screen.query_one("#command-input", Input)
+            await pilot.press("s", "k", "i", "l", "l", "s")
+            self.assertEqual(command_input.value, "/skills")
+            self.assertEqual(app.screen.query_one("#command-options", OptionList).option_count, 1)
+            await pilot.press("enter")
+            await pilot.pause()
+            app._submit.assert_called_once_with("/skills")
+
+    async def test_space_stays_in_typed_command_instead_of_scrolling_the_palette(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        app._submit = Mock()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause(0.2)
+            command_input = app.screen.query_one("#command-input", Input)
+            await pilot.press("g", "r", "i", "l", "l", "space", "b", "u", "i", "l", "d")
+            self.assertEqual(command_input.value, "/grill build")
+            self.assertIsInstance(app.screen, SlashCommandScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+            app._submit.assert_called_once_with("/grill build")
 
     async def test_enter_sends_and_shift_enter_adds_a_line(self):
         app = CamolApp(self.controller, show_boot=False, discover_connections=False)

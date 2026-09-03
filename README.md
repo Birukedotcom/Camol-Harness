@@ -95,11 +95,16 @@ Inside Camol, a first live-capable plan looks like this:
 ```
 
 The composer follows chat-CLI conventions: Enter sends, Shift+Enter (or Ctrl+J)
-adds a line, and typing `/` opens an arrow-key command palette. `/skills` shows the
-small set of durable Camol protocols—grill, debugger, evidence, refinement, and
-readiness—rather than pretending every prompt fragment is a skill. On reattach,
-Camol shows a fresh session summary instead of replaying old output; `/history`
-retrieves retained entries and `/clear` clears only the current terminal view.
+adds a line, and typing `/` opens a typeable command-and-skill palette. Keep typing
+to filter it, use ↑/↓ to change the highlighted choice, Tab to complete, or Enter
+to accept. The palette's input owns ordinary characters, so Space remains text in
+commands such as `/grill build this` instead of scrolling the result list. `/skills`
+shows the small set of durable Camol protocols—grill, debugger, evidence,
+refinement, and readiness—rather than pretending every prompt fragment is a skill.
+The interface uses a deep matrix-green, charcoal, gray, and white terminal palette.
+On reattach, Camol shows a fresh session summary instead of replaying old output;
+`/history` retrieves retained entries and `/clear` clears only the current terminal
+view.
 
 The exact plan embeds the effective provider effort, token limits, timeout, tool/network
 policy, and total worker cost ceiling. `/run` requires the human to repeat that worker
