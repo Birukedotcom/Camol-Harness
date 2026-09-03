@@ -2,10 +2,17 @@
 
 Status: `SPECULATIVE`
 
-Evidence posture: `PARTIALLY_MAPPED` from the external, PHI-bearing
-`buckeye-worklog-2026-08-26_2026-09-02` bundle. The bundle is deliberately not
-committed. Its extracted claims are `BUNDLE_REPORTED` until Camol reproduces them
-through its own adapters and event ledger.
+Evidence posture: `PARTIALLY_MAPPED` from three evidence classes:
+
+- the external, PHI-bearing `buckeye-worklog-2026-08-26_2026-09-02` bundle
+  (`BUNDLE_REPORTED`);
+- a read-only local Enrollment Hub checkout whose age and detached revision make its
+  contents `STALE_CHECKOUT_READ`, not live-cloud truth; and
+- read-only probes of the installed cmux and gcloud clients (`LOCAL_OBSERVED`).
+
+The worklog is deliberately not committed. No production call or GCP resource was
+mutated while deriving this specification. Claims remain labeled until Camol
+reproduces them through its own adapters and event ledger.
 
 This document is the authoritative product specification for Camol. The executable
 protocol details in `docs/` refine this document but do not override it. A run becomes
@@ -64,9 +71,10 @@ for ordinary engineering work. The acceptance workflow is:
 11. Recover from a stopped orchestrator, disconnected worker, failed deployment, and
     rejected evaluation without losing accepted work or repeating unsafe effects.
 
-The exact GCP product, voice stack, and current cmux interaction are discovered by
-recording the real workflow. Camol must not silently assume Cloud Run, GKE, Compute
-Engine, or any particular voice provider.
+Section 18 maps the current Buckeye GCP, voice, and cmux profile. That profile is an
+adapter target, not a universal architectural dependency. It was reconstructed from
+partial logs, a stale checkout, and local read-only probes; the GCP and voice lanes do
+not become `BACKED` until an intact current run is captured at the real boundary.
 
 ## 3. Terminal experience
 
@@ -83,9 +91,8 @@ does not abandon a run.
 
 The boot screen uses two brand assets:
 
-- the geometric `CAMOL` wordmark from the design conversation in the upper-left;
-  its exact raw text asset remains pending because chat rendering altered several
-  slash and underscore glyphs; and
+- `assets/boot/camol-wordmark.txt`, the geometric `CAMOL` wordmark in the supplied
+  isometric style, in the upper-left; and
 - `assets/boot/camol-camel-ascii.png`, right-adjusted across the remaining space.
 
 The PNG is the canonical camel artwork. The distribution should include wide,
@@ -622,8 +629,9 @@ The following specification areas are not yet implemented and remain speculative
 
 1. Convert the external worklog into the sanitized requirements in section 19 while
    retaining its `BUNDLE_REPORTED` provenance.
-2. Capture one intact current cmux-to-GCP workflow, including the underlying tool
-   invocations and one voice-agent case.
+2. Capture one intact current cmux-to-GCP workflow using the frozen profile in
+   section 18, including underlying tool invocations and one controlled voice-agent
+   case; do not promote the partial historical reconstruction as captured evidence.
 3. Add invariant, obligation, gate, approval, epistemic-status, observer-readiness,
    and plan-revision schemas to the kernel.
 4. Add the complete tool-event envelope, central event streaming, and
@@ -660,21 +668,192 @@ The following specification areas are not yet implemented and remain speculative
 - Long-running sessions are owner-controlled and pause on declared lack of verified
   progress rather than arbitrary wall time alone.
 
-## 18. Remaining design inputs
+## 18. Buckeye adapter profile and initial operating defaults
 
-The architecture can progress with conservative defaults, but these inputs are still
-needed before the relevant adapters become `BACKED`:
+The previously open design inputs are resolved below far enough to build the adapter.
+This does not upgrade the evidence posture: an implementation description and an
+intact Camol-produced run are different things.
 
-1. One intact command/tool-level trace of the actual cmux workflow, from task intake
-   through GCP deployment and monitoring. The current worklog partially maps the
-   workflow but some VM-local histories were already lost.
-2. The GCP products, projects, regions, credential boundaries, and rollback methods
-   used in that workflow.
-3. The voice-agent providers and the evidence that may be retained safely.
-4. Concrete numeric thresholds for cost, stall detection, probe budgets, and real
-   deployment health.
-5. Which external action classes, if any, the human wants to preauthorize rather than
-   approve per occurrence.
+### 18.1 Reconstructed workflow
+
+The recoverable workflow is:
+
+```text
+human objective and planning dialogue
+  -> local orchestrator workspace in cmux
+  -> remote cmux workspaces attached through SSH to persistent tmux sessions
+  -> Claude/Codex-style agents working in isolated VM checkouts and branches
+  -> commit, push, PR, review, CI, and release-candidate custody
+  -> human-authorized staging deployment
+  -> exact GCP revision, traffic, health, and log readbacks
+  -> durable voice-call watcher with a timestamp/job watermark
+  -> evidence-backed debug case, repair, redeploy, and regression evaluation
+```
+
+Local probes observed a working cmux socket, one local orchestrator workspace, and
+multiple SSH/tmux-backed remote workspaces. The installed cmux exposes structured VM,
+workspace, terminal-replay, screen-read, and event APIs, so Camol should use those
+APIs when available and keep raw SSH/PTTY as a fallback. cmux cloud authentication
+was signed out, while already-open SSH workspaces remained visible. These are
+separate readiness dimensions.
+
+This is not the required intact trace. Some VM-local histories were deleted before
+the worklog was assembled, and current gcloud authentication requires interactive
+reauthorization. The first adapter proof therefore starts a new, non-PHI staging run
+after the human completes `/login`; it records every command and tool envelope from
+plan approval through one controlled deployment, one watcher observation, and one
+failure/recovery. Authentication refusal is `AUTH_REQUIRED`, not an agent failure.
+
+### 18.2 GCP deployment profile
+
+The staging profile is fixed as follows unless a later live inventory contradicts it:
+
+| Boundary | Mapped target |
+|---|---|
+| Project and region | `buckeye-hub`, `us-central1` |
+| Primary compute | Cloud Run services for API, agent-runtime worker, web, and portal; PaddleOCR is a declared supporting service |
+| Voice compute | Cloud Run worker pool `enrollment-voice-sarah`, reported by the worklog but absent from the stale checkout's deploy definition |
+| Images and builds | Artifact Registry repository `buckeye`; release-candidate images are digest-pinned; Cloud Build is used by the staging-only break-glass path |
+| Database | Cloud SQL for PostgreSQL; the managed staging release binds an exact fresh database generation rather than mutating the legacy database |
+| Network | staging VPC and regional subnet; the database path is private rather than laptop-accessible |
+| Secrets and identity | Secret Manager numeric versions, service-specific runtime service accounts, and GitHub Actions Workload Identity Federation |
+| Durable objects | GCS for Terraform state, pre-deploy database exports, documents, and separately scoped voice recordings |
+| Observation | Cloud Logging plus Cloud Run service, revision, worker-pool, traffic, and health readbacks |
+
+Production is a separate `buckeye-hub-prod` profile and is outside the first backed
+slice. Camol never infers production authorization from staging authorization.
+
+Credential boundaries are explicit:
+
+- Local gcloud OAuth belongs to the human and can be refreshed only through an
+  interactive gate. Camol stores an account/project fingerprint and expiry state,
+  never the credential.
+- GitHub Actions uses short-lived WIF/OIDC authority for the deploy service account.
+- API and worker runtimes use different service accounts, database logins, and exact
+  numeric Secret Manager bindings.
+- cmux cloud identity, local cmux socket access, SSH transport identity, VM identity,
+  agent login, and GCP identity are independent readiness checks.
+- LiveKit-to-GCS recording currently requires a narrowly scoped recording-writer key
+  because the writer runs outside GCP. It is an exception with rotation and audit
+  obligations, not a general credential pattern.
+
+### 18.3 Deployment and recovery contract
+
+The supervised release path pins one source SHA, authenticates preparation,
+provisioning, certification, and deployment receipts, deploys four digest-pinned
+zero-traffic revisions, smokes the API candidate, activates the worker, proves it
+healthy, and then moves API, web, and portal traffic to exact revisions. Every
+mutation is followed by a readback. Mutable `latest` traffic targets do not count as
+deployment evidence.
+
+Camol must distinguish three recovery regimes:
+
+1. Before traffic activation, a failed candidate is abandoned with no live traffic
+   shift.
+2. During the initial workload-control cutover, routing back to a legacy revision or
+   reconnecting the old database is forbidden. Recovery is repair-forward or a
+   known-good workload-control commit provisioned against another fresh database.
+   Migrations are forward-only.
+3. A later compatible post-cutover rollback is allowed only after compatibility with
+   the active schema, database generation, runtime bindings, and bounded worker
+   overlap is independently proven. The current evidence does not authorize that
+   path.
+
+Older staging scripts also expose pre-deploy GCS export and import commands. Those
+are useful evidence and a break-glass mechanism, but they do not override the newer
+clean-cutover recovery contract. Mixing commands across workflow generations is a
+gate failure.
+
+### 18.4 Voice provider and retention profile
+
+The mapped voice stack is:
+
+| Function | Provider or boundary |
+|---|---|
+| Session, SIP, dispatch, and egress | LiveKit Cloud |
+| Speech to text | Soniox `stt-rt-v5` by default; AssemblyAI `u3-rt-pro` as explicit fallback |
+| Conversational model | OpenAI `gpt-5.4-mini` by default; Baseten-hosted `zai-org/GLM-5.2` as an explicit alternate |
+| Text to speech | Cartesia `sonic-3.5` |
+| Noise cancellation | optional Krisp BVCTelephony family |
+| Audio storage | LiveKit egress to a dedicated GCS recordings bucket |
+| Optional model tracing | Braintrust |
+
+Provider choice and resolved model identity are startup evidence. Missing credentials
+fail loudly; an undeclared fallback cannot satisfy a gate.
+
+Camol's safe default is metadata-rich and content-minimal:
+
+- retain PHI-free event envelopes, timestamps, correlation identifiers, provider and
+  deployment identities, redaction receipts, verdicts, and content hashes;
+- do not copy raw audio, raw transcripts, provider prompts, or patient-bearing tool
+  results into the ordinary ledger or Git;
+- keep sensitive content behind an encrypted, role- and purpose-scoped external
+  reference with an explicit TTL and access audit only when a human approves it;
+- permit committed evaluator fixtures only after deterministic de-identification and
+  human review; and
+- require a separate retention decision before any real-PHI recording campaign.
+
+The inspected checkout is not sufficient proof of a safe production posture. It
+contains an encrypted transcript column but also a transitional plaintext column and
+a decryption fallback, while the recording runbook describes a staging bucket with
+soft-delete but no CMEK or locked retention policy. Before the voice lane can become
+`BACKED`, Camol must inspect the live schema and bucket policy and return
+`SECURITY_BLOCKED` if any reachable plaintext path, undefined deletion schedule, or
+unapproved recording policy remains.
+
+### 18.5 Provisional numeric defaults
+
+These values are `PROVISIONAL_DEFAULT`, visible during `/grill`, and frozen into each
+plan revision. They may be changed only by a normal amendment. They are designed to
+fail into review or a restartable pause, not to discard work.
+
+| Concern | Initial default |
+|---|---|
+| Worker heartbeat | emit every 30 seconds while active; after 3 missed heartbeats (90 seconds), enter `LEASE_SUSPECT` and probe transport, process, and tool state |
+| Lease recovery | do not reassign before 10 minutes, and then only after proving the worker dead and proving no external effect is in flight; otherwise use `EFFECT_UNKNOWN` |
+| Semantic stall | `STALL_REVIEW` only after both 15 minutes and 3 completed agent turns produce no new accepted obligation, counterexample resolution, or integration evidence; 2 consecutive windows pause or escalate |
+| Bootstrap token profile | 4,000 tokens per turn, 400 reserved for the checkpoint, 30,000 per run, and 6 turns per task; warn at 80% and stop before the next turn at 100% |
+| Paid-provider spend | every hosted run must freeze an absolute USD ceiling; warn at 80% and require a human extension before crossing 100%; there is deliberately no hidden product-wide dollar amount |
+| Adaptive probes | `basic`: deterministic suite only; `backed`: at most 12 generated probes or 15 minutes; `critical`: at most 24 probes or 45 minutes plus an independent verifier; a decisive counterexample stops the gate early |
+| API candidate smoke | `/startupz`, `/readyz`, and `/health` must each return 200 within 6 attempts, 5 seconds apart, with a 10-second request timeout |
+| Worker activation | at most 30 readiness polls, 2 seconds apart; exact revision and digest, desired replicas `1`, `ContainerHealthy=True`, and `Ready=True` are all required |
+| Post-promotion soak | 10 polls over 5 minutes at 30-second spacing, 100% required health success, unchanged deployment identity, and zero new P0/security signatures |
+| Voice adapter `BACKED` smoke | 5 controlled non-production calls; 5/5 terminal and correctly correlated; 5/5 expected outcomes delivered; 100% required telemetry; zero P0, PHI leak, mid-sentence TTS truncation, or unexplained silence of 12 seconds or more |
+| Voice quality `PROVEN` | at least 100 completed trials and enough successes for the 95% Wilson lower confidence bound to meet the plan's target rate; every safety invariant still requires zero violations |
+| CI waiver | maximum lifetime 14 days, with owner, reason, compensating evidence, and remediation obligation |
+| Teardown | zero required unpushed commits, zero required untracked artifacts, zero in-flight effects, and zero unacknowledged events |
+
+The five-call voice gate proves integration, not population-level quality. Long-running
+work may raise or remove turn and run caps through human approval, but liveness,
+checkpointing, provider spend, and semantic-progress observation remain mandatory.
+
+### 18.6 Initial external-action policy
+
+No action is implicitly preauthorized merely because a tool can perform it.
+
+| Policy | Action classes |
+|---|---|
+| Automatic inside a frozen plan | scoped reads; box-local edits; builds, tests, and evals; local model execution; read-only peering; PHI-safe log queries; orchestration messages |
+| Plan-preauthorized within exact ceilings | hosted model calls; creation/restart of Camol-owned ephemeral workers up to 3 active leases; pushes to dedicated task branches; draft PR creation; teardown of Camol-owned disposable workers after a complete salvage receipt |
+| Human approval per occurrence | OAuth/device login; secrets or IAM changes; merge to a protected branch; CI waiver; staging deployment; database migration or restore; real voice call/message; adopted-VM destruction; any production mutation |
+| Never automatic | weakening an invariant or evaluator; treating `EFFECT_UNKNOWN` as failed and blindly retrying; exposing PHI or credentials; bypassing a gate; routing initial-cutover traffic to a legacy revision |
+
+Approval binds the exact target, artifact/deployment digest, scope, expiry, maximum
+cost, and action class. A material difference creates a new approval request.
+
+### 18.7 Remaining proof gates, not design ambiguity
+
+Four facts still require live or owner evidence before the relevant lane is `BACKED`:
+
+1. Capture the intact Camol-produced command/tool trace after the human reauthenticates
+   cmux/GCP; do not attempt to reconstruct deleted VM history.
+2. Reconcile the current live voice worker-pool deployment definition with the service
+   release workflow and record which revision owns each call.
+3. Obtain the human/compliance decision for real-PHI audio and transcript retention,
+   including deletion schedule, region, CMEK, locked-retention posture, and permitted
+   reviewers.
+4. Replace the provisional cost, latency, and reliability defaults with baselines from
+   repeated Camol-observed runs.
 
 ## 19. Requirements backed by the Buckeye worklog
 
