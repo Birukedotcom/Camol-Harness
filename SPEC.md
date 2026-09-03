@@ -173,6 +173,7 @@ Initial interactive commands include:
 /repo graph         inspect repository dependencies and execution overlays
 /repo impact        show what a selected node can affect downstream
 /repo why           explain the evidence-backed path between two nodes
+/bench              capture, run, compare, or inspect benchmark campaigns
 /model             inspect or select a model adapter
 /effort            set reasoning effort within policy
 /login              configure a supported provider connection
@@ -503,7 +504,9 @@ slices; and releases run pinned full cohorts plus long-horizon builds. Camol nev
 collapses correctness, invariant violations, cost, liveness, recovery, and human
 intervention into one score. Harness revisions are tested against matched direct-CLI
 and one-active-box controls so orchestration gains can be distinguished from model or
-budget changes. The suite selection, adapter contract, metrics, and anti-overfitting
+budget changes. The first workflow comparison uses direct Claude CLI, one Claude-backed
+Camol box, and three Claude-backed Camol boxes against reconstructed real tasks. The
+suite selection, paired-task protocol, adapter contract, metrics, and anti-overfitting
 rules live in `docs/evaluation-program.md`.
 
 A failed evaluation creates a permanent counterexample linked to the plan revision

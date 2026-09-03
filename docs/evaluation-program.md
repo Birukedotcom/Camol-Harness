@@ -130,6 +130,60 @@ three-slot contract does not change. Additional ablations may disable plan freez
 cross-box context routing, evaluator feedback, or recovery one at a time. Unsafe
 ablations run only in isolated benchmark environments.
 
+### Claude CLI versus Camol
+
+The first product-facing comparison replays representative tasks from the owner's
+actual work under three arms:
+
+```text
+A  direct Claude CLI
+B  one active Camol box using the Claude CLI adapter
+C  Camol orchestrator plus three Claude-backed boxes
+```
+
+Arm A measures the existing workflow. The difference between A and B reveals Camol's
+kernel, logging, context, and gating overhead or benefit. The difference between B
+and C reveals the value of orchestration, parallel delegation, independent
+verification, and integration.
+
+Each paired task freezes the same user brief, acceptance contract, starting commit,
+dependency lock state, seeded external sandbox, tool authority, network policy,
+model/version, effort setting, and total token, spend, and wall-time ceilings. The
+total budget is matched across arms rather than multiplied by the number of boxes.
+Camol may produce a richer internal plan because planning is part of the harness being
+tested; it may not receive extra facts about the desired implementation.
+
+Historical tasks are reconstructed from the commit and external state that existed
+before the original solution. Later commits, final diffs, reference answers, and
+post-hoc tests are kept out of worker context. Each arm starts from a clean clone and
+isolated cloud namespace. Stochastic arms receive multiple paired trials, with arm
+order rotated when a human participates.
+
+The same frozen evaluator grades all artifacts after execution. Where judgment is
+required, reviewers see anonymized artifacts before learning which arm produced
+them. Reports preserve task-level outcomes rather than publishing only an aggregate:
+
+```text
+accepted behavior, invariant violations, regression count
+elapsed time, tokens, provider cost, compute, and tool calls
+human questions, approvals, corrections, and takeover time
+retries, duplicated work, merge conflicts, idle/stalled time
+restart recovery, deployment reconciliation, and evidence completeness
+```
+
+A task may be won by the direct CLI, one-box Camol, or three-box Camol. Camol does not
+promote a harness change merely because its preferred arm wins the average; the
+change must meet the predeclared threshold without a forbidden task-level regression.
+
+The planned command surface is:
+
+```text
+/bench capture <run-or-worklog>
+/bench compare --arms claude-direct,camol-one,camol-three
+/bench inspect <campaign-id> [task-id]
+/bench diff <baseline-campaign> <candidate-campaign>
+```
+
 ## 6. Integrity and hill-climb policy
 
 - Development canaries, rotating campaign tasks, and release cohorts are distinct.
