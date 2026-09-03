@@ -36,7 +36,7 @@ The repository regression gate currently runs 320 tests with `python3 -m unittes
 discover -v`. Product-specific coverage includes terminal-size snapshots, a real PTY,
 arbitrary-N navigation, background account discovery, native reconnect behavior,
 typeable slash-command filtering, Space-safe command input, chat-style submission,
-matrix-theme assertions, reattach boundaries, login-identity propagation,
+matrix-theme assertions, real-PTY Ctrl+C detach, reattach boundaries, login-identity propagation,
 exact product-plan JSON and digest approval, provider failure and secret redaction,
 authenticated V2 control, macOS AF_UNIX path fallback, no work before approval,
 daemon persistence, completed-run inspection, and reattachment. This does not

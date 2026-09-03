@@ -104,7 +104,8 @@ refinement, and readiness—rather than pretending every prompt fragment is a sk
 The interface uses a deep matrix-green, charcoal, gray, and white terminal palette.
 On reattach, Camol shows a fresh session summary instead of replaying old output;
 `/history` retrieves retained entries and `/clear` clears only the current terminal
-view.
+view. Ctrl+C safely detaches the terminal client; it does not stop an active
+supervisor or discard run state.
 
 The exact plan embeds the effective provider effort, token limits, timeout, tool/network
 policy, and total worker cost ceiling. `/run` requires the human to repeat that worker

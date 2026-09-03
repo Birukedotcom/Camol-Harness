@@ -125,7 +125,8 @@ and filter slash commands directly. Space is now ordinary input rather than a sc
 action; arrows move the choice, Tab completes it, and Enter accepts either the typed
 command or highlighted result. The UI was also rethemed with an explicit green,
 charcoal, gray, and white palette, including prompts, modals, scrollbars, and footer
-bindings.
+bindings. Ctrl+C now takes the same non-destructive client-detach path as `/quit`;
+a real PTY regression proves that it restores the terminal and exits zero.
 
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python

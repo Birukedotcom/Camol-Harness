@@ -336,7 +336,8 @@ class CamolApp(App):
         Binding("right_square_bracket", "cycle(1)", "Next box", show=False),
         Binding("alt+up", "history(-1)", "Previous input", show=False),
         Binding("alt+down", "history(1)", "Next input", show=False),
-        Binding("ctrl+q", "detach", "Detach"),
+        Binding("ctrl+c", "detach", "Detach", priority=True),
+        Binding("ctrl+q", "detach", "Detach", show=False),
         Binding("f10", "detach", "Detach", show=False),
     ]
 

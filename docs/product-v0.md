@@ -42,7 +42,8 @@ while commands needing values return to the composer. `/skills` shows the built-
 Camol protocols. `/history [COUNT]` displays retained transcript entries, and
 `/clear` clears only the current terminal surface. A reopened client starts with an
 explicit reattach summary and does not flood the new terminal with old output. The
-V0 terminal theme is deep matrix green, charcoal, gray, and white.
+V0 terminal theme is deep matrix green, charcoal, gray, and white. Ctrl+C is the
+primary safe-detach shortcut and leaves any authoritative supervisor running.
 
 Changing `/model` or `/effort` after a proposal clears that proposal and its approval.
 `/btw` is durable context but intentionally cannot mutate a frozen plan. If a note

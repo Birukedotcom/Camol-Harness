@@ -67,9 +67,9 @@ class InteractiveCliTests(unittest.TestCase):
                     readable, _, _ = select.select([master], [], [], 0.1)
                     if readable:
                         captured.extend(os.read(master, 65536))
-                # Exercise Camol's disposable-client contract instead of relying
-                # on Textual's platform signal handling.
-                os.write(master, b"\x11")
+                # Ctrl+C must safely detach the disposable client rather than
+                # leave the full-screen terminal trapped.
+                os.write(master, b"\x03")
                 exit_deadline = time.time() + 8
                 while process.poll() is None and time.time() < exit_deadline:
                     readable, _, _ = select.select([master], [], [], 0.1)
@@ -97,6 +97,7 @@ class InteractiveCliTests(unittest.TestCase):
                     process.wait(timeout=5)
         self.assertIn(b"ORCH", captured)
         self.assertIn(b"CAMOL PRODUCT V0", captured)
+        self.assertEqual(process.returncode, 0)
 
     def test_native_login_url_is_visible_while_full_screen_client_is_suspended(self):
         with tempfile.TemporaryDirectory() as temporary:
