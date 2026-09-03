@@ -80,6 +80,18 @@ class PlanningTests(unittest.TestCase):
             "turn_timeout_seconds": 1_800,
         })
 
+        six_field_v1 = proposal_from_grill(self.complete_grill())
+        six_field_v1["schema_version"] = 1
+        normalized = validate_proposal(six_field_v1)
+        self.assertEqual(
+            effective_resource_limits(normalized),
+            six_field_v1["resource_limits"],
+        )
+
+        invalid_version = dict(six_field_v1, schema_version=[])
+        with self.assertRaisesRegex(PlanningError, "schema is unsupported"):
+            validate_proposal(invalid_version)
+
     def test_shell_verification_pipeline_is_rejected(self):
         grill = GrillState.start("test")
         for answer in ("done", "nothing", "safe", "task | do it", "pytest && deploy", "boxes=1"):
@@ -140,8 +152,11 @@ class PlanningTests(unittest.TestCase):
             "use sk-live-abcdefghijklmnopqrstuvwxyz123456",
             "api_key=abcdefghijklmnopqrstuvwxyz",
             "Authorization: Bearer abcdefghijklmnop",
+            "Bearer abcdefghijklmnop",
             "Cookie: session=abcdefgh",
             "--password hunter2-secret",
+            "MY_TOKEN=abcdefghijk",
+            "PAT=abcdefghijk",
         ):
             with self.assertRaisesRegex(PlanningError, "credential material"):
                 reject_sensitive_text(text)

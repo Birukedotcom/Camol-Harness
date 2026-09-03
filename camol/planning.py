@@ -199,7 +199,8 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
     }
     if not isinstance(value, dict) or set(value) != fields:
         raise PlanningError("plan proposal has the wrong fields")
-    if value["schema"] != "camol.plan_proposal" or value["schema_version"] not in {1, 2}:
+    version = value["schema_version"]
+    if value["schema"] != "camol.plan_proposal" or type(version) is not int or version not in {1, 2}:
         raise PlanningError("plan proposal schema is unsupported")
     for name in ("goal", "resource_statement", "maturity"):
         _required_text(value[name], "plan " + name)
@@ -207,10 +208,14 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
         if not isinstance(value[name], list) or not value[name] or any(not isinstance(item, str) or not item for item in value[name]):
             raise PlanningError("plan {} must contain non-empty strings".format(name))
     limits = value["resource_limits"]
-    expected_limits = (
-        LEGACY_RESOURCE_FIELDS if value["schema_version"] == 1 else CURRENT_RESOURCE_FIELDS
+    if not isinstance(limits, dict):
+        raise PlanningError("plan resource_limits has the wrong fields")
+    actual_limit_fields = set(limits)
+    accepted_limit_fields = (
+        {frozenset(LEGACY_RESOURCE_FIELDS), frozenset(CURRENT_RESOURCE_FIELDS)}
+        if version == 1 else {frozenset(CURRENT_RESOURCE_FIELDS)}
     )
-    if not isinstance(limits, dict) or set(limits) != expected_limits:
+    if frozenset(actual_limit_fields) not in accepted_limit_fields:
         raise PlanningError("plan resource_limits has the wrong fields")
     for name, number in limits.items():
         if type(number) is not int or number <= 0:
@@ -219,7 +224,7 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(execution, dict) or set(execution) != {"model", "effort"}:
         raise PlanningError("plan execution has the wrong fields")
     _required_text(execution["model"], "plan execution model")
-    if execution["effort"] not in {"low", "medium", "high", "xhigh", "max"}:
+    if not isinstance(execution["effort"], str) or execution["effort"] not in {"low", "medium", "high", "xhigh", "max"}:
         raise PlanningError("plan execution effort is unsupported")
     if not isinstance(value["tasks"], list):
         raise PlanningError("plan tasks must be an array")
@@ -242,7 +247,7 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
         normalized_tasks.append(dict(task))
     if not ids or len(ids) != len(set(ids)):
         raise PlanningError("plan must have unique tasks")
-    if value["schema_version"] == 2:
+    if version == 2:
         seen = set()
         for task_id in ids:
             unknown = sorted(set(dependencies[task_id]) - seen)
@@ -282,7 +287,7 @@ def effective_resource_limits(proposal: Mapping[str, Any]) -> Dict[str, int]:
     """Return current compiler limits while preserving readable V1 proposals."""
     proposal = validate_proposal(proposal)
     limits = proposal["resource_limits"]
-    if proposal["schema_version"] == 2:
+    if proposal["schema_version"] == 2 or set(limits) == CURRENT_RESOURCE_FIELDS:
         return dict(limits)
     return {
         "box_pool_size": limits["max_concurrency"],

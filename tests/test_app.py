@@ -64,11 +64,6 @@ class InteractiveControllerTests(unittest.TestCase):
         plan = dict(self.controller.session["plan"])
         proposal = dict(plan["proposal"])
         proposal["schema_version"] = 1
-        proposal["resource_limits"] = {
-            "max_concurrency": 2,
-            "max_turns_per_task": 4,
-            "max_total_tokens": 12_000,
-        }
         plan["proposal"] = proposal
         digest = canonical_digest(plan)
         self.controller.session = self.controller.store.update(

@@ -63,7 +63,7 @@ _TASK_FIELDS = (
 _TASK_FIELDS_V4 = _TASK_FIELDS + ("evaluator_assets",)
 _STEP_FIELDS = ("id", "instruction", "commands", "completion")
 _COMMAND_FIELDS = ("purpose", "argv")
-_COMMAND_FIELDS_V4 = _COMMAND_FIELDS + ("cwd",)
+_VERIFICATION_COMMAND_FIELDS_V4 = _COMMAND_FIELDS + ("cwd",)
 
 
 def _reject_unknown(payload: Dict[str, Any], allowed: Iterable[str], label: str) -> None:
@@ -373,18 +373,11 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             for command_index, command_value in enumerate(commands):
                 command = _object(command_value, "task {} command {}".format(task_id, command_index))
                 if strict:
-                    _reject_unknown(
-                        command, _COMMAND_FIELDS_V4 if version >= 4 else _COMMAND_FIELDS,
-                        "task {} command {}".format(task_id, command_index),
-                    )
+                    _reject_unknown(command, _COMMAND_FIELDS, "task {} command {}".format(task_id, command_index))
                 normalized_command = {
                     "purpose": _string(command.get("purpose"), "command purpose"),
                     "argv": _string_list(command.get("argv"), "command argv", allow_empty=False),
                 }
-                if "cwd" in command:
-                    if version < 4 or command["cwd"] not in {"box", "workspace_root"}:
-                        raise RunbookError("command cwd must be box or workspace_root in schema v4")
-                    normalized_command["cwd"] = command["cwd"]
                 normalized_commands.append(normalized_command)
             normalized_steps.append(
                 {
@@ -408,7 +401,7 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             command = _object(command_value, "task {} verification {}".format(task_id, command_index))
             if strict:
                 _reject_unknown(
-                    command, _COMMAND_FIELDS_V4 if version >= 4 else _COMMAND_FIELDS,
+                    command, _VERIFICATION_COMMAND_FIELDS_V4 if version >= 4 else _COMMAND_FIELDS,
                     "task {} verification {}".format(task_id, command_index),
                 )
             normalized_command = {
@@ -416,7 +409,7 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
                 "argv": _string_list(command.get("argv"), "verification argv", allow_empty=False),
             }
             if "cwd" in command:
-                if version < 4 or command["cwd"] not in {"box", "workspace_root"}:
+                if version < 4 or not isinstance(command["cwd"], str) or command["cwd"] not in {"box", "workspace_root"}:
                     raise RunbookError("verification cwd must be box or workspace_root in schema v4")
                 normalized_command["cwd"] = command["cwd"]
             normalized_verification.append(normalized_command)

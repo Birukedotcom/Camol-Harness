@@ -35,6 +35,12 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
             self.assertNotIn("abcdefghijklmnopqrstuvwxyz", rendered)
             self.assertIn("[REDACTED]", rendered)
+            prompt.load_text("MY_TOKEN=abcdefghijk")
+            app.action_submit()
+            await pilot.pause(0.2)
+            rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+            self.assertNotIn("abcdefghijk", rendered)
+            self.assertEqual(app.history[-1], "MY_TOKEN=[REDACTED]")
 
     async def test_n_box_fleet_and_keyboard_navigation(self):
         for command in (

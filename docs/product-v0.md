@@ -46,9 +46,11 @@ whole assembled result instead of one worker subdirectory.
 
 New proposals use `camol.plan_proposal` schema V2, which freezes box-pool size,
 concurrency, turn, token, worker-cost, and timeout ceilings. Saved V1 sessions remain
-readable with their original three-field resource shape and digest; missing V2
-ceilings receive documented compatibility defaults only when Camol must derive an
-effective display or execution policy. Camol never rewrites the saved V1 proposal.
+readable with either V1 shape that Product V0 previously emitted: the original
+three-field resources or the transitional six-field resources. Missing ceilings in
+the three-field shape receive documented compatibility defaults only when Camol must
+derive an effective display or execution policy. Camol never rewrites a saved V1
+proposal.
 
 ## Connection versus readiness
 

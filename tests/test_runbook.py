@@ -344,18 +344,26 @@ class RunbookV4Tests(unittest.TestCase):
         with self.assertRaisesRegex(RunbookError, "must be unique"):
             validate_runbook(duplicate)
 
-    def test_v4_commands_can_select_box_or_workspace_root(self):
+    def test_v4_verification_can_select_box_or_workspace_root(self):
         v4 = migrate_runbook_v3_to_v4(self.v3, evaluator_assets=self.assets)
-        v4["tasks"][0]["steps"][0]["commands"][0]["cwd"] = "box"
         v4["tasks"][0]["verification"][0]["cwd"] = "workspace_root"
         normalized = validate_runbook(v4)
-        self.assertEqual(normalized["tasks"][0]["steps"][0]["commands"][0]["cwd"], "box")
         self.assertEqual(normalized["tasks"][0]["verification"][0]["cwd"], "workspace_root")
 
         invalid = copy.deepcopy(v4)
         invalid["tasks"][0]["verification"][0]["cwd"] = "somewhere_else"
         with self.assertRaisesRegex(RunbookError, "cwd must be box or workspace_root"):
             validate_runbook(invalid)
+
+        invalid = copy.deepcopy(v4)
+        invalid["tasks"][0]["verification"][0]["cwd"] = []
+        with self.assertRaisesRegex(RunbookError, "cwd must be box or workspace_root"):
+            validate_runbook(invalid)
+
+        step_cwd = copy.deepcopy(v4)
+        step_cwd["tasks"][0]["steps"][0]["commands"][0]["cwd"] = "workspace_root"
+        with self.assertRaisesRegex(RunbookError, "unknown fields: cwd"):
+            validate_runbook(step_cwd)
 
         v3 = copy.deepcopy(self.v3)
         v3["tasks"][0]["verification"][0]["cwd"] = "workspace_root"

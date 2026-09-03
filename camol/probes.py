@@ -111,6 +111,9 @@ _SECRET_ASSIGNMENT = re.compile(
 _SECRET_FLAG_VALUE = re.compile(
     r"(?i)(?:^|\s)--(?:secret|token|api[_-]?key|password|credential)(?:=|\s+)\S{6,}"
 )
+_HIGH_CONFIDENCE_AUTH_SCHEME = re.compile(
+    r"(?i)\b(?:bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{16,}"
+)
 _TOKEN_SHAPES = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
@@ -164,6 +167,21 @@ class Redactor:
             return True
         if any(pattern.search(value) for pattern in _TOKEN_SHAPES):
             return True
+        for match in _KEY_VALUE.finditer(value):
+            name = match.group(1)
+            assigned = match.group(3)
+            # Colon is also ordinary prose punctuation (`cookie: behavior`).
+            # Explicit auth/cookie headers and common secret names are covered
+            # by the dedicated patterns below; use the generic suffix rule for
+            # unambiguous assignments only.
+            if "=" not in match.group(2):
+                continue
+            # The grill's `tokens=N` resource limit is not a credential. A
+            # singular TOKEN/PAT/etc. assignment remains sensitive.
+            if name.lower() == "tokens" and assigned.isdigit():
+                continue
+            if _SECRET_NAME.search(name):
+                return True
         return any(pattern.search(value) for pattern in (
             _PEM_BLOCK,
             _URL_USERINFO,
@@ -171,6 +189,7 @@ class Redactor:
             _COOKIE_VALUE,
             _SECRET_ASSIGNMENT,
             _SECRET_FLAG_VALUE,
+            _HIGH_CONFIDENCE_AUTH_SCHEME,
         ))
 
     def argv(self, argv: Sequence[str]) -> List[str]:

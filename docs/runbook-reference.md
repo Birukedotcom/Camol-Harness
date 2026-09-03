@@ -17,7 +17,7 @@ Four `schema_version` values are readable. Any other value is rejected with
 | `1` | frozen; digests pinned in `tests/test_runbook.py` | Accepts the legacy `run.max_agents` alias, ignores unknown fields, and has no readiness fields. Normalization is byte-identical to the pre-M0 kernel, so existing frozen plans still resume. |
 | `2` | frozen | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, rejects booleans in integer fields, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
 | `3` | frozen | Preserves v2 semantics and adds a provider-neutral hosted-adapter shape: `kind`, workspace-relative `profile`, optional strict `profile_snapshot`, and `timeout_seconds`. Process adapters retain `kind`, `argv`, and `timeout_seconds`. |
-| `4` | current | Preserves v3 semantics, requires an explicit `evaluator_assets` list on every task, and permits an explicit command `cwd` of `box` or `workspace_root`. Protected asset manifests/bytes and command location are digest-bound; changed workspace copies cannot pass. |
+| `4` | current | Preserves v3 semantics, requires an explicit `evaluator_assets` list on every task, and permits an explicit verification-command `cwd` of `box` or `workspace_root`. Protected asset manifests/bytes and evaluator location are digest-bound; changed workspace copies cannot pass. |
 
 A v1 file that contains a v2 field (`readiness_policy` or `trust_tier`) is rejected
 rather than partially reinterpreted. Upgrading is explicit:
@@ -230,8 +230,7 @@ change is a counterexample and the command is not launched.
   "commands": [
     {
       "purpose": "Run the focused reproduction",
-      "argv": ["python3", "-m", "unittest", "tests.test_case"],
-      "cwd": "box"
+      "argv": ["python3", "-m", "unittest", "tests.test_case"]
     }
   ],
   "completion": [
@@ -241,11 +240,13 @@ change is a counterexample and the command is not launched.
 }
 ```
 
-In schema V4, `cwd` is optional and defaults to `box`. `workspace_root` runs the
-command from the root of the independent verifier or integration worktree. Product
-V0 uses that explicit root for its generated final evaluator so a repository-wide
-gate sees every accepted task. Older schema versions reject `cwd`; their command
-location remains the historical box default.
+In schema V4, verification commands may set `cwd`; it is optional and defaults to
+`box`. `workspace_root` runs the evaluator from the root of the independent verifier
+or integration worktree. Product V0 uses that explicit root for its generated final
+gate so a repository-wide check sees every accepted task. Step commands do not
+accept `cwd`: workers always operate inside their isolated box, and changing that
+requires a future versioned worker-execution contract. Older schema versions reject
+`cwd`; their verification location remains the historical box default.
 
 The command list is an explicit route through the task, not permission to fake the
 result. A reasoning agent may discover that a declared command is stale; it should

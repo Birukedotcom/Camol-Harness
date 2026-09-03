@@ -45,11 +45,31 @@ and closed before release:
 |---|---|---|---|
 | P1 | Startup probed a stale socket once and aborted before the replacement daemon became ready. | The parent retries authenticated ping until the new child answers, exits, or reaches the startup deadline. | `tests.test_supervisor.SupervisorTests.test_spawn_retries_past_stale_control_files` |
 | P1 | The proposal resource object expanded without a proposal schema version change. | Current proposals are V2; original V1 proposal shape and graph semantics remain readable and are never silently rewritten. | `tests.test_planning.PlanningTests.test_legacy_v1_proposal_remains_readable_with_original_shape`; `tests.test_app.InteractiveControllerTests.test_saved_v1_proposal_remains_visible_after_upgrade` |
-| P1 | The final repository evaluator still ran from one box during integration replay. | Schema V4 freezes `cwd`; the evaluator bundle preserves it, and Product V0's final gate uses `workspace_root` in candidate and integrated contexts. | `tests.test_runbook.RunbookV4Tests.test_v4_commands_can_select_box_or_workspace_root`; `tests.test_product_e2e.ProductFlowTests.test_boot_to_grill_approval_detached_run_box_completion_and_reattach` |
+| P1 | The final repository evaluator still ran from one box during integration replay. | Schema V4 freezes verification `cwd`; the evaluator bundle preserves it, and Product V0's final gate uses `workspace_root` in candidate and integrated contexts. | `tests.test_runbook.RunbookV4Tests.test_v4_verification_can_select_box_or_workspace_root`; `tests.test_product_e2e.ProductFlowTests.test_boot_to_grill_approval_detached_run_box_completion_and_reattach` |
 | P1 | Prefixing an imperative exclusion with “must not” could invert its meaning. | Rules now preserve the user's clause under the neutral prefix `Excluded from worker scope:`. | `tests.test_planning.PlanningTests.test_grill_is_ordered_and_compiles_to_schema_v4` |
 | P2 | The persistence guard rejected ordinary authentication/security prose. | Input rejection now uses a high-confidence credential detector; aggressive output redaction remains defense in depth. | `tests.test_planning.PlanningTests.test_secret_detection_allows_ordinary_security_engineering_language` |
 | P2 | A box cursor could forget assignments recorded before the cursor and omit later task-only events. | Association is derived from full history before the response cursor/window is applied. | `tests.test_supervisor.SupervisorTests.test_box_cursor_uses_assignment_history_before_the_cursor` |
 | P2 | A V1 process adapter's unknown `profile_snapshot` stopped being ignored. | The original tolerant V1 normalization drops it; strict versions continue to reject it for process adapters. | `tests.test_runbook.RunbookV1CompatibilityTests.test_v1_still_ignores_unknown_fields_and_carries_no_v2_fields` |
+
+The final exact-commit review found three more edge cases. The reviewer could not
+bind Unix/TCP sockets or inspect processes in its sandbox, so its local runtime suite
+reported expected environment denials; the same tests passed in the release host.
+Its static findings were independently reproduced and closed:
+
+- high-confidence input detection now rejects secret-named assignments and long
+  bare auth-scheme values while continuing to allow ordinary security-engineering
+  prose and the `tokens=N` resource field;
+- proposal V1 accepts both historical three-field and transitional six-field
+  resource shapes, preserving all explicitly recorded six-field limits; and
+- `cwd` is restricted to V4 verification commands. Step commands remain box-local
+  until a future worker-execution schema explicitly implements another location.
+
+Regression coverage is in
+`tests.test_planning.PlanningTests.test_secret_detection_allows_ordinary_security_engineering_language`,
+`tests.test_planning.PlanningTests.test_legacy_v1_proposal_remains_readable_with_original_shape`,
+`tests.test_app.InteractiveControllerTests.test_saved_v1_proposal_remains_visible_after_upgrade`,
+`tests.test_tui.TuiTests.test_terminal_app_has_transcript_multiline_prompt_and_fleet`,
+and `tests.test_runbook.RunbookV4Tests.test_v4_verification_can_select_box_or_workspace_root`.
 
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python
