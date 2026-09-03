@@ -89,6 +89,10 @@ class HarnessRunner:
     ) -> Dict[str, Any]:
         evaluated_task_id = evaluated_task_id or assignment["task_id"]
         identifier = uuid4().hex
+        if command.get("cwd", "box") == "workspace_root":
+            execution_cwd = Path(workspace_root or self.workspace).resolve()
+        else:
+            execution_cwd = Path(box).resolve()
         try:
             sandboxed = None
             if self.state_dir is not None and workspace_root is not None:
@@ -106,7 +110,7 @@ class HarnessRunner:
                     network_destinations=(), credential_refs=(), trust_tier=trust_tier,
                 )
                 sandboxed = await select_backend(policy).run(
-                    command["argv"], cwd=box, policy=policy,
+                    command["argv"], cwd=execution_cwd, policy=policy,
                     timeout_seconds=timeout_seconds,
                     environment={"PYTHONDONTWRITEBYTECODE": "1"},
                     invocation_record=packet_dir / ("evaluator-" + identifier + ".invocation.json"),
@@ -122,7 +126,7 @@ class HarnessRunner:
                 exit_code = sandboxed.exit_code
             else:
                 process = await asyncio.create_subprocess_exec(
-                    *command["argv"], cwd=str(box), stdout=asyncio.subprocess.PIPE,
+                    *command["argv"], cwd=str(execution_cwd), stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE, start_new_session=True,
                 )
                 stdout_task = asyncio.create_task(self._bounded_stream(process.stdout))
@@ -155,6 +159,7 @@ class HarnessRunner:
             return {
                 "purpose": command["purpose"],
                 "argv": command["argv"],
+                "cwd": command.get("cwd", "box"),
                 "phase": phase,
                 "exit_code": exit_code,
                 "passed": exit_code == 0,

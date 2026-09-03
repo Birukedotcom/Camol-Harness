@@ -59,6 +59,27 @@ class InteractiveControllerTests(unittest.TestCase):
         self.assertIsNone(self.controller.session["plan"])
         self.assertIsNone(self.controller.session["approved_digest"])
 
+    def test_saved_v1_proposal_remains_visible_after_upgrade(self):
+        self.complete_grill()
+        plan = dict(self.controller.session["plan"])
+        proposal = dict(plan["proposal"])
+        proposal["schema_version"] = 1
+        proposal["resource_limits"] = {
+            "max_concurrency": 2,
+            "max_turns_per_task": 4,
+            "max_total_tokens": 12_000,
+        }
+        plan["proposal"] = proposal
+        digest = canonical_digest(plan)
+        self.controller.session = self.controller.store.update(
+            self.controller.session, plan=plan, plan_digest=digest,
+        )
+
+        reloaded = InteractiveController(self.workspace, state_root=self.state_root)
+        response = reloaded.handle("/plan")
+        self.assertIn("limits (legacy V1)", response.messages[0])
+        self.assertIn(digest, response.messages[0])
+
     def test_no_run_before_approval_or_without_executable_provider(self):
         self.complete_grill()
         denied = self.controller.handle("/run --accept-spend")

@@ -45,6 +45,13 @@ RESOURCE_BOUNDS = {
     "cost_cents": (1, 10_000),
     "turn_timeout_seconds": (30, 86_400),
 }
+LEGACY_RESOURCE_FIELDS = {
+    "max_concurrency", "max_turns_per_task", "max_total_tokens",
+}
+CURRENT_RESOURCE_FIELDS = {
+    "box_pool_size", "max_concurrency", "max_turns_per_task", "max_total_tokens",
+    "max_worker_cost_usd_cents", "turn_timeout_seconds",
+}
 _RESOURCE_ASSIGNMENT = re.compile(
     r"\b(boxes|turns|tokens|cost_cents|turn_timeout_seconds)\s*=\s*\d+\b",
     re.IGNORECASE,
@@ -57,7 +64,7 @@ def reject_sensitive_text(value: str, label: str = "input") -> str:
     # only the complete approved resource assignments before using the shared
     # secret detector.
     probe = _RESOURCE_ASSIGNMENT.sub("limit=1", value)
-    if Redactor().text(probe) != probe:
+    if Redactor().contains_sensitive(probe):
         raise PlanningError(
             "{} appears to contain credential material; use an opaque credential reference instead".format(label)
         )
@@ -192,7 +199,7 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
     }
     if not isinstance(value, dict) or set(value) != fields:
         raise PlanningError("plan proposal has the wrong fields")
-    if value["schema"] != "camol.plan_proposal" or value["schema_version"] != 1:
+    if value["schema"] != "camol.plan_proposal" or value["schema_version"] not in {1, 2}:
         raise PlanningError("plan proposal schema is unsupported")
     for name in ("goal", "resource_statement", "maturity"):
         _required_text(value[name], "plan " + name)
@@ -200,10 +207,10 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
         if not isinstance(value[name], list) or not value[name] or any(not isinstance(item, str) or not item for item in value[name]):
             raise PlanningError("plan {} must contain non-empty strings".format(name))
     limits = value["resource_limits"]
-    if not isinstance(limits, dict) or set(limits) != {
-        "box_pool_size", "max_concurrency", "max_turns_per_task", "max_total_tokens",
-        "max_worker_cost_usd_cents", "turn_timeout_seconds",
-    }:
+    expected_limits = (
+        LEGACY_RESOURCE_FIELDS if value["schema_version"] == 1 else CURRENT_RESOURCE_FIELDS
+    )
+    if not isinstance(limits, dict) or set(limits) != expected_limits:
         raise PlanningError("plan resource_limits has the wrong fields")
     for name, number in limits.items():
         if type(number) is not int or number <= 0:
@@ -235,18 +242,56 @@ def validate_proposal(value: Mapping[str, Any]) -> Dict[str, Any]:
         normalized_tasks.append(dict(task))
     if not ids or len(ids) != len(set(ids)):
         raise PlanningError("plan must have unique tasks")
-    seen = set()
-    for task_id in ids:
-        unknown = sorted(set(dependencies[task_id]) - seen)
-        if unknown:
-            raise PlanningError(
-                "task {} dependencies must be declared earlier: {}".format(task_id, ", ".join(unknown))
-            )
-        seen.add(task_id)
+    if value["schema_version"] == 2:
+        seen = set()
+        for task_id in ids:
+            unknown = sorted(set(dependencies[task_id]) - seen)
+            if unknown:
+                raise PlanningError(
+                    "task {} dependencies must be declared earlier: {}".format(task_id, ", ".join(unknown))
+                )
+            seen.add(task_id)
+    else:
+        # Product-proposal V1 allowed forward references. Keep already-saved
+        # sessions readable without weakening the current V2 contract.
+        visiting = set()
+        visited = set()
+
+        def visit(task_id: str) -> None:
+            if task_id in visiting:
+                raise PlanningError("task dependency graph contains a cycle")
+            if task_id in visited:
+                return
+            if task_id not in dependencies:
+                raise PlanningError("task dependency is unknown")
+            visiting.add(task_id)
+            for dependency in dependencies[task_id]:
+                visit(dependency)
+            visiting.remove(task_id)
+            visited.add(task_id)
+
+        for task_id in ids:
+            visit(task_id)
     normalized = dict(value)
     normalized["tasks"] = normalized_tasks
     normalized["resource_limits"] = dict(limits)
     return normalized
+
+
+def effective_resource_limits(proposal: Mapping[str, Any]) -> Dict[str, int]:
+    """Return current compiler limits while preserving readable V1 proposals."""
+    proposal = validate_proposal(proposal)
+    limits = proposal["resource_limits"]
+    if proposal["schema_version"] == 2:
+        return dict(limits)
+    return {
+        "box_pool_size": limits["max_concurrency"],
+        "max_concurrency": limits["max_concurrency"],
+        "max_turns_per_task": limits["max_turns_per_task"],
+        "max_total_tokens": limits["max_total_tokens"],
+        "max_worker_cost_usd_cents": RESOURCE_DEFAULTS["cost_cents"],
+        "turn_timeout_seconds": RESOURCE_DEFAULTS["turn_timeout_seconds"],
+    }
 
 
 @dataclass(frozen=True)
@@ -333,7 +378,7 @@ def proposal_from_grill(grill: GrillState, *, model: str = "manual", effort: str
     parsed_limits = _resource_limits(resource_statement)
     proposal = {
         "schema": "camol.plan_proposal",
-        "schema_version": 1,
+        "schema_version": 2,
         "goal": grill.goal,
         "outcomes": outcomes,
         "exclusions": _items(answers["exclusions"]),
@@ -363,6 +408,7 @@ def compile_runbook(
 ) -> Dict[str, Any]:
     """Compile a reviewed proposal to the kernel's current executable contract."""
     proposal = validate_proposal(proposal)
+    limits = effective_resource_limits(proposal)
     rules = [
         {"id": "approval-gate", "text": proposal["invariants"][0], "enforcement": "hard"},
         {"id": "source-isolation", "text": proposal["invariants"][1], "enforcement": "hard"},
@@ -373,7 +419,7 @@ def compile_runbook(
     for index, exclusion in enumerate(proposal["exclusions"], 1):
         rules.append({
             "id": "human-exclusion-{}".format(index),
-            "text": "The worker must not: {}".format(exclusion),
+            "text": "Excluded from worker scope: {}".format(exclusion),
             "enforcement": "hard",
         })
     task_ids = [task["id"] for task in proposal["tasks"]]
@@ -420,6 +466,7 @@ def compile_runbook(
         "verification": [{
             "purpose": "Run the human-selected evaluator after every planned task is integrated",
             "argv": list(proposal["verification_argv"]),
+            "cwd": "workspace_root",
         }],
         "evaluator_assets": [],
     }
@@ -428,16 +475,16 @@ def compile_runbook(
         "run": {
             "id": run_id,
             "objective": proposal["goal"],
-            "max_concurrency": proposal["resource_limits"]["max_concurrency"],
+            "max_concurrency": limits["max_concurrency"],
             "completion": [
                 "all_tasks_succeeded", "all_required_evidence_present",
                 "all_verifications_green", "no_open_blockers", "no_open_debug_cases",
             ],
             "token_policy": {
-                "max_tokens_per_turn": min(8_000, proposal["resource_limits"]["max_total_tokens"]),
+                "max_tokens_per_turn": min(8_000, limits["max_total_tokens"]),
                 "checkpoint_reserve": 600,
-                "max_total_tokens": proposal["resource_limits"]["max_total_tokens"],
-                "max_turns_per_task": proposal["resource_limits"]["max_turns_per_task"],
+                "max_total_tokens": limits["max_total_tokens"],
+                "max_turns_per_task": limits["max_turns_per_task"],
             },
             "readiness_policy": {"receipt_ttl_seconds": 300},
         },
@@ -451,7 +498,7 @@ def compile_runbook(
                 "adapter": dict(adapter),
                 "trust_tier": "developer_trusted",
             }
-            for index in range(proposal["resource_limits"]["box_pool_size"])
+            for index in range(limits["box_pool_size"])
         ],
         "tasks": ordinary_tasks + [final_task],
     }

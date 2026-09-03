@@ -100,6 +100,17 @@ _AUTH_SCHEME = re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"
 _COOKIE_HEADER = re.compile(r"(?i)\b(cookie|set-cookie)\s*:\s*[^\n]+")
 _KEY_VALUE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_-]*)(\s*[=:]\s*)(\S+)")
 _PEM_BLOCK = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL)
+_AUTHORIZATION_HEADER = re.compile(
+    r"(?i)\bauthorization\s*:\s*(?:bearer|basic|token)\s+\S{8,}"
+)
+_COOKIE_VALUE = re.compile(r"(?i)\b(?:cookie|set-cookie)\s*:\s*[^\n]*(?:=|;)[^\n]*")
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:secret|access[_-]?token|auth[_-]?token|api[_-]?key|password|passwd|private[_-]?key|credential)"
+    r"\s*[=:]\s*[^\s,;]{4,}"
+)
+_SECRET_FLAG_VALUE = re.compile(
+    r"(?i)(?:^|\s)--(?:secret|token|api[_-]?key|password|credential)(?:=|\s+)\S{6,}"
+)
 _TOKEN_SHAPES = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
@@ -144,6 +155,23 @@ class Redactor:
         for shape in _TOKEN_SHAPES:
             text = shape.sub(REDACTED, text)
         return text
+
+    def contains_sensitive(self, value: str) -> bool:
+        """Detect high-confidence credential material without rejecting auth prose."""
+        if not isinstance(value, str):
+            return False
+        if any(secret in value for secret in self._values):
+            return True
+        if any(pattern.search(value) for pattern in _TOKEN_SHAPES):
+            return True
+        return any(pattern.search(value) for pattern in (
+            _PEM_BLOCK,
+            _URL_USERINFO,
+            _AUTHORIZATION_HEADER,
+            _COOKIE_VALUE,
+            _SECRET_ASSIGNMENT,
+            _SECRET_FLAG_VALUE,
+        ))
 
     def argv(self, argv: Sequence[str]) -> List[str]:
         redacted: List[str] = []

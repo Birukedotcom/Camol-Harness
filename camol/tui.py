@@ -168,7 +168,8 @@ class CamolApp(App):
         if not text:
             return
         prompt.clear()
-        visible_text = Redactor().text(text)
+        redactor = Redactor()
+        visible_text = redactor.text(text) if redactor.contains_sensitive(text) else text
         self.history.append(visible_text)
         self.history = self.history[-200:]
         self.history_index = len(self.history)

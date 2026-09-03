@@ -74,7 +74,11 @@ def evaluator_definition(runbook: Dict[str, Any]) -> Dict[str, Any]:
                 "acceptance": list(task["acceptance"]),
                 "required_evidence": list(task["required_evidence"]),
                 "verification": [
-                    {"purpose": command["purpose"], "argv": list(command["argv"])}
+                    {
+                        "purpose": command["purpose"],
+                        "argv": list(command["argv"]),
+                        **({"cwd": command["cwd"]} if "cwd" in command else {}),
+                    }
                     for command in task["verification"]
                 ],
                 "evaluator_assets": list(task.get("evaluator_assets", [])),

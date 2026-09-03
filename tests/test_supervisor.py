@@ -12,7 +12,15 @@ from unittest.mock import Mock
 
 from camol.sandbox import process_start_fingerprint
 from camol.schema import canonical_digest
-from camol.supervisor import LeaderLock, Supervisor, SupervisorError, SupervisorPaths, send_control, send_control_v2
+from camol.supervisor import (
+    LeaderLock,
+    Supervisor,
+    SupervisorError,
+    SupervisorPaths,
+    send_control,
+    send_control_v2,
+    spawn_supervisor,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,6 +188,57 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(view["events"]), 100)
         self.assertEqual(view["events"][0]["seq"], 21)
         self.assertEqual(view["events"][-1]["seq"], 120)
+
+    async def test_box_cursor_uses_assignment_history_before_the_cursor(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        supervisor.run_id = "run"
+        supervisor.runbook = {
+            "agents": [{
+                "id": "builder", "role": "build", "capabilities": ["code"],
+                "adapter": {"kind": "process"},
+            }],
+            "tasks": [
+                {"id": "owned", "capabilities": ["code"]},
+                {"id": "other", "capabilities": ["code"]},
+            ],
+        }
+        supervisor.orchestrator = Mock(state=Mock(return_value={"tasks": {
+            "owned": {"agent_id": None}, "other": {"agent_id": None},
+        }}))
+        supervisor.store = Mock(read=Mock(return_value=[
+            {"seq": 1, "actor_id": "orchestrator", "payload": {
+                "task_id": "owned", "agent_id": "builder",
+            }},
+            {"seq": 2, "actor_id": "orchestrator", "payload": {
+                "task_id": "owned", "kind": "retry",
+            }},
+            {"seq": 3, "actor_id": "orchestrator", "payload": {
+                "task_id": "other", "kind": "retry",
+            }},
+        ]))
+        supervisor._boxes = Mock(return_value={"boxes": []})
+        view = supervisor._box("builder", 1, 100)
+        self.assertEqual([event["seq"] for event in view["events"]], [2])
+
+    async def test_spawn_retries_past_stale_control_files(self):
+        paths = SupervisorPaths.under(self.state)
+        paths.control_dir.mkdir(parents=True)
+        paths.socket.write_text("stale", encoding="utf-8")
+        paths.token.write_text("a" * 64 + "\n", encoding="utf-8")
+        paths.token.chmod(0o600)
+        started = await asyncio.to_thread(
+            spawn_supervisor,
+            ROOT / "examples/three-agent-runbook.json",
+            self.source,
+            self.state,
+        )
+        try:
+            self.assertTrue(started["started"])
+            self.assertEqual((await send_control(self.state, "status"))["result"]["mode"], "awaiting_approval")
+        finally:
+            if paths.socket.exists():
+                await send_control(self.state, "stop", requested_by="test-owner")
+                await self._wait_for(paths.socket, exists=False)
 
     async def test_database_and_control_symlink_must_stay_inside_state(self):
         outside = Path(self.temporary.name) / "outside"

@@ -15,6 +15,7 @@ from .planning import (
     GrillState,
     PlanningError,
     compile_runbook,
+    effective_resource_limits,
     proposal_from_grill,
     reject_sensitive_text,
     validate_proposal,
@@ -78,7 +79,7 @@ def _envelope(proposal: Mapping[str, Any]) -> Dict[str, Any]:
     limitation = "Selected orchestrator cannot execute through the V0 worker kernel."
     if selection.provider == "claude" and selection.model in {None, "fable"}:
         base_profile = load_model_profile(Path.cwd(), "@camol/claude-fable-5-1")
-        limits = proposal["resource_limits"]
+        limits = effective_resource_limits(proposal)
         requested_cost = limits["max_worker_cost_usd_cents"]
         if requested_cost > base_profile.max_run_usd_cents:
             raise PlanningError(
@@ -158,16 +159,19 @@ def render_plan(plan: Mapping[str, Any], digest: str) -> str:
         "execution: {} at effort {} ({})".format(
             proposal["execution"]["model"], proposal["execution"]["effort"], plan["execution_status"]
         ),
-        "limits: boxes={} concurrency={} turns/task={} total_tokens={} worker_cost={}c turn_timeout={}s".format(
-            proposal["resource_limits"]["box_pool_size"],
-            proposal["resource_limits"]["max_concurrency"],
-            proposal["resource_limits"]["max_turns_per_task"],
-            proposal["resource_limits"]["max_total_tokens"],
-            proposal["resource_limits"]["max_worker_cost_usd_cents"],
-            proposal["resource_limits"]["turn_timeout_seconds"],
-        ),
         "outcomes:",
     ]
+    limits = proposal["resource_limits"]
+    if proposal["schema_version"] == 1:
+        lines.insert(3, "limits (legacy V1): concurrency={} turns/task={} total_tokens={}".format(
+            limits["max_concurrency"], limits["max_turns_per_task"], limits["max_total_tokens"]
+        ))
+    else:
+        lines.insert(3, "limits: boxes={} concurrency={} turns/task={} total_tokens={} worker_cost={}c turn_timeout={}s".format(
+            limits["box_pool_size"], limits["max_concurrency"],
+            limits["max_turns_per_task"], limits["max_total_tokens"],
+            limits["max_worker_cost_usd_cents"], limits["turn_timeout_seconds"],
+        ))
     lines.extend("  - " + item for item in proposal["outcomes"])
     lines.append("exclusions:")
     lines.extend("  - " + item for item in proposal["exclusions"])

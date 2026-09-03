@@ -121,8 +121,10 @@ class RunbookV1CompatibilityTests(unittest.TestCase):
     def test_v1_still_ignores_unknown_fields_and_carries_no_v2_fields(self):
         tolerant = copy.deepcopy(self.raw)
         tolerant["notes"] = "ignored by v1"
+        tolerant["agents"][0]["adapter"]["profile_snapshot"] = {"ignored": True}
         normalized = validate_runbook(tolerant)
         self.assertNotIn("notes", normalized)
+        self.assertNotIn("profile_snapshot", normalized["agents"][0]["adapter"])
         self.assertNotIn("readiness_policy", normalized["run"])
         self.assertTrue(all("trust_tier" not in agent for agent in normalized["agents"]))
         self.assertEqual(runbook_digest(normalized), GOLDEN_EXAMPLE_DIGEST_V1)
@@ -341,6 +343,24 @@ class RunbookV4Tests(unittest.TestCase):
         duplicate["tasks"][0]["evaluator_assets"] = ["tests", "tests"]
         with self.assertRaisesRegex(RunbookError, "must be unique"):
             validate_runbook(duplicate)
+
+    def test_v4_commands_can_select_box_or_workspace_root(self):
+        v4 = migrate_runbook_v3_to_v4(self.v3, evaluator_assets=self.assets)
+        v4["tasks"][0]["steps"][0]["commands"][0]["cwd"] = "box"
+        v4["tasks"][0]["verification"][0]["cwd"] = "workspace_root"
+        normalized = validate_runbook(v4)
+        self.assertEqual(normalized["tasks"][0]["steps"][0]["commands"][0]["cwd"], "box")
+        self.assertEqual(normalized["tasks"][0]["verification"][0]["cwd"], "workspace_root")
+
+        invalid = copy.deepcopy(v4)
+        invalid["tasks"][0]["verification"][0]["cwd"] = "somewhere_else"
+        with self.assertRaisesRegex(RunbookError, "cwd must be box or workspace_root"):
+            validate_runbook(invalid)
+
+        v3 = copy.deepcopy(self.v3)
+        v3["tasks"][0]["verification"][0]["cwd"] = "workspace_root"
+        with self.assertRaisesRegex(RunbookError, "unknown fields: cwd"):
+            validate_runbook(v3)
 
 
 if __name__ == "__main__":

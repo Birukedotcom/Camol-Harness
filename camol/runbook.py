@@ -63,6 +63,7 @@ _TASK_FIELDS = (
 _TASK_FIELDS_V4 = _TASK_FIELDS + ("evaluator_assets",)
 _STEP_FIELDS = ("id", "instruction", "commands", "completion")
 _COMMAND_FIELDS = ("purpose", "argv")
+_COMMAND_FIELDS_V4 = _COMMAND_FIELDS + ("cwd",)
 
 
 def _reject_unknown(payload: Dict[str, Any], allowed: Iterable[str], label: str) -> None:
@@ -266,7 +267,7 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
         argv = None
         profile = None
         if kind == "process":
-            if "profile_snapshot" in adapter:
+            if strict and "profile_snapshot" in adapter:
                 raise RunbookError("agents[{}].adapter.profile_snapshot is only valid for hosted adapters".format(index))
             if version >= 3 and "profile" in adapter:
                 raise RunbookError("agents[{}].adapter.profile is only valid for hosted adapters".format(index))
@@ -372,13 +373,19 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             for command_index, command_value in enumerate(commands):
                 command = _object(command_value, "task {} command {}".format(task_id, command_index))
                 if strict:
-                    _reject_unknown(command, _COMMAND_FIELDS, "task {} command {}".format(task_id, command_index))
-                normalized_commands.append(
-                    {
-                        "purpose": _string(command.get("purpose"), "command purpose"),
-                        "argv": _string_list(command.get("argv"), "command argv", allow_empty=False),
-                    }
-                )
+                    _reject_unknown(
+                        command, _COMMAND_FIELDS_V4 if version >= 4 else _COMMAND_FIELDS,
+                        "task {} command {}".format(task_id, command_index),
+                    )
+                normalized_command = {
+                    "purpose": _string(command.get("purpose"), "command purpose"),
+                    "argv": _string_list(command.get("argv"), "command argv", allow_empty=False),
+                }
+                if "cwd" in command:
+                    if version < 4 or command["cwd"] not in {"box", "workspace_root"}:
+                        raise RunbookError("command cwd must be box or workspace_root in schema v4")
+                    normalized_command["cwd"] = command["cwd"]
+                normalized_commands.append(normalized_command)
             normalized_steps.append(
                 {
                     "id": _identifier(step.get("id"), "task {} step id".format(task_id)),
@@ -400,13 +407,19 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
         for command_index, command_value in enumerate(verification):
             command = _object(command_value, "task {} verification {}".format(task_id, command_index))
             if strict:
-                _reject_unknown(command, _COMMAND_FIELDS, "task {} verification {}".format(task_id, command_index))
-            normalized_verification.append(
-                {
-                    "purpose": _string(command.get("purpose"), "verification purpose"),
-                    "argv": _string_list(command.get("argv"), "verification argv", allow_empty=False),
-                }
-            )
+                _reject_unknown(
+                    command, _COMMAND_FIELDS_V4 if version >= 4 else _COMMAND_FIELDS,
+                    "task {} verification {}".format(task_id, command_index),
+                )
+            normalized_command = {
+                "purpose": _string(command.get("purpose"), "verification purpose"),
+                "argv": _string_list(command.get("argv"), "verification argv", allow_empty=False),
+            }
+            if "cwd" in command:
+                if version < 4 or command["cwd"] not in {"box", "workspace_root"}:
+                    raise RunbookError("verification cwd must be box or workspace_root in schema v4")
+                normalized_command["cwd"] = command["cwd"]
+            normalized_verification.append(normalized_command)
 
         max_attempts = task.get("max_attempts", 3)
         if strict:

@@ -343,9 +343,9 @@ class Supervisor:
             task["id"] for task in self.runbook["tasks"]
             if set(task["capabilities"]).issubset(set(worker["capabilities"]))
         )
-        all_events = self.store.read(self.run_id, after_seq=after_seq)
+        history_events = self.store.read(self.run_id, after_seq=0)
         historical_tasks = set(task_ids)
-        for event in all_events:
+        for event in history_events:
             payload = event.get("payload", {})
             if not isinstance(payload, dict):
                 continue
@@ -356,14 +356,17 @@ class Supervisor:
                 if isinstance(task_id, str):
                     historical_tasks.add(task_id)
         relevant = [
-            event for event in all_events
-            if event.get("actor_id") == box_id
-            or any(
-                isinstance(event.get("payload"), dict)
-                and event["payload"].get(name) == box_id
-                for name in ("agent_id", "worker_id", "box_id")
+            event for event in history_events
+            if event.get("seq", 0) > after_seq
+            and (
+                event.get("actor_id") == box_id
+                or any(
+                    isinstance(event.get("payload"), dict)
+                    and event["payload"].get(name) == box_id
+                    for name in ("agent_id", "worker_id", "box_id")
+                )
+                or any(self._event_mentions_task(event, task_id) for task_id in historical_tasks)
             )
-            or any(self._event_mentions_task(event, task_id) for task_id in historical_tasks)
         ]
         relevant = relevant[-limit:] if tail else relevant[:limit]
         workspace = next(
@@ -791,13 +794,20 @@ def spawn_supervisor(
         if process.poll() is not None:
             raise SupervisorError("supervisor exited during startup; inspect {}".format(paths.log))
         if paths.socket.exists() and paths.token.exists():
-            response = asyncio.run(send_control(state_dir, "ping"))
-            return {
-                "started": True,
-                "pid": response["pid"],
-                "socket": str(paths.socket),
-                "log": str(paths.log),
-            }
+            try:
+                response = asyncio.run(send_control(state_dir, "ping"))
+            except (SupervisorError, OSError, asyncio.TimeoutError, json.JSONDecodeError):
+                # A previous crash can leave both files behind. The new child
+                # owns the leader lock and will replace the socket; keep
+                # polling until that endpoint responds or the child exits.
+                pass
+            else:
+                return {
+                    "started": True,
+                    "pid": response["pid"],
+                    "socket": str(paths.socket),
+                    "log": str(paths.log),
+                }
         time.sleep(0.05)
     process.terminate()
     raise SupervisorError("supervisor did not become ready within {} seconds".format(timeout))

@@ -40,7 +40,15 @@ The resources answer is intentionally machine-readable rather than aspirational 
 no-network, provider, file-scope, and other behavioral boundaries in exclusions or
 invariants. Unrecognized resource prose is rejected instead of silently ignored.
 Intermediate tasks run a patch-integrity check; the exact human evaluator runs in a
-generated final stage only after every declared task has integrated.
+generated final stage only after every declared task has integrated. That evaluator
+runs from the integration worktree root, so repository-wide commands observe the
+whole assembled result instead of one worker subdirectory.
+
+New proposals use `camol.plan_proposal` schema V2, which freezes box-pool size,
+concurrency, turn, token, worker-cost, and timeout ceilings. Saved V1 sessions remain
+readable with their original three-field resource shape and digest; missing V2
+ceilings receive documented compatibility defaults only when Camol must derive an
+effective display or execution policy. Camol never rewrites the saved V1 proposal.
 
 ## Connection versus readiness
 
@@ -93,4 +101,6 @@ the run directory.
 The V2 local control protocol returns the exact runbook and digest, bounded events
 after a sequence cursor, and bounded per-box event/evidence views. Reattaching cannot
 create a second run because the daemon remains the sole writer and the client checks
-the remote plan digest before accepting an existing socket.
+the remote plan digest before accepting an existing socket. Box association is
+reconstructed from the complete assignment history before the requested display
+cursor is applied, so later task-only events do not disappear after a reconnect.
