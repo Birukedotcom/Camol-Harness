@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from camol.providers import (
     ModelProfile,
-    ProviderCapabilityReceipt,
     ProviderError,
     capability_path,
     create_claude_capability,

@@ -1,12 +1,10 @@
 import json
-import os
 import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from camol.schema import canonical_digest
 from camol.workspace import SalvageReceipt, WorkspaceError, WorkspaceManager
 
 
