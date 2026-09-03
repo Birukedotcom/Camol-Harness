@@ -30,7 +30,11 @@ class BootScreen(Screen):
     def on_mount(self) -> None:
         self._render_art()
         if self.duration >= 0:
-            self.set_timer(self.duration, self.dismiss)
+            # Textual awaits timer callback return values. Screen.dismiss()
+            # returns an AwaitDismiss handle, which must not be awaited from
+            # the screen's own message handler; route through the action so
+            # the callback itself returns None.
+            self.set_timer(self.duration, self.action_dismiss)
 
     def on_resize(self) -> None:
         self._render_art()

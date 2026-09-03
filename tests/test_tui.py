@@ -42,6 +42,14 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("abcdefghijk", rendered)
             self.assertEqual(app.history[-1], "MY_TOKEN=[REDACTED]")
 
+    async def test_boot_timer_dismisses_only_the_boot_screen(self):
+        app = CamolApp(self.controller, show_boot=True, boot_duration=0.01)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(0.1)
+            self.assertEqual(len(app.screen_stack), 1)
+            self.assertEqual(app.screen.id, "_default")
+            self.assertIsNotNone(app.query_one("#prompt", PromptArea))
+
     async def test_n_box_fleet_and_keyboard_navigation(self):
         for command in (
             "/model claude:fable",
