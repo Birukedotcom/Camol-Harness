@@ -97,7 +97,7 @@ def main() -> int:
             "archive_manifest_sha256": "sha256:" + hashlib.sha256(archive_manifest).hexdigest(),
             "limits": [
                 "The builder is a deterministic process fixture, not a hosted-model turn.",
-                "Controlled failure and restart recovery are covered by separate adversarial tests.",
+                "The archive contains controlled evaluator failure and refinement; daemon restart is covered separately.",
                 "This one run is evidence for the local kernel path only and carries no statistical claim."
             ],
         }
@@ -105,6 +105,8 @@ def main() -> int:
             proof["status"] != "completed"
             or not proof["archive_verified"]
             or proof["integration_count"] != 1
+            or proof["candidate_count"] != 2
+            or proof["counterexample_count"] != 1
             or counts.get("TASK_SUCCEEDED") != 1
         ):
             raise SystemExit("dogfood proof did not satisfy its declared gate")

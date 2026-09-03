@@ -87,6 +87,8 @@ class AdmissionControllerTests(unittest.TestCase):
         first, handle = self.controller().prepare(
             plan_digest=runbook_digest(self.runbook), task=task, agent=agent, granted_by="owner"
         )
+        tracked = handle.path / "examples" / "fake_agent.py"
+        tracked.write_text(tracked.read_text(encoding="utf-8") + "\n# candidate\n", encoding="utf-8")
         (handle.path / "changed.txt").write_text("candidate", encoding="utf-8")
         second, _ = self.controller().prepare(
             plan_digest=runbook_digest(self.runbook), task=task, agent=agent, granted_by="owner"

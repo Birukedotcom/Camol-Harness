@@ -409,10 +409,11 @@ class WorkspaceManager:
     def refresh_receipt(self, handle: WorkspaceHandle) -> WorkspaceReceipt:
         """Describe current workspace state without changing the original persisted receipt."""
         self._validate_handle(handle)
+        status = self._git_result(
+            "-C", str(handle.path), "status", "--porcelain", "--untracked-files=all"
+        ).stdout.decode("utf-8", "surrogateescape")
         dirty = sorted(
-            line for line in self._git(
-                "-C", str(handle.path), "status", "--porcelain", "--untracked-files=all"
-            ).splitlines() if line.strip()
+            line for line in status.splitlines() if line.strip()
         )
         return WorkspaceReceipt(
             workspace_id=handle.receipt.workspace_id,
@@ -432,15 +433,10 @@ class WorkspaceManager:
         patch = self._git_result(
             "-C", str(handle.path), "diff", "--binary", handle.receipt.base_revision
         ).stdout
-        status_lines = tuple(
-            sorted(
-                line
-                for line in self._git(
-                    "-C", str(handle.path), "status", "--porcelain", "--untracked-files=all"
-                ).splitlines()
-                if line.strip()
-            )
-        )
+        status = self._git_result(
+            "-C", str(handle.path), "status", "--porcelain", "--untracked-files=all"
+        ).stdout.decode("utf-8", "surrogateescape")
+        status_lines = tuple(sorted(line for line in status.splitlines() if line.strip()))
         names = (
             self._git_result(
                 "-C", str(handle.path), "diff", "--name-only", "-z", handle.receipt.base_revision

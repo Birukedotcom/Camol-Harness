@@ -8,10 +8,11 @@ Camol V0 has two deliberately separate claims.
 | Claude CLI requesting the speculative Fable profile | `SPECULATIVE` | Contract, fake provider, provider-readiness and spend-preflight tests only; no owner-authorized live result is claimed |
 | Remote workers, cloud deployment, voice operations, public benchmark campaigns | specified | No implementation or operational claim in V0 |
 
-The deterministic dogfood edits Camol's own `camol/hillclimb.py` in an isolated box,
-runs a protected oracle in a distinct verifier worktree, applies the candidate to a
-new integration generation, reruns the evaluator, completes the run, exports every
-event/artifact, and verifies that export. It never changes the source checkout.
+The deterministic dogfood edits Camol's own `camol/hillclimb.py` in an isolated box.
+Its deliberately weak first candidate fails a protected oracle in a distinct verifier
+worktree; the counterexample returns to the second turn, whose refined candidate is
+applied to a new integration generation and evaluated again. The run then exports
+every event/artifact and verifies that archive. It never changes the source checkout.
 
 ```bash
 python3 scripts/run_v0_proof.py --output /absolute/path/outside/the/repository
