@@ -283,7 +283,7 @@ class CommandOutcome:
 CommandRunner = Callable[[Sequence[str], Optional[Path], int], CommandOutcome]
 Which = Callable[[str], Optional[str]]
 
-_ENV_PASSTHROUGH = ("PATH", "HOME", "TMPDIR", "SYSTEMROOT")
+_ENV_PASSTHROUGH = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SYSTEMROOT")
 GIT_ENV = {
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -305,7 +305,7 @@ GIT_SAFETY_ARGS = (
 
 
 def sanitized_environment(source: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """A minimal environment for probes: PATH/HOME/TMPDIR, C locale, no GIT_* variables."""
+    """A minimal probe environment with login identity, C locale, and no inherited Git state."""
     base = os.environ if source is None else source
     env = {name: base[name] for name in _ENV_PASSTHROUGH if name in base}
     env["LC_ALL"] = "C.UTF-8"
@@ -998,7 +998,7 @@ class ProviderConnectionProbe(Probe):
     kind = "provider"
     required = False
 
-    VERSION = 2
+    VERSION = 3
 
     def config(self, context):
         profiles = []

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from camol.conversation import ConversationError, converse, parse_selection, provider_argv
+from camol.conversation import ConversationError, _environment, converse, parse_selection, provider_argv
 
 
 class ConversationTests(unittest.TestCase):
@@ -40,6 +40,18 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("--safe-mode", argv)
         self.assertEqual(reply.resolved_model, "claude-fable-5")
         self.assertEqual(reply.output_tokens, 7)
+
+    def test_cli_conversation_preserves_login_identity_but_not_arbitrary_environment(self):
+        with patch.dict(
+            "os.environ",
+            {"USER": "owner", "LOGNAME": "owner", "CODEX_HOME": "/safe/config", "SECRET_VALUE": "no"},
+            clear=True,
+        ):
+            environment = _environment()
+        self.assertEqual(environment["USER"], "owner")
+        self.assertEqual(environment["LOGNAME"], "owner")
+        self.assertEqual(environment["CODEX_HOME"], "/safe/config")
+        self.assertNotIn("SECRET_VALUE", environment)
 
     def test_codex_conversation_uses_read_only_ephemeral_exec(self):
         output = (

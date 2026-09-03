@@ -8,7 +8,8 @@ writer and keeps running.
 ## One lifecycle
 
 1. Run bare `camol` from the root of the Git repository you want Camol to work on.
-2. Inspect `/connections`. A filled connection glyph proves authentication or
+2. Wait for the top rail's `↻` connection scan to settle, then inspect
+   `/connections` for details. A filled connection glyph proves authentication or
    reachability only.
 3. Select a planning model with `/model`. `manual` is the no-call default.
 4. Start `/grill GOAL` and answer every question. The topology answer uses one line
@@ -64,8 +65,10 @@ lease authority. `/connections` records only:
 - a keyed, non-reversible fingerprint when provider status exposes an identity; and
 - capability labels and observation time.
 
-It does not read, copy, parse, or store provider credential caches. `/login` suspends
-the TUI and gives the terminal directly to `claude auth login` or `codex login`.
+It does not read, copy, parse, or store provider credential caches. On startup, the
+TUI refreshes this inventory in a disposable background thread; `↻` means probing,
+not ready. `/login` suspends the TUI and gives the terminal directly to
+`claude auth login` or `codex login`, then refreshes the rail automatically.
 
 Task readiness is established later by the kernel and includes the exact plan,
 workspace revision, evaluator bundle, authority, capacity reservation, sandbox,

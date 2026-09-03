@@ -125,6 +125,33 @@ class ProviderContractTests(unittest.TestCase):
         self.assertFalse(receipt.valid_for(self.profile, "local:other", self.now)[0])
         self.assertFalse(receipt.valid_for(self.profile, "local:test", self.now + timedelta(seconds=60))[0])
 
+    def test_preflight_preserves_login_identity_but_not_arbitrary_environment(self):
+        observed = {}
+
+        def runner(*args, **kwargs):
+            observed.update(kwargs["env"])
+            return Completed()
+
+        environment = {
+            "PATH": str(self.bin),
+            "USER": "owner",
+            "LOGNAME": "owner",
+            "SECRET_VALUE": "no",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            create_claude_capability(
+                self.profile,
+                target_id="local:test",
+                state_dir=self.state,
+                cwd=self.workspace,
+                accept_spend=True,
+                now=self.now,
+                runner=runner,
+            )
+        self.assertEqual(observed["USER"], "owner")
+        self.assertEqual(observed["LOGNAME"], "owner")
+        self.assertNotIn("SECRET_VALUE", observed)
+
     def test_resolution_is_not_invented_or_relabeled(self):
         class Wrong(Completed):
             stdout = json.dumps({

@@ -769,7 +769,7 @@ def spawn_supervisor(
         command.extend(["--approve-by", approve_by])
     child_environment = {
         name: os.environ[name]
-        for name in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH")
+        for name in ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH")
         if name in os.environ
     }
     package_root = str(Path(__file__).resolve().parents[1])

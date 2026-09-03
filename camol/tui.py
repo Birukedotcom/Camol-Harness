@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +15,7 @@ from textual.widgets import Footer, RichLog, Static, TextArea
 
 from .app import CommandResponse, InteractiveController
 from .boot import compose_boot
+from .connections import ConnectionError
 from .probes import Redactor
 
 
@@ -59,7 +61,18 @@ class CamolApp(App):
     #boot-art { width: 100%; height: 100%; color: #f4f5f4; }
     #dependency-rail { height: 1; background: #111719; color: #9ca9a6; padding: 0 1; }
     #context { height: 1; background: #182022; color: #d5dfdc; padding: 0 1; }
-    #transcript { height: 1fr; padding: 1 2; scrollbar-color: #6e7d79; }
+    #transcript {
+        height: 1fr;
+        padding: 1 2;
+        scrollbar-size-vertical: 1;
+        scrollbar-color: #6e7d79;
+        scrollbar-color-hover: #83938f;
+        scrollbar-color-active: #9baba7;
+        scrollbar-background: #1e1e1e;
+        scrollbar-background-hover: #1e1e1e;
+        scrollbar-background-active: #1e1e1e;
+        scrollbar-corner-color: #1e1e1e;
+    }
     #stream { height: auto; max-height: 5; color: #b8c7c3; padding: 0 2; }
     #prompt { height: 5; border: solid #62716d; margin: 0 1; background: #0e1314; }
     #fleet { height: 2; background: #111719; color: #c8d1cf; padding: 0 1; }
@@ -92,16 +105,19 @@ class CamolApp(App):
         *,
         show_boot: bool = True,
         boot_duration: float = 0.9,
+        discover_connections: bool = True,
     ):
         super().__init__()
         self.controller = controller
         self.show_boot = show_boot
         self.boot_duration = boot_duration
+        self.discover_connections = discover_connections
         self.history = []
         self.history_index = 0
         self.selected = "orchestrator"
         self.boxes = []
         self.stream_text = ""
+        self._connection_probe_lock = threading.Lock()
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -122,6 +138,8 @@ class CamolApp(App):
         await self._refresh_fleet()
         self.query_one("#prompt", PromptArea).focus()
         self.set_interval(1.0, self._refresh_fleet)
+        if self.discover_connections:
+            self._probe_connections()
         if self.show_boot:
             self.push_screen(BootScreen(self.boot_duration))
 
@@ -141,6 +159,10 @@ class CamolApp(App):
             record = records.get(connection_id)
             if record and record["status"] == "ready":
                 return "■ " + binary
+            if record and record["status"] in {"auth_required", "error"}:
+                return "□ " + binary
+            if not record and self.discover_connections and shutil.which(binary):
+                return "↻ " + binary
             return ("□ " if shutil.which(binary) else "· ") + binary
         parts = [
             "■ git" if shutil.which("git") else "· git",
@@ -151,6 +173,29 @@ class CamolApp(App):
             "effort=" + self.controller.session["effort"],
         ]
         self.query_one("#dependency-rail", Static).update("  ".join(parts))
+
+    def _probe_connections(self) -> None:
+        """Refresh account inventory without delaying boot or blocking input."""
+        def probe() -> None:
+            if not self._connection_probe_lock.acquire(blocking=False):
+                return
+            try:
+                try:
+                    self.controller.connections.probe_all()
+                except (ConnectionError, OSError, ValueError):
+                    # Per-provider failures are normally recorded by probe_all. A
+                    # registry failure must not make the client itself unavailable.
+                    pass
+                try:
+                    self.call_from_thread(self._render_dependency_rail)
+                except RuntimeError:
+                    # The terminal is disposable. A detach may race this read-only
+                    # inventory refresh and must never wait for it.
+                    pass
+            finally:
+                self._connection_probe_lock.release()
+
+        threading.Thread(target=probe, name="camol-connection-probe", daemon=True).start()
 
     async def _refresh_fleet(self) -> None:
         boxes = await self.run_worker(
@@ -201,7 +246,8 @@ class CamolApp(App):
         if response.login_argv:
             with self.suspend():
                 completed = subprocess.run(list(response.login_argv), check=False)
-            log.write("camol > provider login exited {}. Run /connections to refresh status.".format(completed.returncode))
+            log.write("camol > provider login exited {}. Refreshing connection status.".format(completed.returncode))
+            self._probe_connections()
         if response.exit_client:
             self.exit()
             return

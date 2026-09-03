@@ -48,6 +48,18 @@ class ConnectionRegistryTests(unittest.TestCase):
         self.assertEqual(record["credential_ref"], "env:OPENAI_API_KEY")
         self.assertNotIn("super-secret-value", self.registry.path.read_text())
 
+    def test_cli_probe_environment_preserves_login_identity_but_not_secrets(self):
+        with patch.dict(
+            os.environ,
+            {"USER": "owner", "LOGNAME": "owner", "CODEX_HOME": "/safe/config", "SECRET_VALUE": "no"},
+            clear=True,
+        ):
+            environment = self.registry._environment()
+        self.assertEqual(environment["USER"], "owner")
+        self.assertEqual(environment["LOGNAME"], "owner")
+        self.assertEqual(environment["CODEX_HOME"], "/safe/config")
+        self.assertNotIn("SECRET_VALUE", environment)
+
     def test_non_loopback_local_endpoint_is_denied_without_network_access(self):
         with self.assertRaisesRegex(ConnectionError, "loopback"):
             self.registry.probe_local("https://example.com/v1")

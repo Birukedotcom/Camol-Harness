@@ -89,6 +89,8 @@ class AdmissionSchedulerTests(unittest.TestCase):
 
     def test_green_admission_leases_once_and_binds_every_digest(self):
         bundle, _ = self.admit()
+        self.assertIn("USER", bundle.sandbox_policy.environment_names)
+        self.assertIn("LOGNAME", bundle.sandbox_policy.environment_names)
         assignment = self.frame_assignment()
         fence = LeaseFence.from_dict(assignment["fence"])
         self.assertEqual(assignment["fence_digest"], fence.digest())

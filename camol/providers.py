@@ -382,7 +382,11 @@ def create_claude_capability(
         "--permission-prompts", "none", "--no-session-persistence",
         "--disable-slash-commands", "--safe-mode", "--disallowedTools", "Bash", "Edit", "Write",
     ]
-    clean_env = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL") if name in os.environ}
+    clean_env = {
+        name: os.environ[name]
+        for name in ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL")
+        if name in os.environ
+    }
     try:
         completed = runner(
             argv, cwd=str(Path(cwd).resolve()), env=clean_env, input=prompt.encode("utf-8"),

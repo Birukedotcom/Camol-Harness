@@ -465,7 +465,15 @@ class ProbeBehaviorTests(unittest.TestCase):
             self.assertIn(item, status_argv)
 
     def test_subprocess_environment_is_sanitized(self):
-        hostile = dict(HOSTILE_ENV, GIT_DIR="/elsewhere/.git", GIT_WORK_TREE="/elsewhere", GIT_CONFIG_PARAMETERS="'core.fsmonitor=/evil'", LD_PRELOAD="/evil.so")
+        hostile = dict(
+            HOSTILE_ENV,
+            USER="owner",
+            LOGNAME="owner",
+            GIT_DIR="/elsewhere/.git",
+            GIT_WORK_TREE="/elsewhere",
+            GIT_CONFIG_PARAMETERS="'core.fsmonitor=/evil'",
+            LD_PRELOAD="/evil.so",
+        )
         env = sanitized_environment(hostile)
         for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_PARAMETERS", "LD_PRELOAD", "GITHUB_TOKEN", "OPENAI_API_KEY", "MY_PASSWORD"):
             self.assertNotIn(name, env, name)
@@ -473,6 +481,8 @@ class ProbeBehaviorTests(unittest.TestCase):
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(env["USER"], "owner")
+        self.assertEqual(env["LOGNAME"], "owner")
         self.assertEqual(set(env) - set(GIT_SAFETY_ARGS), set(env))
         # The live runner really passes the sanitized environment through.
         os.environ["CAMOL_TEST_LEAK"] = "leak-value"

@@ -219,7 +219,7 @@ class AdmissionController:
             workspace=str(handle.path),
             read_paths=(str(handle.path), str(packet_dir)) + system_read_paths(executable) + credential_reads,
             write_paths=(str(handle.path), str(packet_dir)),
-            environment_names=("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"),
+            environment_names=("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL"),
             network_destinations=network,
             credential_refs=credential_refs,
             trust_tier=trust_tier,

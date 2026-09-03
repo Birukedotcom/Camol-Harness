@@ -84,6 +84,27 @@ The remediation follow-up found and closed three P1 omissions: camelCase/session
 credential names, numeric credential values, and low-entropy or hyphenated Bearer
 values. Those forms are now denied before any raw grill or plan persistence.
 
+A hands-on installed-client pass then found two release blockers and one visual
+defect:
+
+- the boot timer returned Textual's awaitable screen-dismiss handle and closed the
+  application after the splash; the timer now invokes the non-awaitable dismiss
+  action and a regression test holds the main screen open;
+- the sanitized provider subprocess environment omitted `USER` and `LOGNAME`, which
+  made an authenticated Claude CLI report logged out inside Camol and would keep the
+  hosted readiness gate red. Connection discovery, planning calls, spend preflight,
+  the detached supervisor, and the worker sandbox now preserve those non-secret
+  identity fields while continuing to filter unrelated environment values; and
+- Textual's default two-column black scrollbar track appeared as a black stripe at
+  the transcript's right edge. V0 uses a one-column scrollbar with a track matching
+  the transcript surface.
+
+Startup now discovers connections in a disposable background thread, shows `↻`
+while probing, refreshes automatically after provider login, and does not delay
+client detach. Regression coverage is in `tests.test_tui`,
+`tests.test_interactive_cli`, `tests.test_connections`, `tests.test_conversation`,
+`tests.test_providers`, `tests.test_probes`, and `tests.test_admission_scheduler`.
+
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python
 compilation, focused static checks, and `git diff --check`. Live Fable performance,

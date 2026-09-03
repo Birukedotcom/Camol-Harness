@@ -60,9 +60,25 @@ class InteractiveCliTests(unittest.TestCase):
                         if not chunk:
                             break
                         captured.extend(chunk)
-                time.sleep(0.5)
-                process.terminate()
-                process.wait(timeout=8)
+                # Keep draining redraws while the asynchronous connection inventory
+                # updates the top rail; a real terminal always consumes this output.
+                redraw_deadline = time.time() + 1.0
+                while time.time() < redraw_deadline:
+                    readable, _, _ = select.select([master], [], [], 0.1)
+                    if readable:
+                        captured.extend(os.read(master, 65536))
+                # Exercise Camol's disposable-client contract instead of relying
+                # on Textual's platform signal handling.
+                os.write(master, b"\x11")
+                exit_deadline = time.time() + 8
+                while process.poll() is None and time.time() < exit_deadline:
+                    readable, _, _ = select.select([master], [], [], 0.1)
+                    if readable:
+                        try:
+                            captured.extend(os.read(master, 65536))
+                        except OSError:
+                            break
+                process.wait(timeout=1)
                 while True:
                     readable, _, _ = select.select([master], [], [], 0.05)
                     if not readable:

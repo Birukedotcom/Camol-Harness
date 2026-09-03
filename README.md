@@ -137,6 +137,12 @@ separate cursor. The bottom switcher traverses
 the orchestrator and a window over an arbitrary N-box fleet; box numbers are visible
 shortcuts, not permanent roles or a fixed worker count.
 
+Provider connections are scanned in the background at startup. `↻` means the
+installed CLI is still being inspected; it changes to `■` only after the provider's
+own status command confirms authentication. Camol preserves the non-secret local
+identity variables those CLIs require while filtering unrelated environment values,
+and it refreshes the rail automatically after `/login`.
+
 Selecting a box opens a read-only peer view of its terminal stream, bounded context,
 tool calls, diff, evaluations, events, and evidence. Sending input or taking over is
 a distinct, approval-aware, logged transition.

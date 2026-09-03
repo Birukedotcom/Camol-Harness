@@ -32,12 +32,13 @@ The repository includes the compact result at
 output rather than a checked-in fixture: it records execution-host paths and target
 identity. Re-running the command produces a fresh independently verifiable archive.
 
-The repository regression gate currently runs 298 tests with `python3 -m unittest
+The repository regression gate currently runs 302 tests with `python3 -m unittest
 discover -v`. Product-specific coverage includes terminal-size snapshots, a real PTY,
-arbitrary-N navigation, exact product-plan JSON and digest approval, provider failure
-and secret redaction, authenticated V2 control, macOS AF_UNIX path fallback, no work
-before approval, daemon persistence, completed-run inspection, and reattachment. This
-does not convert a deterministic fixture into evidence for a live hosted model.
+arbitrary-N navigation, background account discovery, login-identity propagation,
+exact product-plan JSON and digest approval, provider failure and secret redaction,
+authenticated V2 control, macOS AF_UNIX path fallback, no work before approval,
+daemon persistence, completed-run inspection, and reattachment. This does not
+convert a deterministic fixture into evidence for a live hosted model.
 
 ## Required controlled failures
 

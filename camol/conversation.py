@@ -109,7 +109,7 @@ def provider_argv(
 def _environment() -> Dict[str, str]:
     return {
         name: os.environ[name]
-        for name in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "CODEX_HOME")
+        for name in ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "CODEX_HOME")
         if name in os.environ
     }
 
