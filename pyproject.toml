@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "camol-harness"
+version = "0.2.0"
+description = "A persistent three-agent orchestration and tasking harness."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+camol = "camol.cli:main"
+
+[tool.setuptools]
+packages = ["camol"]
