@@ -186,11 +186,17 @@ Goal: prove readiness without beginning task work.
 
 Status (branch `camol/readiness-foundation`): implemented in `camol/probes.py`
 and `camol/doctor.py` with exit codes 0/2/3, `--json`, a guarded runner that
-refuses to execute workspace or state-dir content and runbook commands, and
-hostile-fixture redaction tests. Provider connection and network policy are
-informational `unknown` results (no provider adapter exists yet), so a green
-doctor proves nothing about hosted-model or egress readiness. Only the local
-process-adapter fixture is backed; every other target class remains speculative.
+refuses to execute workspace or state-dir content and runbook commands, a
+sanitized Git environment (fsmonitor/hooks/optional locks disabled), and
+hostile-fixture redaction tests. What is proven: the deterministic local
+process-adapter fixture in `tests/test_doctor.py` exits 0 with system-clock
+evidence and 2/3 in the failure matrix. What is not: any hosted or unverified
+adapter (provider and network probes are required for them and no probe adapter
+exists, so they exit 2), any remote target, and the maturity ladder itself, which
+stays `SPECULATIVE` until M7 produces replayable evidence with a controlled
+failure and recovery. The exit gate "all-green synthetic receipt is reproducible"
+is met only in the sense that a synthetic-clock receipt is deterministic; such a
+receipt is a fixture, not evidence, and `READY_TO_LEASE` rejects it.
 
 Work:
 

@@ -65,6 +65,7 @@ __all__ = [
     "WaitingReason",
     "PROBE_STATUSES",
     "PROBE_METHODS",
+    "CLOCK_SOURCES",
     "RECEIPT_STATUSES",
     "RESERVATION_STATUSES",
     "TRUST_TIERS",
@@ -110,6 +111,9 @@ PROBE_STATUSES = frozenset({"green", "red", "unknown"})
 # How a probe observed: a subprocess (argv recorded), the filesystem, a socket
 # connect/close, or in-process introspection of the control plane itself.
 PROBE_METHODS = frozenset({"process", "filesystem", "socket", "in_process"})
+# Where a receipt's observation instant came from. Only ``system`` evidence can
+# ever satisfy READY_TO_LEASE; ``synthetic`` (an injected --now) is for fixtures.
+CLOCK_SOURCES = frozenset({"system", "synthetic"})
 RECEIPT_STATUSES = frozenset({"green", "red"})
 RESERVATION_STATUSES = frozenset({"reserved", "released", "expired"})
 TRUST_TIERS = frozenset({"developer_trusted", "developer_sandboxed", "sandboxed"})
@@ -403,19 +407,27 @@ class AuthorityPolicy:
 
 @dataclass(frozen=True)
 class ProbeRequirement:
-    """One probe a receipt must contain. ``target_bound`` probes must name the receipt's target."""
+    """One probe a receipt must contain.
+
+    ``definition_digest`` pins the exact probe implementation, version, and
+    configuration that must have produced the result; a probe with the same id
+    but a different definition does not satisfy the policy. ``target_bound``
+    probes must name the receipt's target.
+    """
 
     SCHEMA = "camol.probe_requirement"
     SCHEMA_VERSION = 1
-    FIELDS = ("schema", "schema_version", "probe_id", "kind", "target_bound")
+    FIELDS = ("schema", "schema_version", "probe_id", "kind", "target_bound", "definition_digest")
 
     probe_id: str
     kind: str
     target_bound: bool
+    definition_digest: str
 
     def __post_init__(self) -> None:
         _identifiers(self, ("probe_id", "kind"), "probe requirement")
         require_bool(self.target_bound, "probe requirement target_bound")
+        object.__setattr__(self, "definition_digest", require_digest(self.definition_digest, "probe requirement definition_digest"))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -424,6 +436,7 @@ class ProbeRequirement:
             "probe_id": self.probe_id,
             "kind": self.kind,
             "target_bound": self.target_bound,
+            "definition_digest": self.definition_digest,
         }
 
     @classmethod
@@ -473,6 +486,8 @@ class ProbePolicy:
                 continue
             if probe.kind != requirement.kind:
                 errors.append(("READINESS_STALE", "probe {} has kind {!r}, policy requires {!r}".format(requirement.probe_id, probe.kind, requirement.kind)))
+            if probe.definition_digest != requirement.definition_digest:
+                errors.append(("POLICY_DENIED", "probe {} was produced by a different probe definition than the policy froze".format(requirement.probe_id)))
             if requirement.target_bound and probe.target_id != receipt.target_id:
                 errors.append(("READINESS_STALE", "probe {} must be bound to target {!r}, found {!r}".format(requirement.probe_id, receipt.target_id, probe.target_id)))
         required_ids = {item.probe_id for item in self.required_probes}
@@ -520,7 +535,9 @@ class ProbeResult:
     must carry a typed ``reason_code`` (one of ``NON_RUNNABLE_REASONS``), a
     ``wake_condition`` naming what would clear it, and at least one exact
     ``missing_requirements`` entry; a green probe carries none of these.
-    Valid on ``observed_at <= now < expires_at``.
+    ``definition_digest`` identifies the exact probe implementation, version, and
+    configuration that produced the result. Valid on
+    ``observed_at <= now < expires_at``.
     """
 
     SCHEMA = "camol.probe_result"
@@ -542,6 +559,7 @@ class ProbeResult:
         "evidence_digest",
         "reason_code",
         "wake_condition",
+        "definition_digest",
     )
 
     probe_id: str
@@ -549,6 +567,7 @@ class ProbeResult:
     status: str
     observed_at: str
     summary: str
+    definition_digest: str
     target_id: Optional[str] = None
     expires_at: Optional[str] = None
     method: str = "in_process"
@@ -561,6 +580,7 @@ class ProbeResult:
 
     def __post_init__(self) -> None:
         _identifiers(self, ("probe_id", "kind"), "probe")
+        object.__setattr__(self, "definition_digest", require_digest(self.definition_digest, "probe definition_digest"))
         if self.target_id is not None:
             object.__setattr__(self, "target_id", require_identifier(self.target_id, "probe target_id"))
         object.__setattr__(self, "status", require_choice(self.status, "probe status", PROBE_STATUSES))
@@ -625,6 +645,7 @@ class ProbeResult:
             "evidence_digest": self.evidence_digest,
             "reason_code": self.reason_code,
             "wake_condition": self.wake_condition,
+            "definition_digest": self.definition_digest,
         }
 
     def digest(self) -> str:
@@ -633,7 +654,7 @@ class ProbeResult:
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ProbeResult":
         data = _header(cls, payload, "probe result")
-        for required in ("probe_id", "kind", "status", "observed_at", "summary"):
+        for required in ("probe_id", "kind", "status", "observed_at", "summary", "definition_digest"):
             if required not in data:
                 raise SchemaError("probe result is missing required field {}".format(required))
         return cls(
@@ -651,6 +672,7 @@ class ProbeResult:
             evidence_digest=data.get("evidence_digest"),
             reason_code=data.get("reason_code"),
             wake_condition=data.get("wake_condition"),
+            definition_digest=data["definition_digest"],
         )
 
 
@@ -929,7 +951,9 @@ class ReadinessReceipt:
     (vendor-neutral); ``credential_scopes`` are scope fingerprints, never secrets.
     ``reservation_id`` is ``None`` for a pre-reservation receipt (as emitted by
     ``camol doctor``); the lease predicate requires it to name the active
-    reservation before anything may be leased.
+    reservation before anything may be leased. ``clock`` records whether
+    ``observed_at`` came from the system clock or an injected synthetic instant;
+    synthetic receipts are fixtures, never evidence, and the predicate rejects them.
 
     Construction-time coherence for a green receipt: every probe is green, has
     an expiry no earlier than the receipt's, was observed no later than the
@@ -965,6 +989,7 @@ class ReadinessReceipt:
         "status",
         "observed_at",
         "expires_at",
+        "clock",
     )
     BINDING_FIELDS = (
         "run_id",
@@ -983,6 +1008,7 @@ class ReadinessReceipt:
         "adapter_kind",
         "requested_model",
         "reservation_id",
+        "clock",
     )
 
     receipt_id: str
@@ -1006,10 +1032,12 @@ class ReadinessReceipt:
     status: str
     observed_at: str
     expires_at: str
+    clock: str = "system"
     credential_scopes: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _identifiers(self, ("receipt_id",) + SUBJECT_FIELDS + ("transport_id", "runtime_id", "adapter_kind"), "receipt")
+        object.__setattr__(self, "clock", require_choice(self.clock, "receipt clock", CLOCK_SOURCES))
         if self.reservation_id is not None:
             object.__setattr__(self, "reservation_id", require_identifier(self.reservation_id, "receipt reservation_id"))
         for name in ("plan_digest", "box_binding_digest", "workspace_digest", "evaluator_digest", "authority_digest", "probe_policy_digest"):
@@ -1099,7 +1127,12 @@ class ReadinessReceipt:
             "status": self.status,
             "observed_at": self.observed_at,
             "expires_at": self.expires_at,
+            "clock": self.clock,
         }
+
+    def is_evidence(self) -> bool:
+        """Only system-clock receipts are evidence; synthetic receipts are fixtures."""
+        return self.clock == "system"
 
     def digest(self) -> str:
         return canonical_digest(self.to_dict())
@@ -1328,6 +1361,8 @@ def assess_ready_to_lease(
             wait("READINESS_STALE", "readiness receipt is bound to a different plan digest", "receipt re-probed")
         if receipt.workspace_digest != binding.workspace_digest:
             wait("WORKSPACE_CONFLICT", "readiness receipt is bound to a different workspace digest", "receipt re-probed")
+        if not receipt.is_evidence():
+            wait("POLICY_DENIED", "readiness receipt was produced with a synthetic clock and is not evidence", "receipt re-probed with the system clock")
         if receipt.status != "green":
             wait("READINESS_STALE", "readiness receipt is red", "receipt re-probed green")
         elif not receipt.is_fresh(now):

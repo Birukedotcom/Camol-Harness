@@ -92,12 +92,45 @@ class DoctorGreenPathTests(DoctorFixture):
                 self.assertFalse(receipt.is_fresh("2026-09-03T10:05:00+00:00"))
                 self.assertEqual(workspace.filesystem_policy, "shared_checkout_write")
                 self.assertTrue(receipt.runtime_id.startswith("python3@"))
-                # A green doctor is not a lease: grant and reservation are still missing.
+                # A green doctor is not a lease: grant and reservation are still missing,
+                # and because this fixture uses --now the receipt is a synthetic fixture.
                 still = {reason["code"] for reason in candidate["lease_preview"]["reasons"]}
                 self.assertIn("APPROVAL_REQUIRED", still)
                 self.assertIn("CAPACITY_EXHAUSTED", still)
+                self.assertIn("POLICY_DENIED", still)
                 self.assertNotIn("READINESS_STALE", still)
-                self.assertNotIn("POLICY_DENIED", still)
+                self.assertEqual(candidate["clock"], "synthetic")
+                self.assertFalse(candidate["evidence"])
+                self.assertEqual(receipt.clock, "synthetic")
+                self.assertFalse(receipt.is_evidence())
+
+    def test_system_clock_run_yields_evidence_and_no_synthetic_denial(self):
+        report, text = self.doctor(now=None)
+        self.assertEqual(report.exit_code, EXIT_READY, text)
+        payload = json.loads(text)
+        self.assertEqual(payload["clock"], "system")
+        self.assertTrue(payload["usable_evidence"])
+        self.assertFalse(payload["synthetic_clock"])
+        for task in payload["tasks"]:
+            for candidate in task["candidates"]:
+                if candidate["coherent"]:
+                    self.assertTrue(candidate["evidence"])
+                    receipt = ReadinessReceipt.from_dict(candidate["receipt"])
+                    self.assertTrue(receipt.is_evidence())
+                    still = {reason["code"] for reason in candidate["lease_preview"]["reasons"]}
+                    self.assertNotIn("POLICY_DENIED", still)
+                    self.assertEqual(still - {"APPROVAL_REQUIRED", "CAPACITY_EXHAUSTED", "WAITING_DEPENDENCY"}, set())
+
+    def test_probe_policy_pins_definition_digests(self):
+        _, text = self.doctor()
+        payload = json.loads(text)
+        by_id = {probe["probe_id"]: probe for probe in payload["probes"]}
+        for task in payload["tasks"]:
+            for candidate in task["candidates"]:
+                for requirement in candidate["probe_policy"]["required_probes"]:
+                    self.assertTrue(requirement["definition_digest"].startswith("sha256:"))
+                    produced = by_id.get(requirement["probe_id"]) or next(p for p in candidate["agent_probes"] if p["probe_id"] == requirement["probe_id"])
+                    self.assertEqual(produced["definition_digest"], requirement["definition_digest"], requirement["probe_id"])
 
     def test_informational_probes_are_flagged_and_excluded_from_the_policy(self):
         _, text = self.doctor()
@@ -221,6 +254,39 @@ class DoctorNotReadyTests(DoctorFixture):
         self.assertTaskWait(payload, "POLICY_DENIED")
         for task in payload["tasks"]:
             self.assertFalse(task["ready"])
+
+    def test_unverified_hosted_adapter_cannot_be_ready_while_provider_and_network_are_unknown(self):
+        # Reproduced round-3 case: adapter argv[0] "claude" on PATH but unverifiable -> must not exit 0.
+        fake_claude = self.root / "bin" / "claude"
+        fake_claude.parent.mkdir()
+        fake_claude.write_text("#!/bin/sh\necho launched > \"{}\"\n".format(self.root / "CLAUDE.sentinel"))
+        fake_claude.chmod(fake_claude.stat().st_mode | stat.S_IXUSR)
+        raw = json.loads(self.runbook.read_text())
+        for agent in raw["agents"]:
+            agent["adapter"]["argv"] = ["claude", "--print", "{packet}", "{result}"]
+        self.runbook.write_text(json.dumps(raw))
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-q", "-m", "hosted", cwd=self.repo)
+        real_path = os.environ["PATH"]
+        os.environ["PATH"] = str(fake_claude.parent) + os.pathsep + real_path
+        try:
+            report, text = self.doctor(now=None)
+        finally:
+            os.environ["PATH"] = real_path
+        self.assertFalse((self.root / "CLAUDE.sentinel").exists())
+        self.assertEqual(report.exit_code, EXIT_NOT_READY)
+        payload = json.loads(text)
+        for task in payload["tasks"]:
+            self.assertFalse(task["ready"])
+            for candidate in task["candidates"]:
+                self.assertFalse(candidate["adapter_policy"]["verifiable_local_interpreter"])
+                self.assertTrue(candidate["adapter_policy"]["requires_provider_proof"])
+                required = {item["probe_id"] for item in candidate["probe_policy"]["required_probes"]}
+                self.assertIn("provider.connection", required)
+                self.assertIn("network.policy", required)
+                codes = {reason["code"] for reason in candidate["waiting"]}
+                self.assertIn("AUTH_REQUIRED", codes)
+                self.assertIsNone(candidate["receipt_digest"])
 
     def test_task_without_eligible_worker_is_capacity_exhausted(self):
         raw = json.loads(self.runbook.read_text())

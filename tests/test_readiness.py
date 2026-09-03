@@ -56,6 +56,7 @@ PLAN = canonical_digest({"plan": "fixture"})
 EVALUATOR = canonical_digest({"evaluator": "fixture"})
 CLEAN = canonical_digest([])
 OTHER = canonical_digest(["other"])
+GIT_PROBE_DEFINITION = canonical_digest({"implementation": "tests.GitVersionProbe", "version": 1})
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -73,6 +74,7 @@ def probe(**overrides):
         tool_version="2.45.0",
         summary="git 2.45.0 is installed",
         target_id="localhost",
+        definition_digest=GIT_PROBE_DEFINITION,
     )
     values.update(overrides)
     if values["status"] != "green":
@@ -136,7 +138,7 @@ def probe_policy(**overrides):
     values = dict(
         run_id="run-1",
         task_id="frame",
-        required_probes=[ProbeRequirement(probe_id="git-version", kind="git", target_bound=True)],
+        required_probes=[ProbeRequirement(probe_id="git-version", kind="git", target_bound=True, definition_digest=GIT_PROBE_DEFINITION)],
     )
     values.update(overrides)
     return ProbePolicy(**values)
@@ -425,7 +427,7 @@ class ContractRoundTripTests(unittest.TestCase):
         self.assertEqual(grant(granted_at="2026-09-03T12:00:00+02:00").digest(), grant().digest())
         r = receipt(probes=[probe(probe_id="z"), probe(probe_id="a")])
         self.assertEqual([item.probe_id for item in r.probes], ["a", "z"])
-        policy = probe_policy(required_probes=[ProbeRequirement("z", "git", False), ProbeRequirement("a", "git", True)])
+        policy = probe_policy(required_probes=[ProbeRequirement("z", "git", False, OTHER), ProbeRequirement("a", "git", True, OTHER)])
         self.assertEqual([item.probe_id for item in policy.required_probes], ["a", "z"])
 
     def test_unknown_version_and_unknown_field_fail_clearly_for_every_contract(self):
@@ -525,11 +527,11 @@ class ValidationFailureTests(unittest.TestCase):
         with self.assertRaisesRegex(SchemaError, "green probe cannot carry a reason_code"):
             probe(reason_code="AUTH_REQUIRED", wake_condition="login")
         with self.assertRaisesRegex(SchemaError, "red probe must carry a typed reason_code"):
-            ProbeResult(probe_id="x", kind="git", status="red", observed_at=T0, summary="s")
+            ProbeResult(probe_id="x", kind="git", status="red", observed_at=T0, summary="s", definition_digest=GIT_PROBE_DEFINITION)
         with self.assertRaisesRegex(SchemaError, "must state its wake_condition"):
-            ProbeResult(probe_id="x", kind="git", status="unknown", observed_at=T0, summary="s", reason_code="AUTH_REQUIRED")
+            ProbeResult(probe_id="x", kind="git", status="unknown", observed_at=T0, summary="s", reason_code="AUTH_REQUIRED", definition_digest=GIT_PROBE_DEFINITION)
         with self.assertRaisesRegex(SchemaError, "must name at least one missing requirement"):
-            ProbeResult(probe_id="x", kind="git", status="red", observed_at=T0, summary="s", reason_code="AUTH_REQUIRED", wake_condition="w")
+            ProbeResult(probe_id="x", kind="git", status="red", observed_at=T0, summary="s", reason_code="AUTH_REQUIRED", wake_condition="w", definition_digest=GIT_PROBE_DEFINITION)
         with self.assertRaisesRegex(SchemaError, "reason_code must be one of"):
             probe(status="red", reason_code="NOPE", wake_condition="w", expires_at=None)
         with self.assertRaisesRegex(SchemaError, "argv array"):
@@ -619,9 +621,15 @@ class ValidationFailureTests(unittest.TestCase):
         with self.assertRaisesRegex(SchemaError, "non-empty list"):
             probe_policy(required_probes=[])
         with self.assertRaisesRegex(SchemaError, "probe ids must be unique"):
-            probe_policy(required_probes=[ProbeRequirement("a", "git", True), ProbeRequirement("a", "git", False)])
+            probe_policy(required_probes=[ProbeRequirement("a", "git", True, OTHER), ProbeRequirement("a", "git", False, OTHER)])
         with self.assertRaisesRegex(SchemaError, "target_bound must be a boolean"):
-            ProbeRequirement("a", "git", "yes")
+            ProbeRequirement("a", "git", "yes", OTHER)
+        with self.assertRaisesRegex(SchemaError, "definition_digest must look like"):
+            ProbeRequirement("a", "git", True, "v1")
+        with self.assertRaisesRegex(SchemaError, "probe definition_digest must look like"):
+            probe(definition_digest="git-1.0")
+        with self.assertRaisesRegex(SchemaError, "missing required field definition_digest"):
+            ProbeResult.from_dict({k: v for k, v in probe().to_dict().items() if k != "definition_digest"})
 
     def test_fence_and_binding_validation(self):
         with self.assertRaisesRegex(SchemaError, "epoch must be a positive integer"):
@@ -733,6 +741,8 @@ class BindingDigestTests(unittest.TestCase):
                 changed = {name: OTHER}
             elif name == "target_id":
                 changed = {name: "vm-7", "probes": [probe(target_id="vm-7")]}
+            elif name == "clock":
+                changed = {name: "synthetic"}
             else:
                 changed = {name: current + "-x"}
             self.assertNotEqual(receipt(**changed).binding_digest(), r.binding_digest(), name)
@@ -945,7 +955,7 @@ class IdentityBindingTests(unittest.TestCase):
         self.assertDenied(assess(receipt=receipt(probe_policy_digest=OTHER)), "wrong probe policy digest")
 
     def test_wrong_probe_policy_content_is_not_readiness(self):
-        wider = probe_policy(required_probes=[ProbeRequirement("git-version", "git", True), ProbeRequirement("docker", "container", True)])
+        wider = probe_policy(required_probes=[ProbeRequirement("git-version", "git", True, GIT_PROBE_DEFINITION), ProbeRequirement("docker", "container", True, OTHER)])
         r = receipt(probe_policy_digest=wider.digest())
         decision = assess(probe_policy=wider, receipt=r)
         self.assertDenied(decision, "missing required probe", "READINESS_STALE")
@@ -958,6 +968,30 @@ class IdentityBindingTests(unittest.TestCase):
         self.assertDenied(assess(receipt=wrong_kind), "kind mismatch", "READINESS_STALE")
         unbound = receipt(probes=[probe(target_id=None)])
         self.assertDenied(assess(receipt=unbound), "target-bound probe without target", "READINESS_STALE")
+
+    def test_probe_from_a_different_definition_does_not_satisfy_the_policy(self):
+        # Same probe id, kind, and target, but produced by another implementation/version/config.
+        other_impl = receipt(probes=[probe(definition_digest=OTHER)])
+        decision = assess(receipt=other_impl)
+        self.assertDenied(decision, "definition digest mismatch")
+        self.assertTrue(any("different probe definition" in reason.detail for reason in decision.reasons))
+        self.assertEqual(
+            probe_policy().coverage_errors(other_impl),
+            [("POLICY_DENIED", "probe git-version was produced by a different probe definition than the policy froze")],
+        )
+
+    def test_synthetic_clock_receipts_are_never_evidence(self):
+        synthetic = receipt(clock="synthetic")
+        self.assertFalse(synthetic.is_evidence())
+        self.assertTrue(receipt().is_evidence())
+        self.assertNotEqual(synthetic.digest(), receipt().digest())
+        self.assertNotEqual(synthetic.binding_digest(), receipt().binding_digest(), "clock is a binding field")
+        decision = assess(receipt=synthetic)
+        self.assertDenied(decision, "synthetic clock")
+        self.assertTrue(any("synthetic clock" in reason.detail for reason in decision.reasons))
+        with self.assertRaisesRegex(SchemaError, "clock must be one of"):
+            receipt(clock="wall")
+        self.assertEqual(ReadinessReceipt.from_dict(synthetic.to_dict()), synthetic)
 
     def test_target_bound_probe_must_name_the_receipt_target(self):
         with self.assertRaisesRegex(SchemaError, "bound to target 'vm-7'"):

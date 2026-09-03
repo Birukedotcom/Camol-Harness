@@ -223,9 +223,11 @@ scheduler can still lease an idle static capability match without a task-specifi
 readiness receipt; `tests/test_readiness.py` characterizes that unsafe boundary
 explicitly, and the contracts are recorded but not yet enforced by the scheduler.
 A green `camol doctor` is not a lease: it proves readiness dimensions only, shows
-that a grant and a reservation are still missing, and proves nothing about
-hosted-model availability or network egress for the process adapter (those probes
-are informational `unknown` until a provider adapter exists). Consequently, the
+that a grant and a reservation are still missing, and is possible only for a
+verified local interpreter adapter. Any hosted or unverified adapter additionally
+requires provider and network proof, which no probe adapter can supply yet, so
+such runbooks exit 2. Receipts produced with `--now` are synthetic fixtures that
+the lease predicate rejects. Consequently, the
 included fake-agent demo tests kernel semantics only; replacing its command with a
 real coding agent is not yet supported or safe. See [docs/readiness.md](docs/readiness.md).
 
@@ -235,8 +237,8 @@ The implementation sequence is deliberately narrow:
 
 | Milestone | Deliverable |
 |---|---|
-| M0 (landed) | Versioned readiness, workspace, reservation, grant, and lease-fence schemas |
-| M1 (landed) | Read-only probe registry and `camol doctor` |
+| M0 (implemented; `SPECULATIVE` maturity) | Versioned readiness, workspace, reservation, grant, and lease-fence schemas |
+| M1 (implemented for the local process adapter only; `SPECULATIVE` maturity) | Read-only probe registry and `camol doctor` |
 | M2 | External state directory, isolated worktrees, integration workspace, sandbox boundary |
 | M3 | Task-specific readiness gates, reservations, fenced leases, typed waits |
 | M4 | Complete redacted event and content-addressed artifact capture |

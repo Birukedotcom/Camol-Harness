@@ -35,6 +35,7 @@ from .probes import (
     ProbeOutcome,
     ProbeRegistry,
     Redactor,
+    adapter_policy,
     default_registry,
     local_target_id,
     sanitize_identifier,
@@ -136,6 +137,7 @@ def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = No
     runbook = load_runbook(options.runbook)
     plan_digest = runbook_digest(runbook)
     now = _now(options.now)
+    clock = "synthetic" if options.now else "system"
     ttl = _ttl(runbook, options.receipt_ttl_seconds)
     target_id = options.target_id or local_target_id()
     context = ProbeContext.guarded(
@@ -186,7 +188,7 @@ def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = No
                 candidates.append({"agent_id": agent["id"], "status": "probe_failure"})
                 continue
             try:
-                candidate = _candidate(context, runbook, plan_digest, evaluator_digest, task, agent, shared_probes, shared_outcomes, agent_probes, agent_outcomes, repo_facts)
+                candidate = _candidate(context, clock, runbook, plan_digest, evaluator_digest, task, agent, shared_probes, shared_outcomes, agent_probes, agent_outcomes, repo_facts)
             except SchemaError as error:
                 errors.append("candidate {}/{}: could not assemble a coherent receipt: {}".format(task["id"], agent["id"], redactor.text(str(error))))
                 candidates.append({"agent_id": agent["id"], "status": "probe_failure"})
@@ -235,8 +237,10 @@ def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = No
         "tasks": tasks_report,
         "errors": errors,
         "read_only": True,
-        "synthetic_clock": options.now is not None,
-        "note": "doctor proves readiness dimensions only; a green doctor is not a lease (no grant, no reservation, no fence). Informational probes (required=false) are excluded from the probe policy: a green doctor proves nothing about hosted-model availability or network egress for the process adapter.",
+        "clock": clock,
+        "synthetic_clock": clock == "synthetic",
+        "usable_evidence": clock == "system",
+        "note": "doctor proves readiness dimensions only; a green doctor is not a lease (no grant, no reservation, no fence). Provider-connection and network-policy probes are informational for a verified local interpreter and required for any other adapter; a green doctor for a verified local process adapter still proves nothing about hosted-model availability or network egress. Receipts produced with a synthetic clock (--now) are fixtures, never evidence, and READY_TO_LEASE rejects them.",
     }
     report = DoctorReport(payload=payload)
     if options.json_output:
@@ -248,6 +252,7 @@ def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = No
 
 def _candidate(
     context: ProbeContext,
+    clock: str,
     runbook: Dict[str, Any],
     plan_digest: str,
     evaluator_digest: str,
@@ -294,11 +299,28 @@ def _candidate(
         filesystem_paths=[agent["box"]],
         trust_tier=agent.get("trust_tier", PROCESS_ADAPTER_TRUST_TIER),
     )
-    required_probes = [probe for probe in list(shared_probes) + list(agent_probes) if probe.required]
+    policy = adapter_policy(agent, context)
+    # Requiredness derives from the adapter: informational probes (provider
+    # connection, network policy) become required for any adapter that is not a
+    # verified local interpreter, so an unverified/hosted adapter cannot be green
+    # while provider auth, model availability, or network policy is unknown.
+    def is_required(probe: Probe) -> bool:
+        if probe.required:
+            return True
+        if probe.kind == "provider":
+            return policy["requires_provider_proof"]
+        if probe.kind == "network":
+            return policy["requires_network_policy"]
+        return False
+
+    required_probes = [probe for probe in list(shared_probes) + list(agent_probes) if is_required(probe)]
     probe_policy = ProbePolicy(
         run_id=run_id,
         task_id=task["id"],
-        required_probes=[ProbeRequirement(probe_id=probe.probe_id, kind=probe.kind, target_bound=probe.target_bound) for probe in required_probes],
+        required_probes=[
+            ProbeRequirement(probe_id=probe.probe_id, kind=probe.kind, target_bound=probe.target_bound, definition_digest=probe.definition_digest(context))
+            for probe in required_probes
+        ],
     )
     outcomes = {probe_id: outcome for probe_id, outcome in shared_outcomes.items()}
     for outcome in agent_outcomes:
@@ -331,6 +353,7 @@ def _candidate(
         status=status,
         observed_at=context.observed_at(),
         expires_at=context.expires_at(),
+        clock=clock,
     )
     coverage = probe_policy.coverage_errors(receipt)
     waiting: List[Dict[str, Any]] = []
@@ -374,6 +397,9 @@ def _candidate(
         "probe_policy_digest": probe_policy.digest(),
         "agent_probes": [_probe_entry(outcome, probe) for probe, outcome in zip(agent_probes, agent_outcomes)],
         "runtime_id": runtime_id,
+        "adapter_policy": policy,
+        "clock": clock,
+        "evidence": coherent and receipt.is_evidence(),
         "receipt_digest": receipt.digest() if coherent else None,
         "receipt": receipt.to_dict(),
         "waiting": waiting,
@@ -384,7 +410,9 @@ def _candidate(
 def render_text(payload: Dict[str, Any]) -> str:
     lines: List[str] = []
     lines.append("camol doctor  run={}  plan={}  target={}".format(payload["run_id"], payload["plan_digest"][:19], payload["target_id"]))
-    lines.append("observed {}  valid until {}  (read-only; nothing was prepared, launched, or spent)".format(payload["observed_at"], payload["expires_at"]))
+    lines.append("observed {}  valid until {}  clock={}  (read-only; nothing was prepared, launched, or spent)".format(payload["observed_at"], payload["expires_at"], payload["clock"]))
+    if payload["synthetic_clock"]:
+        lines.append("SYNTHETIC CLOCK: receipts below are fixtures, not evidence; READY_TO_LEASE rejects them")
     lines.append("")
     lines.append("SHARED PROBES")
     for probe in payload["probes"]:

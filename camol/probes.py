@@ -1,33 +1,50 @@
 """Read-only readiness probes and their registry (M1).
 
 Every probe here observes; none prepares. A probe may run a fixed, allowlisted
-read-only command (``git --version``, ``git status --porcelain``, ``<PATH
-binary> --version``), inspect the filesystem, or open and immediately close a
-TCP connection. No probe installs, downloads, authenticates, provisions, writes
-to a repository or the state directory, sends a model request, or mutates a
-remote service. Anything that would need one of those is reported as a typed
-non-green result naming the preparation action instead.
+read-only command (``git --version``, ``git rev-parse``, ``git status
+--porcelain``, ``<PATH interpreter> --version``), inspect the filesystem, or
+open and immediately close a TCP connection. No probe installs, downloads,
+authenticates, provisions, writes to a repository or the state directory, sends
+a model request, or mutates a remote service. Anything that would need one of
+those is reported as a typed non-green result naming the preparation action.
 
-Execution guard
----------------
-Nothing that lives inside the workspace or the state directory is ever
-executed, and no task adapter, step, or verification command is ever run, even
-with ``--version``. Every subprocess goes through :class:`GuardedRunner`, which
-raises :class:`ProbeExecutionError` (doctor exit 3) if argv[0] resolves under
-either root or argv matches a runbook command. Version queries are made only for
-binaries found through ``PATH`` lookup and only for an allowlist of well-known
-tools. Workspace-relative scripts are checked for existence, never launched.
+Execution guard and environment sanitization
+--------------------------------------------
+Every subprocess goes through :class:`GuardedRunner`, which refuses argv[0]
+resolving under the workspace or the state directory (lexically and after
+symlink resolution, relative to the command's working directory) and any argv
+equal to a runbook adapter, step, or verification command. Version queries are
+made only for PATH-resolved binaries on a small allowlist. Workspace-relative
+scripts are checked for existence and file type, never launched.
+
+Subprocesses receive a sanitized environment: only ``PATH``, ``HOME``, ``TMPDIR``
+and a fixed C locale, with every ``GIT_*`` variable dropped. Git commands are
+additionally run with ``GIT_OPTIONAL_LOCKS=0``, ``GIT_CONFIG_NOSYSTEM=1``,
+``GIT_CONFIG_GLOBAL=/dev/null``, ``GIT_TERMINAL_PROMPT=0`` and with
+``core.fsmonitor``, ``core.untrackedCache``, ``core.hooksPath`` and
+``core.sshCommand`` overridden on the command line, so a repository that
+configures an fsmonitor hook or hook path cannot execute anything when the
+doctor reads it.
+
+Probe definitions
+-----------------
+Each probe exposes ``definition(context)``: its implementation identity, a
+``VERSION``, and the configuration it observed under. The digest of that record
+is stamped on every :class:`ProbeResult` and pinned in the :class:`ProbePolicy`,
+so a policy binds the exact probe that must have run, not merely its id.
+
+Adapter policy
+--------------
+Requiredness of the provider/model and network probes derives from the adapter:
+only a local adapter whose interpreter is a PATH-resolved, allowlisted binary
+with a parsed version is *verified*. Any other adapter (hosted CLI, unknown
+binary, unversioned interpreter) is *unverified*, and for it the provider
+connection and network policy probes become required. Because no provider probe
+adapter exists yet, such candidates cannot be green.
 
 The registry is vendor-neutral: provider- and target-specific probes are
-adapters registered against an adapter kind, not branches in this module. The
-default registry registers no provider adapter, so hosted-model readiness is
-reported as a scoped ``unknown`` with an exact wake condition rather than
-guessed.
-
-All output passes through :class:`Redactor`, which strips secret-named
-environment values, well-known token shapes, URL userinfo, bearer/basic
-authorization, PEM blocks, and secret-looking key/value pairs before anything
-reaches a :class:`ProbeResult`, the terminal, or JSON.
+adapters registered against an adapter kind, not branches in this module. All
+output passes through :class:`Redactor`.
 """
 
 import os
@@ -50,6 +67,8 @@ __all__ = [
     "Redactor",
     "CommandOutcome",
     "run_command",
+    "sanitized_environment",
+    "GIT_SAFETY_ARGS",
     "GuardedRunner",
     "ProbeContext",
     "ProbeOutcome",
@@ -58,6 +77,7 @@ __all__ = [
     "default_registry",
     "sanitize_identifier",
     "local_target_id",
+    "adapter_policy",
     "REDACTED",
 ]
 
@@ -79,14 +99,14 @@ _SECRET_KV = re.compile(
 _SECRET_FLAG = re.compile(r"(?i)^--?[A-Za-z0-9_-]*(?:secret|token|passw(?:or)?d|api[_-]?key|cookie|auth|credential)[A-Za-z0-9_-]*$")
 _PEM_BLOCK = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL)
 _TOKEN_SHAPES = [
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),  # generic provider secret keys
-    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),  # GitHub tokens
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),  # Slack
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),  # AWS access key id
-    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),  # Google API key
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),  # JWT
-    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),  # GitLab
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bnpm_[A-Za-z0-9]{30,}\b"),
 ]
 
@@ -162,9 +182,39 @@ class CommandOutcome:
 CommandRunner = Callable[[Sequence[str], Optional[Path], int], CommandOutcome]
 Which = Callable[[str], Optional[str]]
 
+_ENV_PASSTHROUGH = ("PATH", "HOME", "TMPDIR", "SYSTEMROOT")
+GIT_ENV = {
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "",
+    "SSH_ASKPASS": "",
+}
+# Command-line config overrides win over repository config, so a repo that sets
+# core.fsmonitor to a script, or a custom hooks path, cannot run anything.
+GIT_SAFETY_ARGS = (
+    "-c", "core.fsmonitor=false",
+    "-c", "core.untrackedCache=false",
+    "-c", "core.hooksPath=" + os.devnull,
+    "-c", "core.sshCommand=false",
+    "-c", "core.pager=cat",
+    "-c", "protocol.allow=never",
+)
+
+
+def sanitized_environment(source: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    """A minimal environment for probes: PATH/HOME/TMPDIR, C locale, no GIT_* variables."""
+    base = os.environ if source is None else source
+    env = {name: base[name] for name in _ENV_PASSTHROUGH if name in base}
+    env["LC_ALL"] = "C.UTF-8"
+    env["LANG"] = "C.UTF-8"
+    env.update(GIT_ENV)
+    return env
+
 
 def run_command(argv: Sequence[str], cwd: Optional[Path], timeout_seconds: int = 20) -> CommandOutcome:
-    """Run a command without a shell. Failure to launch is a probe failure, not a readiness fact."""
+    """Run a command without a shell in a sanitized environment. Launch failure is a probe failure."""
     try:
         completed = subprocess.run(
             list(argv),
@@ -172,6 +222,7 @@ def run_command(argv: Sequence[str], cwd: Optional[Path], timeout_seconds: int =
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            env=sanitized_environment(),
             timeout=timeout_seconds,
             check=False,
         )
@@ -207,7 +258,7 @@ def _nested(path: Path, root: Path) -> bool:
 
 
 class GuardedRunner:
-    """Wraps a command runner so nothing under the workspace/state dir or from the runbook can run."""
+    """Wraps a command runner so nothing under a guarded root or from the runbook can run."""
 
     def __init__(self, inner: CommandRunner, roots: Sequence[Path], forbidden_argv: Sequence[Sequence[str]]):
         self._inner = inner
@@ -267,14 +318,12 @@ def local_target_id() -> str:
     return "local:" + sanitize_identifier(socket.gethostname(), "host")
 
 
+VERSION_ALLOWLIST = ("python3", "python", "git", "node", "bash", "sh", "npm", "pnpm", "cargo", "go")
+
+
 @dataclass(frozen=True)
 class ProbeContext:
-    """Everything a probe may look at. Immutable for the whole doctor run.
-
-    ``runner`` must already be guarded (see :func:`ProbeContext.guarded`).
-    ``which`` is injectable so tests can simulate a missing tool without
-    touching ``PATH``.
-    """
+    """Everything a probe may look at. Immutable for the whole doctor run."""
 
     runbook: Dict[str, Any]
     workspace: Path
@@ -287,11 +336,10 @@ class ProbeContext:
     which: Which = shutil.which
     services: Tuple[str, ...] = ()
     min_free_bytes: int = 1 << 30
-    version_allowlist: Tuple[str, ...] = ("python3", "python", "git", "node", "bash", "sh", "npm", "pnpm", "cargo", "go")
+    version_allowlist: Tuple[str, ...] = VERSION_ALLOWLIST
 
     @classmethod
     def guarded(cls, *, runner: CommandRunner = run_command, **values: Any) -> "ProbeContext":
-        """Build a context whose runner refuses workspace/state-dir binaries and runbook commands."""
         workspace = Path(values["workspace"])
         state_dir = Path(values["state_dir"])
         guarded = GuardedRunner(runner, [workspace, state_dir], runbook_commands(values["runbook"], workspace))
@@ -315,7 +363,7 @@ class ProbeContext:
         return resolved
 
     def version_of(self, binary: str, resolved: str) -> Tuple[Optional[str], Tuple[str, ...]]:
-        """``<resolved> --version`` for allowlisted PATH binaries only. Never runs workspace content."""
+        """``<resolved> --version`` for allowlisted PATH binaries only."""
         if Path(binary).name not in self.version_allowlist or "/" in binary:
             return None, ()
         argv = (resolved, "--version")
@@ -323,11 +371,59 @@ class ProbeContext:
         lines = (outcome.stdout or outcome.stderr).strip().splitlines()
         return (lines[0] if lines and outcome.exit_code == 0 else None), argv
 
+    def git(self, *args: str, timeout_seconds: int = 20) -> Optional[CommandOutcome]:
+        """Run a read-only git command with safety overrides; None when git is unavailable."""
+        git = self.path_binary("git")
+        if git is None:
+            return None
+        return self.runner((git,) + GIT_SAFETY_ARGS + tuple(args), None, timeout_seconds)
+
+    def workspace_path(self, item: str) -> Path:
+        """Resolve a (possibly relative) runbook path against the target workspace, never the process cwd."""
+        substituted = item.replace("{workspace}", str(self.workspace))
+        path = Path(substituted)
+        return path if path.is_absolute() else self.workspace / path
+
+    def protected_roots(self) -> List[Path]:
+        """Roots nothing may live in: the workspace and its git common dir (when it is a repository)."""
+        roots = [self.workspace]
+        if _real(self.workspace).is_dir():
+            common = self.git("-C", str(self.workspace), "rev-parse", "--git-common-dir")
+            if common is not None and common.exit_code == 0 and common.stdout.strip():
+                common_dir = Path(common.stdout.strip())
+                roots.append(common_dir if common_dir.is_absolute() else self.workspace / common_dir)
+        return roots
+
+
+def _regular_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
+def _executable_file(path: Path) -> bool:
+    return _regular_file(path) and os.access(str(path), os.X_OK)
+
+
+def adapter_policy(agent: Dict[str, Any], context: ProbeContext) -> Dict[str, Any]:
+    """Classify an adapter: verifiable local interpreter, or unverified/hosted.
+
+    Only a ``process`` adapter whose argv[0] is a bare, allowlisted binary name
+    is *verifiable*; verification itself (a parsed version) happens in the
+    adapter probe. Everything else requires provider/model and network proof.
+    """
+    adapter = agent["adapter"]
+    argv0 = adapter["argv"][0] if adapter.get("argv") else ""
+    verifiable = adapter.get("kind") == "process" and "/" not in argv0 and not argv0.startswith("{") and argv0 in context.version_allowlist
+    return {
+        "kind": adapter.get("kind"),
+        "interpreter": argv0,
+        "verifiable_local_interpreter": verifiable,
+        "requires_provider_proof": not verifiable,
+        "requires_network_policy": not verifiable,
+    }
+
 
 @dataclass(frozen=True)
 class ProbeOutcome:
-    """A validated result plus non-hashed facts the doctor may reuse (already redacted)."""
-
     result: ProbeResult
     facts: Dict[str, Any] = field(default_factory=dict)
 
@@ -338,22 +434,41 @@ class Probe:
     probe_id = "probe"
     kind = "generic"
     target_bound = True
-    #: Informational probes are shown but never part of the frozen probe policy.
+    #: Bump when the observation logic changes; part of the definition digest.
+    VERSION = 1
+    #: Informational probes are required only for unverified adapters (see adapter_policy).
     required = True
 
     def observe(self, context: ProbeContext) -> ProbeOutcome:  # pragma: no cover - abstract
         raise NotImplementedError
 
-    def green(self, context: ProbeContext, summary: str, *, method: str = "in_process", command: Sequence[str] = (), tool_version: Optional[str] = None, facts: Optional[Dict[str, Any]] = None) -> ProbeOutcome:
+    def config(self, context: ProbeContext) -> Dict[str, Any]:
+        """Configuration the observation depends on; included in the definition digest."""
+        return {}
+
+    def definition(self, context: ProbeContext) -> Dict[str, Any]:
+        return {
+            "implementation": "{}.{}".format(type(self).__module__, type(self).__qualname__),
+            "version": self.VERSION,
+            "probe_id": self.probe_id,
+            "kind": self.kind,
+            "target_bound": self.target_bound,
+            "config": self.config(context),
+        }
+
+    def definition_digest(self, context: ProbeContext) -> str:
+        return canonical_digest(self.definition(context))
+
+    def green(self, context, summary, *, method="in_process", command=(), tool_version=None, facts=None):
         return self._outcome(context, "green", summary, method=method, command=command, tool_version=tool_version, facts=facts)
 
-    def red(self, context: ProbeContext, summary: str, *, reason: str, wake: str, missing: Sequence[str], method: str = "in_process", command: Sequence[str] = (), tool_version: Optional[str] = None, facts: Optional[Dict[str, Any]] = None) -> ProbeOutcome:
+    def red(self, context, summary, *, reason, wake, missing, method="in_process", command=(), tool_version=None, facts=None):
         return self._outcome(context, "red", summary, reason=reason, wake=wake, missing=missing, method=method, command=command, tool_version=tool_version, facts=facts)
 
-    def unknown(self, context: ProbeContext, summary: str, *, reason: str, wake: str, missing: Sequence[str], method: str = "in_process", command: Sequence[str] = (), facts: Optional[Dict[str, Any]] = None) -> ProbeOutcome:
+    def unknown(self, context, summary, *, reason, wake, missing, method="in_process", command=(), facts=None):
         return self._outcome(context, "unknown", summary, reason=reason, wake=wake, missing=missing, method=method, command=command, facts=facts)
 
-    def _outcome(self, context: ProbeContext, status: str, summary: str, *, reason: Optional[str] = None, wake: Optional[str] = None, missing: Sequence[str] = (), method: str = "in_process", command: Sequence[str] = (), tool_version: Optional[str] = None, facts: Optional[Dict[str, Any]] = None) -> ProbeOutcome:
+    def _outcome(self, context, status, summary, *, reason=None, wake=None, missing=(), method="in_process", command=(), tool_version=None, facts=None):
         redactor = context.redactor
         safe_facts = redactor.mapping(facts or {})
         result = ProbeResult(
@@ -371,6 +486,7 @@ class Probe:
             evidence_digest=canonical_digest(safe_facts) if safe_facts else None,
             reason_code=reason,
             wake_condition=redactor.text(wake) if wake else None,
+            definition_digest=self.definition_digest(context),
         )
         return ProbeOutcome(result=result, facts=safe_facts)
 
@@ -382,18 +498,11 @@ class StateDirProbe(Probe):
     probe_id = "control-plane.state-dir"
     kind = "control_plane"
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def observe(self, context):
         state_dir = context.state_dir
-        workspace = context.workspace
-        facts = {"state_dir": str(_lexical(state_dir)), "state_dir_resolved": str(_real(state_dir)), "workspace": str(_real(workspace))}
-        roots = [workspace]
-        git = context.path_binary("git")
-        if git and _real(workspace).is_dir():
-            common = context.runner((git, "-C", str(workspace), "rev-parse", "--git-common-dir"), None, 20)
-            if common.exit_code == 0 and common.stdout.strip():
-                common_dir = Path(common.stdout.strip())
-                roots.append(common_dir if common_dir.is_absolute() else workspace / common_dir)
-                facts["git_common_dir"] = str(_real(roots[-1]))
+        facts = {"state_dir": str(_lexical(state_dir)), "state_dir_resolved": str(_real(state_dir)), "workspace": str(_real(context.workspace))}
+        roots = context.protected_roots()
+        facts["protected_roots"] = [str(_real(root)) for root in roots]
         for root in roots:
             if _nested(state_dir, root) or _nested(root, state_dir):
                 return self.red(context, "state directory must live outside the source repository (checked lexical and resolved paths, including the git common dir)", reason="POLICY_DENIED", wake="pass --state-dir pointing outside the workspace and its git dir", missing=["external state directory"], method="filesystem", facts=facts)
@@ -408,24 +517,35 @@ class StateDirProbe(Probe):
 
 
 class ArtifactSinkProbe(Probe):
-    """``<state-dir>/artifacts`` is writable, or absent under a writable state directory.
-
-    The doctor creates nothing; an absent sink is green only because the
-    control plane has proven it can create it (the parent is writable). A sink
-    that exists but is not a writable directory is red.
-    """
+    """``<state-dir>/artifacts`` must be a real (non-symlink) writable directory inside the
+    state dir, or absent under a writable state directory. A symlinked sink, or one
+    resolving into the workspace, the git common dir, or outside the state dir, is rejected."""
 
     probe_id = "control-plane.artifact-sink"
     kind = "control_plane"
+    VERSION = 2
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def observe(self, context):
         state_dir = _real(context.state_dir)
-        sink = state_dir / "artifacts"
-        facts = {"artifact_sink": str(sink), "exists": sink.exists()}
+        sink = _lexical(context.state_dir) / "artifacts"
+        facts = {"artifact_sink": str(sink), "state_dir_resolved": str(state_dir), "exists": sink.exists() or sink.is_symlink()}
+        for root in context.protected_roots():
+            if _nested(context.state_dir, root):
+                return self.red(context, "artifact sink would live inside a protected root (workspace or git dir) because the state directory resolves there", reason="POLICY_DENIED", wake="move the state directory outside the repository", missing=["artifact sink outside protected roots"], method="filesystem", facts=facts)
+        if sink.is_symlink():
+            facts["resolves_to"] = str(_real(sink))
+            return self.red(context, "artifact sink is a symlink; Camol will not write evidence through a link", reason="POLICY_DENIED", wake="replace <state-dir>/artifacts with a real directory", missing=["non-symlink artifact sink"], method="filesystem", facts=facts)
         if sink.exists():
-            if not sink.is_dir() or not os.access(str(sink), os.W_OK | os.X_OK):
+            resolved = _real(sink)
+            facts["resolves_to"] = str(resolved)
+            for root in context.protected_roots():
+                if _nested(resolved, root):
+                    return self.red(context, "artifact sink resolves inside a protected root (workspace or git dir)", reason="POLICY_DENIED", wake="move the state directory outside the repository", missing=["artifact sink outside protected roots"], method="filesystem", facts=facts)
+            if not _inside(resolved, state_dir):
+                return self.red(context, "artifact sink resolves outside the state directory", reason="POLICY_DENIED", wake="make <state-dir>/artifacts a plain directory under the state dir", missing=["artifact sink inside the state directory"], method="filesystem", facts=facts)
+            if not resolved.is_dir() or not os.access(str(resolved), os.W_OK | os.X_OK):
                 return self.red(context, "artifact sink exists but is not a writable directory", reason="OPERATOR_ATTENTION", wake="make <state-dir>/artifacts a writable directory", missing=["writable artifact sink"], method="filesystem", facts=facts)
-            return self.green(context, "artifact sink is a writable directory", method="filesystem", facts=facts)
+            return self.green(context, "artifact sink is a writable directory inside the state directory", method="filesystem", facts=facts)
         if state_dir.is_dir() and os.access(str(state_dir), os.W_OK | os.X_OK):
             return self.green(context, "artifact sink is absent; the writable state directory can hold it (created at first write, not by doctor)", method="filesystem", facts=facts)
         return self.red(context, "artifact sink cannot be created: state directory is missing or not writable", reason="OPERATOR_ATTENTION", wake="create a writable state directory", missing=["writable state directory for artifacts"], method="filesystem", facts=facts)
@@ -435,7 +555,7 @@ class GitBinaryProbe(Probe):
     probe_id = "source.git"
     kind = "runtime"
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def observe(self, context):
         resolved = context.path_binary("git")
         if not resolved:
             return self.red(context, "git is not installed on PATH", reason="NEEDS_DOWNLOAD", wake="install git (preparation action)", missing=["git"])
@@ -448,51 +568,39 @@ class GitBinaryProbe(Probe):
 class RepositoryProbe(Probe):
     probe_id = "source.repository"
     kind = "source"
+    VERSION = 2  # sanitized environment + config overrides
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
-        git = context.path_binary("git")
-        if not git:
+    def config(self, context):
+        return {"git_safety_args": list(GIT_SAFETY_ARGS), "git_env": sorted(GIT_ENV)}
+
+    def observe(self, context):
+        if not context.path_binary("git"):
             return self.red(context, "cannot inspect the repository without git", reason="NEEDS_DOWNLOAD", wake="install git", missing=["git"])
         workspace = _real(context.workspace)
         if not workspace.is_dir():
             return self.red(context, "workspace path is not a directory", reason="TARGET_UNREACHABLE", wake="pass --workspace pointing at the source repository", missing=["workspace directory"], method="filesystem", facts={"workspace": str(workspace)})
-        toplevel = context.runner((git, "-C", str(workspace), "rev-parse", "--show-toplevel"), None, 20)
+        toplevel = context.git("-C", str(workspace), "rev-parse", "--show-toplevel")
         if toplevel.exit_code != 0:
             return self.red(context, "workspace is not inside a Git repository", reason="WORKSPACE_CONFLICT", wake="pass --workspace pointing at a Git checkout", missing=["git repository at the workspace"], command=toplevel.argv, facts={"workspace": str(workspace)})
         root = _real(Path(toplevel.stdout.strip()))
         if root != workspace:
             return self.red(context, "workspace must be the repository root, not a subdirectory", reason="WORKSPACE_CONFLICT", wake="pass --workspace {}".format(root), missing=["workspace == repository root"], command=toplevel.argv, facts={"workspace": str(workspace), "toplevel": str(root)})
-        head = context.runner((git, "-C", str(workspace), "rev-parse", "HEAD"), None, 20)
+        head = context.git("-C", str(workspace), "rev-parse", "HEAD")
         if head.exit_code != 0:
             return self.red(context, "repository has no commit at HEAD", reason="WORKSPACE_CONFLICT", wake="commit an initial revision", missing=["committed HEAD revision"], command=head.argv, facts={"workspace": str(workspace)})
         revision = head.stdout.strip()
         if not re.fullmatch(r"[0-9a-f]{40,64}", revision):
             raise ProbeExecutionError("unparseable HEAD revision from git")
-        branch = context.runner((git, "-C", str(workspace), "rev-parse", "--abbrev-ref", "HEAD"), None, 20).stdout.strip() or "HEAD"
-        remote = context.runner((git, "-C", str(workspace), "remote", "get-url", "origin"), None, 20)
+        branch = context.git("-C", str(workspace), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "HEAD"
+        remote = context.git("-C", str(workspace), "remote", "get-url", "origin")
         repository_id = context.redactor.text(remote.stdout.strip()) if remote.exit_code == 0 and remote.stdout.strip() else "local:" + workspace.name
-        status = context.runner((git, "-C", str(workspace), "status", "--porcelain", "--untracked-files=all"), None, 60)
+        status = context.git("-C", str(workspace), "status", "--porcelain", "--untracked-files=all", timeout_seconds=60)
         if status.exit_code != 0:
             raise ProbeExecutionError("git status exited {}".format(status.exit_code))
         dirty = sorted(line for line in status.stdout.splitlines() if line.strip())
-        facts = {
-            "repository_id": repository_id,
-            "base_revision": revision,
-            "branch": branch,
-            "workspace": str(workspace),
-            "dirty_entries": len(dirty),
-            "dirty_digest": canonical_digest(dirty),
-        }
+        facts = {"repository_id": repository_id, "base_revision": revision, "branch": branch, "workspace": str(workspace), "dirty_entries": len(dirty), "dirty_digest": canonical_digest(dirty)}
         if dirty:
-            return self.red(
-                context,
-                "source checkout has {} uncommitted or untracked entries; a dirty checkout is rejected by default".format(len(dirty)),
-                reason="WORKSPACE_CONFLICT",
-                wake="commit, stash, or clean the checkout (Camol never snapshots it silently)",
-                missing=["clean source checkout"],
-                command=status.argv,
-                facts=facts,
-            )
+            return self.red(context, "source checkout has {} uncommitted or untracked entries; a dirty checkout is rejected by default".format(len(dirty)), reason="WORKSPACE_CONFLICT", wake="commit, stash, or clean the checkout (Camol never snapshots it silently)", missing=["clean source checkout"], command=status.argv, facts=facts)
         return self.green(context, "clean checkout at {} on {}".format(revision[:12], branch), command=status.argv, facts=facts)
 
 
@@ -500,120 +608,131 @@ class PythonRuntimeProbe(Probe):
     probe_id = "runtime.python"
     kind = "runtime"
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def observe(self, context):
         version = "Python {}".format(platform.python_version())
         facts = {"executable": sys.executable, "version": platform.python_version(), "implementation": platform.python_implementation()}
         return self.green(context, "control-plane Python runtime observed in-process", tool_version=version, facts=facts)
 
 
-def _substitute(argv: Sequence[str], context: ProbeContext) -> List[str]:
-    return [item.replace("{workspace}", str(context.workspace)) for item in argv]
+def _looks_like_path(raw: str) -> bool:
+    return "{workspace}" in raw or raw.startswith(("./", "../", "/"))
 
 
-def _looks_like_path(raw: str, substituted: str) -> bool:
-    return raw != substituted or raw.startswith(("./", "../", "/"))
+def _check_binary(binary_raw: str, context: ProbeContext) -> Tuple[Optional[str], Optional[str]]:
+    """(resolved path, problem). Path-form binaries must be regular executable files resolved against the workspace."""
+    if "/" in binary_raw or binary_raw.startswith("{"):
+        path = context.workspace_path(binary_raw)
+        if not path.exists() and not path.is_symlink():
+            return None, "{} does not exist".format(path)
+        if not _executable_file(path):
+            return None, "{} is not a regular executable file".format(path)
+        return str(path), None
+    resolved = context.path_binary(binary_raw)
+    return resolved, (None if resolved else "{} is not on PATH".format(binary_raw))
 
 
 class AdapterBinaryProbe(Probe):
-    """The agent adapter's PATH binary and any workspace-relative script it names must exist.
+    """Adapter launchability without execution.
 
-    Nothing from the adapter argv is executed. A binary given as a path (inside
-    the workspace or elsewhere) is only checked for existence and is reported
-    with ``unknown`` launchability because its identity cannot be proven
-    without running it.
+    A verifiable interpreter (bare allowlisted name on PATH) has its version
+    queried and is green when every workspace-relative script argument is a
+    regular file. A path-form or unknown binary is checked for being a regular
+    executable file but reported ``unknown``: its identity cannot be proven
+    without running it, and its candidates additionally require provider and
+    network proof (see ``adapter_policy``).
     """
 
     kind = "adapter"
+    VERSION = 2
 
     def __init__(self, agent: Dict[str, Any]):
         self.agent = agent
         self.probe_id = "adapter." + sanitize_identifier(agent["id"])
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def config(self, context):
+        return {"argv": list(self.agent["adapter"]["argv"]), "version_allowlist": list(context.version_allowlist)}
+
+    def observe(self, context):
         adapter = self.agent["adapter"]
+        policy = adapter_policy(self.agent, context)
         if adapter.get("kind") != "process":
-            return self.unknown(context, "no probe adapter registered for adapter kind {!r}".format(adapter.get("kind")), reason="OPERATOR_ATTENTION", wake="register a probe adapter for this adapter kind", missing=["probe adapter for {}".format(adapter.get("kind"))])
+            return self.unknown(context, "no probe adapter registered for adapter kind {!r}".format(adapter.get("kind")), reason="OPERATOR_ATTENTION", wake="register a probe adapter for this adapter kind", missing=["probe adapter for {}".format(adapter.get("kind"))], facts={"policy": policy})
         raw = list(adapter["argv"])
-        argv = _substitute(raw, context)
-        binary = argv[0]
-        facts: Dict[str, Any] = {"argv": argv}
         missing: List[str] = []
-        for original, item in zip(raw[1:], argv[1:]):
-            if item.startswith("{"):
+        for item in raw[1:]:
+            if item.startswith("{") and "{workspace}" not in item:
                 continue
-            candidate = Path(item) if os.path.isabs(item) else context.workspace / item
-            if _looks_like_path(original, item) and not candidate.exists():
-                missing.append(item)
-        if "/" in binary or raw[0] != binary:
-            binary_path = Path(binary) if os.path.isabs(binary) else context.workspace / binary
-            exists = binary_path.exists()
-            facts["binary_path"] = str(binary_path)
-            facts["binary_exists"] = exists
-            if not exists:
-                missing.insert(0, binary)
-                return self.red(context, "adapter command for agent {} names a missing binary".format(self.agent["id"]), reason="NEEDS_DOWNLOAD", wake="restore: {}".format(", ".join(missing)), missing=missing, method="filesystem", facts=facts)
+            if _looks_like_path(item):
+                path = context.workspace_path(item)
+                if not _regular_file(path):
+                    missing.append("{} (regular file)".format(path))
+        resolved, problem = _check_binary(raw[0], context)
+        facts: Dict[str, Any] = {"argv": raw, "resolved_binary": resolved, "policy": policy}
+        if problem:
+            missing.insert(0, problem)
+        if missing:
+            return self.red(context, "adapter command for agent {} is not launchable".format(self.agent["id"]), reason="NEEDS_DOWNLOAD", wake="install or restore: {}".format("; ".join(missing)), missing=missing, method="filesystem", facts=facts)
+        if not policy["verifiable_local_interpreter"]:
             return self.unknown(
                 context,
-                "adapter binary for agent {} is a path, not a PATH tool; doctor will not execute it to learn its identity".format(self.agent["id"]),
+                "adapter binary {} for agent {} exists but is not a verifiable local interpreter; doctor will not execute it and its identity is unproven".format(raw[0], self.agent["id"]),
                 reason="POLICY_DENIED",
-                wake="use a PATH-resolved, allowlisted interpreter as argv[0] or register an adapter probe that proves identity without execution",
-                missing=["PATH-resolved adapter interpreter"] + missing,
+                wake="use a PATH-resolved allowlisted interpreter, or register a provider/adapter probe that proves identity, connection, and model entitlement without execution",
+                missing=["verified adapter runtime identity"],
                 method="filesystem",
                 facts=facts,
             )
-        resolved = context.path_binary(binary)
-        facts["resolved_binary"] = resolved
-        if not resolved:
-            missing.insert(0, binary)
-        if missing:
-            return self.red(context, "adapter command for agent {} is not launchable".format(self.agent["id"]), reason="NEEDS_DOWNLOAD", wake="install or restore: {}".format(", ".join(missing)), missing=missing, method="filesystem", facts=facts)
-        version, version_argv = context.version_of(binary, resolved)
+        version, version_argv = context.version_of(raw[0], resolved)
         facts["version"] = version
-        if version_argv:
-            return self.green(context, "adapter interpreter {} for agent {} is launchable; script arguments exist".format(binary, self.agent["id"]), command=version_argv, tool_version=version, facts=facts)
-        return self.green(context, "adapter binary {} for agent {} resolves on PATH; script arguments exist".format(binary, self.agent["id"]), method="filesystem", facts=facts)
+        if not version:
+            return self.unknown(context, "interpreter {} for agent {} did not report a parseable version".format(raw[0], self.agent["id"]), reason="OPERATOR_ATTENTION", wake="install a version-reporting interpreter", missing=["parseable interpreter version"], command=version_argv, facts=facts)
+        return self.green(context, "adapter interpreter {} for agent {} is launchable; script arguments are regular files".format(raw[0], self.agent["id"]), command=version_argv, tool_version=version, facts=facts)
+
+
+def _check_command_binaries(commands: Sequence[Sequence[str]], context: ProbeContext) -> Tuple[Dict[str, Optional[str]], List[str]]:
+    resolved_map: Dict[str, Optional[str]] = {}
+    problems: List[str] = []
+    for argv in commands:
+        binary = argv[0]
+        if binary in resolved_map:
+            continue
+        resolved, problem = _check_binary(binary, context)
+        resolved_map[binary] = resolved
+        if problem:
+            problems.append(problem)
+    return {name: resolved_map[name] for name in sorted(resolved_map)}, sorted(problems)
 
 
 class ToolsProbe(Probe):
     probe_id = "tools.commands"
     kind = "tool"
+    VERSION = 2
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
-        binaries: Dict[str, Optional[str]] = {}
-        for task in context.runbook["tasks"]:
-            for step in task["steps"]:
-                for command in step["commands"]:
-                    binary = _substitute(command["argv"], context)[0]
-                    binaries.setdefault(binary, context.path_binary(binary) if "/" not in binary else (binary if Path(binary).exists() else None))
-        missing = sorted(name for name, resolved in binaries.items() if not resolved)
-        facts = {"binaries": {name: resolved for name, resolved in sorted(binaries.items())}}
+    def observe(self, context):
+        commands = [command["argv"] for task in context.runbook["tasks"] for step in task["steps"] for command in step["commands"]]
+        resolved_map, missing = _check_command_binaries(commands, context)
+        facts = {"binaries": resolved_map}
         if missing:
-            return self.red(context, "{} task command binaries are not available".format(len(missing)), reason="NEEDS_DOWNLOAD", wake="install: {}".format(", ".join(missing)), missing=missing, method="filesystem", facts=facts)
-        return self.green(context, "all {} distinct task command binaries resolve (not executed)".format(len(binaries)), method="filesystem", facts=facts)
+            return self.red(context, "{} task command binaries are not available".format(len(missing)), reason="NEEDS_DOWNLOAD", wake="install or restore: {}".format("; ".join(missing)), missing=missing, method="filesystem", facts=facts)
+        return self.green(context, "all {} distinct task command binaries resolve (not executed)".format(len(resolved_map)), method="filesystem", facts=facts)
 
 
 class EvaluatorBundleProbe(Probe):
-    """The frozen evaluator bundle is every task's verification command list."""
-
     probe_id = "evaluator.bundle"
     kind = "evaluator"
+    VERSION = 2
 
     @staticmethod
     def bundle(runbook: Dict[str, Any]) -> Dict[str, Any]:
         return {task["id"]: task["verification"] for task in runbook["tasks"]}
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def observe(self, context):
         bundle = self.bundle(context.runbook)
         digest = canonical_digest(bundle)
-        binaries: Dict[str, Optional[str]] = {}
-        for commands in bundle.values():
-            for command in commands:
-                binary = _substitute(command["argv"], context)[0]
-                binaries.setdefault(binary, context.path_binary(binary) if "/" not in binary else (binary if Path(binary).exists() else None))
-        missing = sorted(name for name, resolved in binaries.items() if not resolved)
-        facts = {"evaluator_digest": digest, "tasks": len(bundle), "binaries": {name: resolved for name, resolved in sorted(binaries.items())}}
+        resolved_map, missing = _check_command_binaries([command["argv"] for commands in bundle.values() for command in commands], context)
+        facts = {"evaluator_digest": digest, "tasks": len(bundle), "binaries": resolved_map}
         if missing:
-            return self.red(context, "evaluator commands are not launchable", reason="EVALUATOR_NOT_READY", wake="install: {}".format(", ".join(missing)), missing=missing, method="filesystem", facts=facts)
+            return self.red(context, "evaluator commands are not launchable", reason="EVALUATOR_NOT_READY", wake="install or restore: {}".format("; ".join(missing)), missing=missing, method="filesystem", facts=facts)
         return self.green(context, "evaluator bundle for {} tasks is frozen (digest recorded) and launchable; not executed".format(len(bundle)), method="filesystem", facts=facts)
 
 
@@ -621,14 +740,16 @@ class DiskHeadroomProbe(Probe):
     probe_id = "resources.disk"
     kind = "resource"
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def config(self, context):
+        return {"min_free_bytes": context.min_free_bytes}
+
+    def observe(self, context):
         target = _real(context.state_dir)
         probe_path = target if target.exists() else target.parent
         try:
             usage = shutil.disk_usage(str(probe_path))
         except OSError:
             return self.unknown(context, "could not measure free disk at the state directory", reason="OPERATOR_ATTENTION", wake="make the state directory path reachable", missing=["reachable state directory filesystem"], method="filesystem", facts={"path": str(probe_path)})
-        # Whole-GiB granularity keeps the evidence digest stable across back-to-back runs.
         free_gib = usage.free // (1 << 30)
         facts = {"path": str(probe_path), "free_gib_floor": free_gib, "min_free_bytes": context.min_free_bytes}
         if usage.free < context.min_free_bytes:
@@ -640,7 +761,7 @@ class CapacityProbe(Probe):
     probe_id = "capacity.local"
     kind = "capacity"
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def observe(self, context):
         run = context.runbook["run"]
         max_concurrency = run.get("max_concurrency", run.get("max_agents"))
         cpus = os.cpu_count() or 0
@@ -655,16 +776,9 @@ class NetworkPolicyProbe(Probe):
     kind = "network"
     required = False
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def observe(self, context):
         tiers = sorted({agent.get("trust_tier", "developer_trusted") for agent in context.runbook["agents"]})
-        return self.unknown(
-            context,
-            "no sandbox exists yet; the process adapter runs with unconstrained egress (trust tiers: {})".format(", ".join(tiers)),
-            reason="OPERATOR_ATTENTION",
-            wake="M2 sandbox boundary with an explicit network policy",
-            missing=["sandbox network policy"],
-            facts={"trust_tiers": tiers},
-        )
+        return self.unknown(context, "no sandbox exists yet; the process adapter runs with unconstrained egress (trust tiers: {})".format(", ".join(tiers)), reason="OPERATOR_ATTENTION", wake="M2 sandbox boundary with an explicit network policy", missing=["sandbox network policy"], facts={"trust_tiers": tiers})
 
 
 class ProviderConnectionProbe(Probe):
@@ -672,21 +786,19 @@ class ProviderConnectionProbe(Probe):
     kind = "provider"
     required = False
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def observe(self, context):
         kinds = sorted({agent["adapter"]["kind"] for agent in context.runbook["agents"]})
         return self.unknown(
             context,
-            "runbook declares no hosted-model connection and no provider probe adapter is registered for adapter kinds {}; model availability is unproven, not assumed".format(", ".join(kinds)),
-            reason="OPERATOR_ATTENTION",
-            wake="register a provider probe adapter (M5) that checks connection and model entitlement without a billable request",
+            "runbook declares no hosted-model connection and no provider probe adapter is registered for adapter kinds {}; provider auth and model availability are unproven, not assumed".format(", ".join(kinds)),
+            reason="AUTH_REQUIRED",
+            wake="register a provider probe adapter (M5) that checks connection, auth scope, and model entitlement without a billable request",
             missing=["provider connection declaration", "provider probe adapter"],
             facts={"adapter_kinds": kinds},
         )
 
 
 class ServiceEndpointProbe(Probe):
-    """Read-only TCP reachability: connect, then close. No payload is sent."""
-
     kind = "service"
 
     def __init__(self, endpoint: str):
@@ -697,7 +809,10 @@ class ServiceEndpointProbe(Probe):
         self.port = int(port)
         self.probe_id = "service." + sanitize_identifier("{}-{}".format(host, port))
 
-    def observe(self, context: ProbeContext) -> ProbeOutcome:
+    def config(self, context):
+        return {"host": self.host, "port": self.port}
+
+    def observe(self, context):
         facts = {"host": self.host, "port": self.port}
         try:
             with socket.create_connection((self.host, self.port), timeout=2):
@@ -711,8 +826,6 @@ class ServiceEndpointProbe(Probe):
 
 
 class ProbeRegistry:
-    """Holds shared probes plus factories for per-agent and per-service probes."""
-
     def __init__(self) -> None:
         self._shared: List[Probe] = []
         self._agent_factories: List[Callable[[Dict[str, Any]], Probe]] = []

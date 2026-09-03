@@ -23,9 +23,9 @@ Every proof record carries the full subject or the binding's digest:
 | `BoxBinding` | subject, plan digest, workspace id + digest | — |
 | `WorkspaceReceipt` | repository, base revision, branch, path, dirty digest, filesystem policy, cleanup owner | referenced from `BoxBinding.workspace_digest` |
 | `AuthorityPolicy` | run, task, required capabilities (non-empty), filesystem paths, network destinations, credential refs, trust tier | — |
-| `ProbePolicy` | run, task, exact required probe set (`ProbeRequirement`: id, kind, target-bound) | — |
-| `ProbeResult` | probe id/kind, optional target, status, method, redacted argv, tool version, observed/expiry, summary, missing requirements, evidence digest, typed reason + wake condition | — |
-| `ReadinessReceipt` | subject, plan, transport, runtime, probes, status, observed/expiry, requested model, credential scope fingerprints, optional reservation id | box binding, workspace, evaluator, authority policy, probe policy |
+| `ProbePolicy` | run, task, exact required probe set (`ProbeRequirement`: id, kind, target-bound, **definition digest** of the exact probe implementation/version/config) | — |
+| `ProbeResult` | probe id/kind, optional target, status, method, redacted argv, tool version, observed/expiry, summary, missing requirements, evidence digest, typed reason + wake condition, definition digest | — |
+| `ReadinessReceipt` | subject, plan, transport, runtime, probes, status, observed/expiry, **clock provenance** (`system` or `synthetic`), requested model, credential scope fingerprints, optional reservation id | box binding, workspace, evaluator, authority policy, probe policy |
 | `CapabilityGrant` | subject, capabilities, constraints, trust tier, grantor, granted/expiry | authority policy |
 | `CapacityReservation` | subject, slots, tokens, optional spend, status, reserved/expiry | — |
 | `LeaseFence` | subject, epoch, issued/expiry | plan, box binding, evaluator, workspace, authority, probe policy, readiness receipt, grant, reservation |
@@ -72,7 +72,7 @@ The mapping is:
 | dependencies not succeeded | `WAITING_DEPENDENCY` |
 | no or mismatched workspace receipt | `WORKSPACE_CONFLICT` |
 | no receipt, red receipt, outside validity, stale probe, missing/mis-kinded required probe, pre-reservation receipt, receipt names another reservation | `READINESS_STALE` |
-| any record names another run, task, box, worker, target, binding, authority policy, or probe policy; a probe the policy never listed; grant carries authority the policy did not freeze | `POLICY_DENIED` |
+| any record names another run, task, box, worker, target, binding, authority policy, or probe policy; a probe the policy never listed or produced by a different probe definition; grant carries authority the policy did not freeze; receipt produced with a synthetic clock | `POLICY_DENIED` |
 | evaluator not ready or receipt names another evaluator | `EVALUATOR_NOT_READY` |
 | no authority policy, no grant, grant lacks required capabilities, grant outside validity | `APPROVAL_REQUIRED` |
 | no reservation or reservation not active | `CAPACITY_EXHAUSTED` |
@@ -100,9 +100,11 @@ sink, never writes into the repository, never launches an adapter, never
 downloads or installs anything, and never sends a model request. Missing
 preparation is reported with the exact action a human must take.
 
-Options: `--now` fixes the observation instant for deterministic fixtures (a
-receipt produced with a synthetic clock is not evidence; the report records
-`synthetic_clock: true`). `--receipt-ttl-seconds` applies to schema v1 runbooks
+Options: `--now` fixes the observation instant for deterministic fixtures. A
+receipt produced that way carries `clock: synthetic`, the report records
+`synthetic_clock: true` and `usable_evidence: false`, and `READY_TO_LEASE`
+rejects the receipt with `POLICY_DENIED`; only `clock: system` receipts are
+evidence. `--receipt-ttl-seconds` applies to schema v1 runbooks
 only (default 300); a v2 runbook freezes the TTL in `run.readiness_policy` and a
 conflicting flag is an error. `--require-service HOST:PORT` adds a read-only TCP
 reachability probe. `--min-free-bytes` sets the disk headroom requirement.
@@ -112,27 +114,37 @@ reachability probe. `--min-free-bytes` sets the disk headroom requirement.
 | Probe | Kind | Method | Green means | Non-green reason |
 |---|---|---|---|---|
 | `control-plane.state-dir` | control_plane | filesystem | exists, writable, outside the repository (lexical and resolved paths, both directions, including the git common dir) | `POLICY_DENIED` nested, `OPERATOR_ATTENTION` missing/unwritable |
-| `control-plane.artifact-sink` | control_plane | filesystem | `<state-dir>/artifacts` is writable, or absent under a writable state dir | `OPERATOR_ATTENTION` |
+| `control-plane.artifact-sink` | control_plane | filesystem | `<state-dir>/artifacts` is a real (non-symlink) writable directory inside the state dir, or absent under a writable state dir; a symlink, or a sink/state dir resolving into the workspace or git common dir, is rejected | `POLICY_DENIED`, `OPERATOR_ATTENTION` |
 | `source.git` | runtime | process (`git --version`) | git on PATH with a parseable version | `NEEDS_DOWNLOAD` |
-| `source.repository` | source | process (`git rev-parse`, `git status --porcelain`) | workspace is a clean repository root at a committed HEAD; remote URL recorded with userinfo redacted | `WORKSPACE_CONFLICT`, `TARGET_UNREACHABLE` |
+| `source.repository` | source | process (`git rev-parse`, `git status --porcelain`, all with `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `core.untrackedCache=false`, `GIT_OPTIONAL_LOCKS=0`, no global/system config, sanitized env) | workspace is a clean repository root at a committed HEAD; remote URL recorded with userinfo redacted | `WORKSPACE_CONFLICT`, `TARGET_UNREACHABLE` |
 | `runtime.python` | runtime | in_process | control-plane interpreter version | — |
-| `adapter.<agent>` | adapter | process or filesystem | adapter argv[0] resolves on PATH (version queried only for allowlisted interpreters) and workspace-relative script arguments exist | `NEEDS_DOWNLOAD`; `POLICY_DENIED` (unknown) when argv[0] is a path, which the doctor refuses to execute |
-| `tools.commands` | tool | filesystem | every task step binary resolves | `NEEDS_DOWNLOAD` |
-| `evaluator.bundle` | evaluator | filesystem | verification bundle digest recorded and every verifier binary resolves (nothing is run) | `EVALUATOR_NOT_READY` |
+| `adapter.<agent>` | adapter | process or filesystem | argv[0] is a bare allowlisted interpreter on PATH with a parsed version, and every workspace-relative script argument is a regular file (resolved against the workspace, never the process cwd) | `NEEDS_DOWNLOAD`; `POLICY_DENIED` (unknown) for any other binary, which the doctor refuses to execute and whose identity is unproven |
+| `tools.commands` | tool | filesystem | every task step binary resolves: bare names via PATH, path forms as regular executable files under the workspace | `NEEDS_DOWNLOAD` |
+| `evaluator.bundle` | evaluator | filesystem | verification bundle digest recorded and every verifier binary resolves under the same rules (nothing is run) | `EVALUATOR_NOT_READY` |
 | `resources.disk` | resource | filesystem | free space at the state dir meets the requirement (whole-GiB granularity) | `CAPACITY_EXHAUSTED` |
 | `capacity.local` | capacity | in_process | CPU count observed; records that no reservation ledger exists yet | `OPERATOR_ATTENTION` |
-| `network.policy` | network | in_process | never green: informational | `OPERATOR_ATTENTION` |
-| `provider.connection` | provider | in_process | never green: informational | `OPERATOR_ATTENTION` |
+| `network.policy` | network | in_process | never green today; informational for a verified local interpreter, required for any other adapter | `OPERATOR_ATTENTION` |
+| `provider.connection` | provider | in_process | never green today; informational for a verified local interpreter, required for any other adapter | `AUTH_REQUIRED` |
 | `service.<host>-<port>` | service | socket | TCP connect then close | `TARGET_UNREACHABLE` |
 
-Informational probes are shown in every report with `informational: true` and
-are excluded from the frozen `ProbePolicy`. Consequently **a green doctor
-proves nothing about hosted-model availability or network egress for the
-process adapter**. A provider probe adapter that checks connection and model
-entitlement without a billable request is M5 work; until it exists the result
-is a visible `unknown` with its wake condition, never a green.
+Requiredness derives from the adapter, not from a fixed list. `adapter_policy`
+classifies an adapter as a *verifiable local interpreter* only when it is a
+`process` adapter whose argv[0] is a bare, allowlisted binary name (`python3`,
+`node`, ...) found on PATH; the adapter probe then verifies it by parsing its
+version. For every other adapter (a hosted CLI such as `claude`, an unknown
+binary, a path-form interpreter, an unversioned tool) the provider-connection
+and network-policy probes become **required**. Because no provider probe
+adapter exists yet, those probes are `unknown`, so such a candidate is red and
+the doctor exits 2. **A green doctor is therefore only possible for a verified
+local process adapter, and even then it proves nothing about hosted-model
+availability or network egress**; the informational probes remain visible with
+`informational: true` and excluded from that candidate's probe policy.
 
-### Execution guard
+Every `ProbeRequirement` carries the definition digest of the exact probe
+implementation, version, and configuration; a result with the same id from a
+different definition is `POLICY_DENIED`.
+
+### Execution guard and Git side-effect safety
 
 Every subprocess a probe starts goes through `GuardedRunner`. It refuses any
 argv whose program resolves inside the workspace or the state directory
@@ -142,6 +154,16 @@ verification command, raw or with `{workspace}` substituted. Version queries are
 made only for PATH-resolved binaries on a small allowlist. A committed
 executable named `python3` in the repository is therefore reported, not run;
 `tests/test_doctor.py` proves the sentinel it would write never appears.
+
+Subprocesses run with a sanitized environment (only `PATH`, `HOME`, `TMPDIR`,
+a C locale; every `GIT_*` variable dropped). Git commands add
+`GIT_OPTIONAL_LOCKS=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`GIT_TERMINAL_PROMPT=0`, and command-line overrides for `core.fsmonitor`,
+`core.untrackedCache`, `core.hooksPath`, `core.sshCommand`, `core.pager`, and
+`protocol.allow`, so a repository that configures an fsmonitor hook or hooks
+path cannot run anything and the index is never rewritten while the doctor
+reads it. `tests/test_probes.py` commits such a trap, proves unguarded git fires
+it, and proves the probes do not.
 
 ### Redaction
 

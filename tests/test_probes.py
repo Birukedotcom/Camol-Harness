@@ -1,5 +1,6 @@
 """Read-only probe registry: redaction, the execution guard, and individual probes."""
 
+import copy
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from camol.probes import (
+    GIT_SAFETY_ARGS,
     REDACTED,
     AdapterBinaryProbe,
     ArtifactSinkProbe,
@@ -30,10 +32,12 @@ from camol.probes import (
     ServiceEndpointProbe,
     StateDirProbe,
     ToolsProbe,
+    adapter_policy,
     default_registry,
     run_command,
     runbook_commands,
     sanitize_identifier,
+    sanitized_environment,
 )
 from camol.readiness import ProbeResult
 from camol.runbook import load_runbook
@@ -251,13 +255,13 @@ class ProbeBehaviorTests(unittest.TestCase):
         self.assertEqual(result.status, "red")
         self.assertEqual(result.reason_code, "NEEDS_DOWNLOAD")
         self.assertEqual(len(result.missing_requirements), 1)
-        self.assertTrue(result.missing_requirements[0].endswith("missing.py"))
+        self.assertIn("missing.py (regular file)", result.missing_requirements[0])
 
     def test_adapter_probe_with_missing_interpreter_is_red_via_injected_which(self):
         context = make_context(self.repo, self.state, which=lambda name: None)
         result = AdapterBinaryProbe(self.context.runbook["agents"][0]).observe(context).result
         self.assertEqual(result.status, "red")
-        self.assertIn("python3", result.missing_requirements)
+        self.assertEqual(result.missing_requirements, ("python3 is not on PATH",))
 
     def test_git_missing_is_typed_not_a_probe_failure(self):
         context = make_context(self.repo, self.state, which=lambda name: None)
@@ -350,7 +354,7 @@ class ProbeBehaviorTests(unittest.TestCase):
         context = make_context(self.repo, self.state, which=lambda name: None)
         result = ToolsProbe().observe(context).result
         self.assertEqual((result.status, result.reason_code), ("red", "NEEDS_DOWNLOAD"))
-        self.assertIn("python3", result.missing_requirements)
+        self.assertIn("python3 is not on PATH", result.missing_requirements)
 
     def test_disk_and_capacity_probes(self):
         self.assertEqual(DiskHeadroomProbe().observe(self.context).result.status, "green")
@@ -406,6 +410,145 @@ class ProbeBehaviorTests(unittest.TestCase):
         for value in (HOSTILE_ENV["GITHUB_TOKEN"], HOSTILE_ENV["MY_PASSWORD"], "p4ssw0rd", "AKIAIOSFODNN7EXAMPLE", "MIIEow", "correct-horse-battery"):
             self.assertNotIn(value, blob, value)
         self.assertIn(REDACTED, blob)
+
+    # ---- round 3: git side effects, protected roots, path resolution, adapter policy, definitions
+
+    def _trap(self, path: Path, sentinel: Path) -> Path:
+        path.write_text("#!/bin/sh\necho trapped > \"{}\"\nexit 0\n".format(sentinel))
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+
+    def test_fsmonitor_and_hooks_path_traps_never_fire_during_git_probes(self):
+        sentinel = self.root / "FSMONITOR.sentinel"
+        trap = self._trap(self.repo / "fsmonitor-trap.sh", sentinel)
+        hook_dir = self.repo / "hooks"
+        hook_dir.mkdir()
+        self._trap(hook_dir / "post-index-change", sentinel)
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-q", "-m", "trap", cwd=self.repo)
+        git("config", "core.fsmonitor", str(trap), cwd=self.repo)
+        git("config", "core.hooksPath", str(hook_dir), cwd=self.repo)
+        git("config", "core.untrackedCache", "true", cwd=self.repo)
+        # Control: plain git with the repo config would run the trap.
+        subprocess.run(["git", "status", "--porcelain"], cwd=str(self.repo), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertTrue(sentinel.exists(), "fixture precondition: unguarded git runs the fsmonitor trap")
+        sentinel.unlink()
+        index_before = (self.repo / ".git" / "index").read_bytes()
+        for probe in (RepositoryProbe(), StateDirProbe(), ArtifactSinkProbe(), GitBinaryProbe()):
+            outcome = probe.observe(self.context)
+            self.assertEqual(outcome.result.status, "green", probe.probe_id)
+        self.assertFalse(sentinel.exists(), "a guarded git probe executed the fsmonitor trap")
+        self.assertEqual((self.repo / ".git" / "index").read_bytes(), index_before, "git probes must not rewrite the index")
+        status_argv = RepositoryProbe().observe(self.context).result.command
+        for item in ("core.fsmonitor=false", "core.hooksPath=" + os.devnull, "core.untrackedCache=false"):
+            self.assertIn(item, status_argv)
+
+    def test_subprocess_environment_is_sanitized(self):
+        hostile = dict(HOSTILE_ENV, GIT_DIR="/elsewhere/.git", GIT_WORK_TREE="/elsewhere", GIT_CONFIG_PARAMETERS="'core.fsmonitor=/evil'", LD_PRELOAD="/evil.so")
+        env = sanitized_environment(hostile)
+        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_PARAMETERS", "LD_PRELOAD", "GITHUB_TOKEN", "OPENAI_API_KEY", "MY_PASSWORD"):
+            self.assertNotIn(name, env, name)
+        self.assertEqual(env["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(set(env) - set(GIT_SAFETY_ARGS), set(env))
+        # The live runner really passes the sanitized environment through.
+        os.environ["CAMOL_TEST_LEAK"] = "leak-value"
+        try:
+            outcome = run_command([shutil.which("python3"), "-c", "import os,sys;sys.stdout.write(os.environ.get('CAMOL_TEST_LEAK','absent')+' '+os.environ.get('GIT_OPTIONAL_LOCKS','none'))"], None, 20)
+        finally:
+            del os.environ["CAMOL_TEST_LEAK"]
+        self.assertEqual(outcome.stdout, "absent 0")
+
+    def test_artifact_sink_symlink_or_protected_resolution_is_denied(self):
+        shutil.rmtree(self.state / "artifacts")
+        outside = self.root / "elsewhere"
+        outside.mkdir()
+        (self.state / "artifacts").symlink_to(outside)
+        result = ArtifactSinkProbe().observe(self.context).result
+        self.assertEqual((result.status, result.reason_code), ("red", "POLICY_DENIED"))
+        self.assertIn("symlink", result.summary)
+        (self.state / "artifacts").unlink()
+        (self.state / "artifacts").symlink_to(self.repo / "evidence")
+        result = ArtifactSinkProbe().observe(self.context).result
+        self.assertEqual((result.status, result.reason_code), ("red", "POLICY_DENIED"))
+        (self.state / "artifacts").unlink()
+        # A state dir that is itself a symlink into the repository: the sink resolves into a protected root.
+        linked_state = self.root / "linked-state"
+        linked_state.symlink_to(self.repo / ".git")
+        result = ArtifactSinkProbe().observe(make_context(self.repo, linked_state)).result
+        self.assertEqual((result.status, result.reason_code), ("red", "POLICY_DENIED"))
+        self.assertIn("protected root", result.summary)
+
+    def test_relative_paths_resolve_against_the_workspace_from_an_unrelated_cwd(self):
+        script = self.repo / "tools" / "run.sh"
+        script.parent.mkdir()
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        (self.repo / "tools" / "data.txt").write_text("x")
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-q", "-m", "tools", cwd=self.repo)
+        runbook = copy.deepcopy(self.context.runbook)
+        runbook["tasks"][0]["steps"][0]["commands"] = [{"purpose": "p", "argv": ["./tools/run.sh"]}]
+        runbook["tasks"][0]["verification"] = [{"purpose": "v", "argv": ["{workspace}/tools/run.sh"]}]
+        runbook["agents"][0]["adapter"]["argv"] = ["python3", "./tools/data.txt", "{packet}", "{result}"]
+        unrelated = self.root / "unrelated"
+        unrelated.mkdir()
+        previous = os.getcwd()
+        os.chdir(str(unrelated))
+        try:
+            context = make_context(self.repo, self.state, runbook=runbook)
+            self.assertEqual(ToolsProbe().observe(context).result.status, "green")
+            self.assertEqual(EvaluatorBundleProbe().observe(context).result.status, "green")
+            self.assertEqual(AdapterBinaryProbe(runbook["agents"][0]).observe(context).result.status, "green")
+            # Non-executable regular file as a binary is rejected; a directory too.
+            non_exec = self.repo / "tools" / "data.txt"
+            self.assertFalse(os.access(str(non_exec), os.X_OK))
+            broken = copy.deepcopy(runbook)
+            broken["tasks"][0]["steps"][0]["commands"] = [{"purpose": "p", "argv": ["./tools/data.txt"]}]
+            result = ToolsProbe().observe(make_context(self.repo, self.state, runbook=broken)).result
+            self.assertEqual((result.status, result.reason_code), ("red", "NEEDS_DOWNLOAD"))
+            self.assertTrue(any("not a regular executable file" in item for item in result.missing_requirements))
+            broken["tasks"][0]["verification"] = [{"purpose": "v", "argv": ["./tools"]}]
+            result = EvaluatorBundleProbe().observe(make_context(self.repo, self.state, runbook=broken)).result
+            self.assertEqual((result.status, result.reason_code), ("red", "EVALUATOR_NOT_READY"))
+        finally:
+            os.chdir(previous)
+
+    def test_adapter_policy_marks_non_allowlisted_or_path_interpreters_unverified(self):
+        agent = self.context.runbook["agents"][0]
+        verified = adapter_policy(agent, self.context)
+        self.assertTrue(verified["verifiable_local_interpreter"])
+        self.assertFalse(verified["requires_provider_proof"])
+        hosted = dict(agent, adapter={"kind": "process", "argv": ["claude", "--print", "{packet}"], "timeout_seconds": 10})
+        policy = adapter_policy(hosted, self.context)
+        self.assertFalse(policy["verifiable_local_interpreter"])
+        self.assertTrue(policy["requires_provider_proof"])
+        self.assertTrue(policy["requires_network_policy"])
+        fake_claude = self.root / "bin" / "claude"
+        fake_claude.parent.mkdir()
+        fake_claude.write_text("#!/bin/sh\necho should-not-run > \"{}\"\n".format(self.root / "CLAUDE.sentinel"))
+        fake_claude.chmod(fake_claude.stat().st_mode | stat.S_IXUSR)
+        context = make_context(self.repo, self.state, which=lambda name: str(fake_claude) if name == "claude" else shutil.which(name))
+        result = AdapterBinaryProbe(hosted).observe(context).result
+        self.assertEqual((result.status, result.reason_code), ("unknown", "POLICY_DENIED"))
+        self.assertFalse((self.root / "CLAUDE.sentinel").exists(), "unverified adapter binary must never be executed")
+        self.assertEqual(result.method, "filesystem")
+
+    def test_definition_digest_binds_implementation_version_and_config(self):
+        base = DiskHeadroomProbe().definition_digest(self.context)
+        tight = DiskHeadroomProbe().definition_digest(make_context(self.repo, self.state, min_free_bytes=1))
+        self.assertNotEqual(base, tight, "config change must change the definition")
+
+        class DiskV2(DiskHeadroomProbe):
+            VERSION = 99
+
+        self.assertNotEqual(DiskV2().definition_digest(self.context), base, "version change must change the definition")
+        self.assertNotEqual(CapacityProbe().definition_digest(self.context), StateDirProbe().definition_digest(self.context))
+        result = DiskHeadroomProbe().observe(self.context).result
+        self.assertEqual(result.definition_digest, base)
+        self.assertEqual(ServiceEndpointProbe("h:1").definition_digest(self.context) == ServiceEndpointProbe("h:2").definition_digest(self.context), False)
 
     def test_registry_rejects_duplicate_ids_and_sanitizes_identifiers(self):
         registry = ProbeRegistry()
