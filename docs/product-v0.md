@@ -10,8 +10,11 @@ writer and keeps running.
 1. Run bare `camol` from the root of the Git repository you want Camol to work on.
 2. Wait for the top rail's `↻` connection scan to settle, then inspect
    `/connections` for details. A filled connection glyph proves authentication or
-   reachability only.
-3. Select a planning model with `/model`. `manual` is the no-call default.
+   reachability only. Run `/login`, choose Claude or Codex with the arrow keys, and
+   press Enter if an account needs authentication.
+3. A successfully verified picker login selects that provider's planning model when
+   no plan is frozen or running. `/model` remains the explicit selector; `manual` is
+   the no-call default.
 4. Start `/grill GOAL` and answer every question. The topology answer uses one line
    per task: `id | goal | after=dependency,dependency`. One line creates one task;
    many lines create an arbitrary N-task graph.
@@ -67,8 +70,13 @@ lease authority. `/connections` records only:
 
 It does not read, copy, parse, or store provider credential caches. On startup, the
 TUI refreshes this inventory in a disposable background thread; `↻` means probing,
-not ready. `/login` suspends the TUI and gives the terminal directly to
-`claude auth login` or `codex login`, then refreshes the rail automatically.
+not ready. `/login` opens a keyboard picker containing Claude Code and Codex CLI in
+V0. A disconnected selection suspends the TUI and gives the terminal directly to
+`claude auth login` or `codex login`, so the provider can print/open its own URL and
+own the browser session. Camol then runs the provider's status probe, writes the
+result to the orchestrator transcript, refreshes the filled connection glyph, and
+shows the active model in the top rail. An already connected selection skips the
+browser flow. A login never changes the model embedded in a frozen or running plan.
 
 Task readiness is established later by the kernel and includes the exact plan,
 workspace revision, evaluator bundle, authority, capacity reservation, sandbox,

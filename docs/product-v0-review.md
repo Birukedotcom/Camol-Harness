@@ -105,6 +105,13 @@ client detach. Regression coverage is in `tests.test_tui`,
 `tests.test_interactive_cli`, `tests.test_connections`, `tests.test_conversation`,
 `tests.test_providers`, `tests.test_probes`, and `tests.test_admission_scheduler`.
 
+The follow-up login pass replaces the argument-only interaction with a keyboard
+picker limited to Claude Code and Codex CLI. Provider-native login still owns the
+URL, browser session, and credential cache. Camol accepts the result only after a
+fresh status probe; failure leaves the model unchanged, success is persisted and
+rendered in the orchestrator, and an existing frozen plan cannot be rewritten by a
+login confirmation.
+
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python
 compilation, focused static checks, and `git diff --check`. Live Fable performance,

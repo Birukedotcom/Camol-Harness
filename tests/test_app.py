@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from camol.app import InteractiveController
+from camol.connections import _record
 from camol.planning import compile_runbook
 from camol.schema import canonical_digest
 from camol.supervisor import SupervisorPaths
@@ -87,6 +88,69 @@ class InteractiveControllerTests(unittest.TestCase):
         response = self.controller.handle("/quit")
         self.assertTrue(response.exit_client)
         self.assertIn("not stopped", response.messages[0])
+
+    def test_login_without_provider_requests_the_keyboard_picker(self):
+        response = self.controller.handle("/login")
+        self.assertEqual(response.login_choices, ("claude", "codex"))
+        self.assertIsNone(response.login_argv)
+        self.assertIn("Choose a provider", response.messages[0])
+
+    def test_confirmed_provider_becomes_active_planning_model(self):
+        self.controller.connections.save([
+            _record(
+                "codex-cli",
+                "openai",
+                "cli",
+                status="ready",
+                runtime="codex",
+                detail="Authenticated Codex CLI",
+            )
+        ])
+
+        response = self.controller.confirm_provider_connection("codex", login_returncode=0)
+
+        self.assertEqual(self.controller.session["model"], "codex")
+        self.assertIn("Codex connection confirmed", response.messages[0])
+        reloaded = InteractiveController(self.workspace, state_root=self.state_root)
+        self.assertEqual(reloaded.session["model"], "codex")
+
+    def test_unconfirmed_provider_does_not_change_active_model(self):
+        self.controller.connections.save([
+            _record(
+                "claude-cli",
+                "anthropic",
+                "cli",
+                status="auth_required",
+                runtime="claude",
+                detail="Run /login claude to authenticate",
+            )
+        ])
+
+        response = self.controller.confirm_provider_connection("claude", login_returncode=1)
+
+        self.assertEqual(self.controller.session["model"], "manual")
+        self.assertIn("not confirmed", response.messages[0])
+
+    def test_confirmed_provider_does_not_mutate_a_frozen_plan(self):
+        self.complete_grill()
+        digest = self.controller.session["plan_digest"]
+        self.controller.connections.save([
+            _record(
+                "claude-cli",
+                "anthropic",
+                "cli",
+                status="ready",
+                runtime="claude",
+                detail="Authenticated Claude CLI",
+            )
+        ])
+
+        response = self.controller.confirm_provider_connection("claude", login_returncode=0)
+
+        self.assertEqual(self.controller.session["model"], "manual")
+        self.assertEqual(self.controller.session["plan_digest"], digest)
+        self.assertIsNotNone(self.controller.session["plan"])
+        self.assertIn("Active model remains manual", response.messages[1])
 
     def test_box_pool_is_derived_not_fixed_at_three(self):
         self.complete_grill("claude:fable")

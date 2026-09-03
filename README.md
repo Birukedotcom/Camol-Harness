@@ -78,8 +78,8 @@ Inside Camol, a first live-capable plan looks like this:
 
 ```text
 /connections
-/login claude                 # only if the provider reports auth_required
-/model claude:fable
+/login                        # choose Claude or Codex with arrows + Enter
+                              # successful verification selects its planning model
 /effort max
 /grill Build the feature and prove it without deployment
                                # answer each visible question; use structured limits such as:
@@ -141,7 +141,12 @@ Provider connections are scanned in the background at startup. `↻` means the
 installed CLI is still being inspected; it changes to `■` only after the provider's
 own status command confirms authentication. Camol preserves the non-secret local
 identity variables those CLIs require while filtering unrelated environment values,
-and it refreshes the rail automatically after `/login`.
+and it refreshes the rail automatically after `/login`. The V0 picker intentionally
+contains only Claude Code and Codex CLI. Choosing a disconnected entry hands the
+terminal to that provider's native browser-login flow; choosing an already connected
+entry skips reauthentication. A verified login lights the provider glyph, records the
+result in the orchestrator transcript, and selects `claude:fable` or `codex` when no
+plan is frozen or running.
 
 Selecting a box opens a read-only peer view of its terminal stream, bounded context,
 tool calls, diff, evaluations, events, and evidence. Sending input or taking over is

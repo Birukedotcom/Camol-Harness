@@ -4,14 +4,15 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Mapping, Optional, Sequence
 
 from textual.app import App, ComposeResult
 from textual import work
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.screen import Screen
-from textual.widgets import Footer, RichLog, Static, TextArea
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Footer, OptionList, RichLog, Static, TextArea
+from textual.widgets.option_list import Option
 
 from .app import CommandResponse, InteractiveController
 from .boot import compose_boot
@@ -50,6 +51,60 @@ class BootScreen(Screen):
 
 class PromptArea(TextArea):
     """A multiline editor whose submission chord belongs to the app."""
+
+
+class LoginProviderScreen(ModalScreen):
+    """Keyboard-only provider chooser for the native CLI login handoff."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    CSS = """
+    LoginProviderScreen {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.72);
+    }
+    #login-dialog {
+        width: 58;
+        height: auto;
+        max-height: 16;
+        border: round #6e7d79;
+        background: #121819;
+        padding: 1 2;
+    }
+    #login-title { height: 1; color: #eef2f1; text-style: bold; }
+    #login-help { height: 2; color: #9ca9a6; margin-bottom: 1; }
+    #login-options { height: 6; background: #121819; border: none; }
+    """
+
+    LABELS = {"claude": "Claude Code", "codex": "Codex CLI"}
+
+    def __init__(self, providers: Sequence[str], statuses: Mapping[str, str]):
+        super().__init__()
+        self.providers = tuple(providers)
+        self.statuses = dict(statuses)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="login-dialog"):
+            yield Static("CONNECT AN ACCOUNT", id="login-title")
+            yield Static("Use ↑/↓ and Enter. The provider owns the browser sign-in.", id="login-help")
+            yield OptionList(
+                *(
+                    Option(
+                        "{}  [{}]".format(
+                            self.LABELS.get(provider, provider),
+                            "connected" if self.statuses.get(provider) == "ready" else "sign in",
+                        ),
+                        id=provider,
+                    )
+                    for provider in self.providers
+                ),
+                id="login-options",
+            )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class CamolApp(App):
@@ -173,11 +228,30 @@ class CamolApp(App):
             "effort=" + self.controller.session["effort"],
         ]
         self.query_one("#dependency-rail", Static).update("  ".join(parts))
+        self._render_orchestrator_context(records)
 
-    def _probe_connections(self) -> None:
+    def _render_orchestrator_context(self, records: Mapping[str, Mapping[str, str]]) -> None:
+        if self.selected != "orchestrator":
+            return
+        model = self.controller.session["model"]
+        provider = model.partition(":")[0]
+        connection_id = {"claude": "claude-cli", "codex": "codex-cli"}.get(provider)
+        connected = connection_id is not None and records.get(connection_id, {}).get("status") == "ready"
+        suffix = " · connected" if connected else ""
+        self.query_one("#context", Static).update("ORCHESTRATOR — model={}{}".format(model, suffix))
+
+    def _probe_connections(
+        self,
+        *,
+        login_provider: Optional[str] = None,
+        login_returncode: Optional[int] = None,
+    ) -> None:
         """Refresh account inventory without delaying boot or blocking input."""
         def probe() -> None:
-            if not self._connection_probe_lock.acquire(blocking=False):
+            # A disposable startup refresh may be skipped if another scan owns the
+            # lock. A post-login refresh is a state transition and must queue behind
+            # that scan rather than leaving the UI stuck at "verifying".
+            if not self._connection_probe_lock.acquire(blocking=login_provider is not None):
                 return
             try:
                 try:
@@ -187,8 +261,12 @@ class CamolApp(App):
                     # registry failure must not make the client itself unavailable.
                     pass
                 try:
-                    self.call_from_thread(self._render_dependency_rail)
-                except RuntimeError:
+                    self.call_from_thread(
+                        self._finish_connection_probe,
+                        login_provider,
+                        login_returncode,
+                    )
+                except (ConnectionError, RuntimeError):
                     # The terminal is disposable. A detach may race this read-only
                     # inventory refresh and must never wait for it.
                     pass
@@ -196,6 +274,24 @@ class CamolApp(App):
                 self._connection_probe_lock.release()
 
         threading.Thread(target=probe, name="camol-connection-probe", daemon=True).start()
+
+    def _finish_connection_probe(
+        self,
+        login_provider: Optional[str],
+        login_returncode: Optional[int],
+    ) -> None:
+        self._render_dependency_rail()
+        if login_provider is None:
+            return
+        log = self.query_one("#transcript", RichLog)
+        response = self.controller.confirm_provider_connection(
+            login_provider,
+            login_returncode=login_returncode,
+        )
+        for message in response.messages:
+            log.write("camol > " + message)
+        self._render_dependency_rail()
+        self.query_one("#prompt", PromptArea).focus()
 
     async def _refresh_fleet(self) -> None:
         boxes = await self.run_worker(
@@ -243,20 +339,68 @@ class CamolApp(App):
         log = self.query_one("#transcript", RichLog)
         for message in response.messages:
             log.write("camol > " + message)
+        if response.login_choices:
+            status_by_provider: Dict[str, str] = {}
+            try:
+                records = self.controller.connections.load()
+            except ConnectionError:
+                records = []
+            for record in records:
+                if record["connection_id"] == "claude-cli":
+                    status_by_provider["claude"] = record["status"]
+                elif record["connection_id"] == "codex-cli":
+                    status_by_provider["codex"] = record["status"]
+            self.push_screen(
+                LoginProviderScreen(response.login_choices, status_by_provider),
+                self._login_provider_selected,
+            )
+            return
         if response.login_argv:
-            with self.suspend():
-                completed = subprocess.run(list(response.login_argv), check=False)
-            log.write("camol > provider login exited {}. Refreshing connection status.".format(completed.returncode))
-            self._probe_connections()
+            try:
+                with self.suspend():
+                    completed = subprocess.run(list(response.login_argv), check=False)
+                returncode = completed.returncode
+            except OSError:
+                returncode = None
+                log.write("camol > Provider login could not start. Verifying installation and account status…")
+            else:
+                log.write("camol > Provider login returned. Verifying connection status…")
+            self._probe_connections(
+                login_provider=response.login_provider,
+                login_returncode=returncode,
+            )
         if response.exit_client:
             self.exit()
             return
         self.query_one("#prompt", PromptArea).focus()
         self.call_later(self._refresh_fleet)
 
+    def _login_provider_selected(self, provider: Optional[str]) -> None:
+        if provider is None:
+            self.query_one("#prompt", PromptArea).focus()
+            return
+        self.query_one("#transcript", RichLog).write("you > /login " + provider)
+        connection_id = {"claude": "claude-cli", "codex": "codex-cli"}[provider]
+        try:
+            records = self.controller.connections.load()
+        except ConnectionError:
+            records = []
+        record = next(
+            (
+                item
+                for item in records
+                if item["connection_id"] == connection_id
+            ),
+            None,
+        )
+        if record is not None and record["status"] == "ready":
+            self._apply_response(self.controller.confirm_provider_connection(provider, login_returncode=0))
+            return
+        self._submit("/login " + provider)
+
     def action_orchestrator(self) -> None:
         self.selected = "orchestrator"
-        self.query_one("#context", Static).update("ORCHESTRATOR")
+        self._render_dependency_rail()
         self.query_one("#prompt", PromptArea).focus()
 
     def action_box(self, index: int) -> None:

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from camol.app import InteractiveController
 from camol.connections import _record
-from camol.tui import CamolApp, PromptArea
+from camol.tui import CamolApp, LoginProviderScreen, PromptArea
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
@@ -108,6 +108,62 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("■ claude", rail)
             self.controller.connections.probe_all.assert_called_once_with()
         self.controller.connections.probe_all = original_probe
+
+    async def test_login_opens_keyboard_picker_and_enter_selects_provider(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        app._submit = Mock()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._apply_response(self.controller.handle("/login"))
+            await pilot.pause()
+            self.assertIsInstance(app.screen, LoginProviderScreen)
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            app._submit.assert_called_once_with("/login codex")
+
+    async def test_confirmed_login_activates_model_and_populates_orchestrator(self):
+        record = _record(
+            "claude-cli",
+            "anthropic",
+            "cli",
+            status="ready",
+            runtime="claude",
+            detail="Authenticated Claude CLI",
+        )
+        self.controller.connections.save([record])
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._finish_connection_probe("claude", 0)
+            await pilot.pause()
+            self.assertEqual(self.controller.session["model"], "claude:fable")
+            self.assertIn("connected", str(app.query_one("#context").render()))
+            rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+            self.assertIn("Claude connection confirmed", rendered)
+            self.assertIn("model set to claude:fable", rendered)
+
+    async def test_picker_reuses_a_connected_account_without_reauthentication(self):
+        self.controller.connections.save([
+            _record(
+                "codex-cli",
+                "openai",
+                "cli",
+                status="ready",
+                runtime="codex",
+                detail="Authenticated Codex CLI",
+            )
+        ])
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        app._submit = Mock()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._apply_response(self.controller.handle("/login"))
+            await pilot.pause()
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            app._submit.assert_not_called()
+            self.assertEqual(self.controller.session["model"], "codex")
+            self.assertIn("connected", str(app.query_one("#context").render()))
 
 
 if __name__ == "__main__":

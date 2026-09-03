@@ -25,8 +25,17 @@ def run_line_ui(workspace: Path, *, state_root: Optional[Path] = None, show_boot
         response = controller.handle(text)
         for message in response.messages:
             print(message)
+        if response.login_choices:
+            print("Line mode has no arrow picker; type /login claude or /login codex.")
         if response.login_argv:
             completed = subprocess.run(list(response.login_argv), check=False)
-            print("provider login exited {}; run /connections to refresh".format(completed.returncode))
+            print("provider login returned; verifying connection status")
+            controller.connections.probe_all()
+            confirmation = controller.confirm_provider_connection(
+                response.login_provider or "",
+                login_returncode=completed.returncode,
+            )
+            for message in confirmation.messages:
+                print(message)
         if response.exit_client:
             return 0

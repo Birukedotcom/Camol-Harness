@@ -43,6 +43,8 @@ class CommandResponse:
     messages: Tuple[str, ...] = ()
     exit_client: bool = False
     login_argv: Optional[Tuple[str, ...]] = None
+    login_provider: Optional[str] = None
+    login_choices: Tuple[str, ...] = ()
 
 
 HELP = """Commands
@@ -56,7 +58,7 @@ HELP = """Commands
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
   /model SELECTION         manual | claude[:MODEL] | codex[:MODEL] | local:MODEL
   /effort LEVEL            low | medium | high | xhigh | max
-  /login claude|codex      hand authentication to the provider's own CLI
+  /login [claude|codex]    choose an account with arrows, or name it directly
   /connections             read-only connection discovery (not task readiness)
   /btw NOTE                durable out-of-band note; never mutates a frozen plan
   /events                  show new append-only events since this client cursor
@@ -217,11 +219,19 @@ class InteractiveController:
         *messages: str,
         exit_client: bool = False,
         login_argv: Optional[Sequence[str]] = None,
+        login_provider: Optional[str] = None,
+        login_choices: Sequence[str] = (),
         kind: str = "notice",
     ) -> CommandResponse:
         for message in messages:
             self._persist_message("orchestrator" if kind == "conversation" else "system", message, kind=kind)
-        return CommandResponse(tuple(messages), exit_client, tuple(login_argv) if login_argv else None)
+        return CommandResponse(
+            messages=tuple(messages),
+            exit_client=exit_client,
+            login_argv=tuple(login_argv) if login_argv else None,
+            login_provider=login_provider,
+            login_choices=tuple(login_choices),
+        )
 
     def handle(self, raw: str, *, on_chunk: Optional[Callable[[str], None]] = None) -> CommandResponse:
         text = raw.strip()
@@ -305,12 +315,20 @@ class InteractiveController:
         if command == "/connections":
             return self._connections()
         if command == "/login":
+            if not arguments:
+                return self._respond(
+                    "Choose a provider with ↑/↓ and Enter. Escape cancels; Camol never receives the provider credential.",
+                    login_choices=("claude", "codex"),
+                )
             if len(arguments) != 1:
-                raise InteractiveError("usage: /login claude|codex")
+                raise InteractiveError("usage: /login [claude|codex]")
             argv = self.connections.login_argv(arguments[0])
             return self._respond(
-                "Suspending Camol and handing login to the provider CLI. Camol will not read or copy its credential cache.",
+                "Opening {} login in the terminal/browser. Return here after the provider confirms sign-in; Camol will verify the connection without reading its credential cache.".format(
+                    arguments[0].title()
+                ),
                 login_argv=argv,
+                login_provider=arguments[0],
             )
         if command == "/run":
             return self._run(arguments)
@@ -410,6 +428,43 @@ class InteractiveController:
                 glyph[record["status"]], record["connection_id"], record["status"], record["detail"]
             ))
         return self._respond("\n".join(lines))
+
+    def confirm_provider_connection(
+        self,
+        provider: str,
+        *,
+        login_returncode: Optional[int] = None,
+    ) -> CommandResponse:
+        """Promote a verified login to the active planner when no plan is frozen."""
+        connection_id = {"claude": "claude-cli", "codex": "codex-cli"}.get(provider)
+        if connection_id is None:
+            raise InteractiveError("login confirmation supports claude or codex")
+        record = next(
+            (item for item in self.connections.load() if item["connection_id"] == connection_id),
+            None,
+        )
+        if record is None or record["status"] != "ready":
+            detail = record["detail"] if record is not None else "provider status was not returned"
+            return self._respond(
+                "{} login was not confirmed (exit={}): {}".format(
+                    provider.title(), login_returncode, detail
+                ),
+                kind="error",
+            )
+        selection = "claude:fable" if provider == "claude" else "codex"
+        if self.session.get("plan") is not None or self.session["status"] == "running":
+            return self._respond(
+                "{} connection confirmed.".format(provider.title()),
+                "Active model remains {} because a plan is frozen or running. Choose {} explicitly after that run.".format(
+                    self.session["model"], selection
+                ),
+            )
+        self._invalidate_plan_for_setting_change()
+        self.session = self.store.update(self.session, model=selection)
+        return self._respond(
+            "{} connection confirmed.".format(provider.title()),
+            "Active planning model set to {}.".format(selection),
+        )
 
     def _control(self, command: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return asyncio.run(send_control_v2(
