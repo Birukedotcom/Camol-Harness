@@ -11,12 +11,13 @@ and evaluators are replaceable components. The kernel owns durable truth about
 plans, state, readiness, authority, leases, evidence, budgets, retries, integration,
 and completion.
 
-> Project status: V0 implementation complete and `MAPPED` for the broader
-> deterministic local-process kernel; `BACKED` only for the exact bounded dogfood
-> path in `evidence/v0-local-kernel-proof.json`; and `SPECULATIVE` for the hosted
-> Claude/Fable profile until an opt-in live run supplies account, model-resolution,
-> cost, and recovery evidence. This is developer software, not a production-safe
-> remote execution or deployment system.
+> Project status: **Product V0 is runnable developer software.** The terminal client,
+> persistent planning/approval records, detachable supervisor, local-process proof,
+> and kernel are `BACKED` by automated local tests. Claude/Fable execution remains
+> `SPECULATIVE` until an owner-authorized live run proves the requested model resolves
+> to the frozen allowlist on that account. Codex and local models are planning-only in
+> V0; OpenAI Platform is connection-discovery only. Remote deployment, VM provisioning,
+> and production security are not claimed.
 
 <table>
   <tr>
@@ -41,9 +42,63 @@ and completion.
   </tr>
 </table>
 
-The wordmark and supplied PNG are the canonical boot assets. The future CLI renders
-the wordmark from the upper-left and the camel right-adjusted when the terminal is
-wide enough, with plaintext fallbacks for terminals without an image protocol.
+The wordmark and supplied PNG are the canonical boot assets. The CLI now renders the
+wordmark from the upper-left and a plaintext camel derived from that artwork,
+right-adjusted at wide and medium terminal sizes with compact fallbacks.
+
+## Install and open Product V0
+
+Camol requires Python 3.9+ and a Git repository. Textual is an optional dependency;
+without it, bare `camol` opens the same command engine in line mode.
+
+```bash
+git clone --branch codex/product-v0 --single-branch \
+  https://github.com/Birukedotcom/Camol-Harness.git Camol-Harness-v0
+cd Camol-Harness-v0
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e '.[tui]'
+source .venv/bin/activate
+camol
+```
+
+For an isolated command available outside the clone, use pipx after the branch is
+published:
+
+```bash
+pipx install 'camol-harness[tui] @ git+https://github.com/Birukedotcom/Camol-Harness.git@codex/product-v0'
+cd /path/to/a/clean/git/repository
+camol
+```
+
+Homebrew is a follow-on distribution target; this repository does not pretend a
+formula exists yet.
+
+Inside Camol, a first live-capable plan looks like this:
+
+```text
+/connections
+/login claude                 # only if the provider reports auth_required
+/model claude:fable
+/effort max
+/grill Build the feature and prove it without deployment
+                               # answer each visible question; task lines define N
+/plan                          # inspect invariants, DAG, evaluator argv, and digests
+/approve yes                   # approval freezes only the exact visible digest
+/run --accept-spend --max-cents 10
+/status
+/boxes
+/box 1
+/events
+/quit                          # detach; does not stop the supervisor
+```
+
+`/run` refuses a dirty source checkout and runs one spend-capped, no-tools provider
+preflight before it starts a Claude supervisor. The supervisor then prepares isolated
+worktrees and will not issue a lease until its task-specific readiness predicate is
+green. Use `/drain`, `/resume`, or `/stop` for lifecycle control. Interactive state is
+kept outside the repository under the platform state directory; `/status` prints its
+exact path.
 
 ## The intended terminal experience
 
@@ -71,8 +126,11 @@ proves that its exact execution path is ready.
 [0 ORCH] [BOXES 2/8] [!2] ▸[1 ■ API] [2 ■ ADVERSARY] [3 □ DEPLOY]
 ```
 
-`■` means connected and ready for the selected task—not merely installed. `□` means
-known but not ready. Selection is a separate cursor. The bottom switcher traverses
+Glyphs are deliberately contextual. In the top rail, `■` means an account/runtime is
+connected or a dependency is installed—it is **not** task readiness. In the bottom
+fleet, `■` means an isolated box workspace exists, `□` means dormant/unprepared, and
+`!` needs attention. The kernel reports task readiness separately. Selection is a
+separate cursor. The bottom switcher traverses
 the orchestrator and a window over an arbitrary N-box fleet; box numbers are visible
 shortcuts, not permanent roles or a fixed worker count.
 
@@ -196,6 +254,21 @@ forbidden correctness, security, cost, or latency regression.
 ## What exists today
 
 The executable Python slice currently provides:
+
+- bare `camol` as a transcript-first Textual application, plus a dependency-light
+  line fallback, responsive CAMOL/camel boot art, multiline input, history, streamed
+  provider text, and an arbitrary-N fleet switcher;
+- durable private orchestrator sessions, a deterministic `/grill` question loop,
+  human-readable N-task DAGs, exact plan/runbook digests, two-step approval, and
+  automatic invalidation when frozen model or effort settings change;
+- credential-safe connection discovery for Claude CLI, Codex CLI, an
+  `OPENAI_API_KEY` environment reference, and a loopback OpenAI-compatible endpoint;
+- planning-only Claude/Codex/local conversations with no write tools, explicit
+  requested-versus-resolved model reporting, and no hidden model call in manual mode;
+- a versioned authenticated V2 client protocol for plan, cursor-based events, and
+  read-only box views while retaining V1 `camol ctl` compatibility;
+- terminal supervisors that remain inspectable after completion, plus automatic
+  short private AF_UNIX paths on systems with small socket limits; and
 
 - validated JSON runbooks with an arbitrary non-empty registered worker pool;
 - a positive per-run `max_concurrency` ceiling;

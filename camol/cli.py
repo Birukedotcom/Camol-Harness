@@ -5,7 +5,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from .orchestrator import Orchestrator, StateTransitionError
 from .artifacts import ArtifactError, ArtifactStore, RunArchive
@@ -19,6 +19,10 @@ from .workspace import WorkspaceError, WorkspaceManager
 from .providers import ProviderError, create_claude_capability, load_model_profile
 from .probes import local_target_id
 from .supervisor import Supervisor, SupervisorError, send_control, spawn_supervisor
+from .connections import ConnectionError
+from .conversation import ConversationError
+from .session import SessionError
+from .app import InteractiveError
 
 
 def _write_json(value: Any) -> None:
@@ -218,8 +222,9 @@ def command_interactive(args: argparse.Namespace) -> int:
     if not args.no_tui:
         try:
             from .tui import run_tui
-        except ImportError:
-            pass
+        except ModuleNotFoundError as error:
+            if not (error.name or "").startswith("textual"):
+                raise
         else:
             return run_tui(workspace, state_root=state_root, show_boot=not args.no_boot)
     from .line_ui import run_line_ui
@@ -361,6 +366,7 @@ def main(argv: Any = None) -> int:
     except (
         ArtifactError, RunbookError, SchemaError, StateTransitionError,
         WorkspaceError, ProviderError, SupervisorError, BenchmarkError, OSError, json.JSONDecodeError,
+        ConnectionError, ConversationError, SessionError, InteractiveError,
     ) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2

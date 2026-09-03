@@ -2,10 +2,12 @@
 
 Status: implemented in V0 for one local control-plane process and Unix-domain clients.
 
-Camol's terminal process is a client. `camol start` launches a new session, waits for
+Camol's terminal process is a client. Bare `camol` starts or reattaches through the
+same protocol; `camol start` launches a non-interactive session, waits for
 an authenticated control socket, prints its PID and returns. The supervisor then owns
 the SQLite event stream, scheduling, workers, process reconciliation, and shutdown.
-Closing the invoking terminal does not stop it.
+Closing the invoking terminal does not stop it. A completed or blocked supervisor
+also remains alive and inspectable until `/stop` or `camol ctl stop`.
 
 ## Start and attach
 
@@ -26,13 +28,21 @@ The control files are under `STATE_DIRECTORY/control`:
 
 | File | Meaning |
 |---|---|
-| `camol.sock` | local Unix-domain control socket, mode `0600` |
+| `camol.sock` | local Unix-domain control socket, mode `0600` (normally here) |
 | `control.token` | random bearer token, created by the supervisor, mode `0600` |
 | `leader.lock` | advisory single-writer lock |
 | `leader.pid` | current supervisor PID, mode `0600` |
 | `supervisor.log` | detached process output |
 
-The socket protocol is versioned JSON-lines and token-authenticated. V0 deliberately
+If the full socket path would exceed the platform's AF_UNIX limit, Camol uses
+`/tmp/camol-UID-HASH/camol.sock` in an owner-only `0700` directory. The hash binds the
+absolute state directory; the control token and every authoritative record stay under
+the state directory.
+
+The socket protocol is versioned JSON-lines and token-authenticated. V1 preserves
+`camol ctl`. V2 adds request IDs, strict parameter objects, the exact plan/runbook,
+bounded event reads after a sequence cursor (including bounded long polling), and
+bounded read-only per-box views. V0 deliberately
 does not expose it over a network. Remote workers will need mutually authenticated,
 lease-bound transport rather than forwarding this local bearer token.
 

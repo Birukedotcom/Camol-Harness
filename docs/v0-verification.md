@@ -4,6 +4,7 @@ Camol V0 has two deliberately separate claims.
 
 | Scope | Maturity | Evidence |
 |---|---|---|
+| Interactive Product V0 lifecycle | `BACKED` for the deterministic local fixture path | Real PTY boot and TUI tests plus a detached boot → grill → exact-plan review → approval → run → box/event inspection → verified completion → exit/reattach integration test |
 | Broader deterministic local-process V0 kernel | `MAPPED`; the complete feature set has not run as one real external workflow | Full unit/adversarial suite, deterministic N-box demo, detachable-daemon integration test, refinement test, and strict contracts |
 | Exact bounded Camol-on-Camol dogfood path | `BACKED` | Checked-in compact proof plus a locally retained, replay-verified archive with controlled evaluator failure and refinement |
 | Claude CLI requesting the speculative Fable profile | `SPECULATIVE` | Contract, fake provider, provider-readiness and spend-preflight tests only; no owner-authorized live result is claimed |
@@ -27,6 +28,13 @@ The repository includes the compact result at
 `evidence/v0-local-kernel-proof.json`. The full generated archive is deliberately an
 output rather than a checked-in fixture: it records execution-host paths and target
 identity. Re-running the command produces a fresh independently verifiable archive.
+
+The repository regression gate currently runs 281 tests with `python3 -m unittest
+discover -v`. Product-specific coverage includes terminal-size snapshots, a real PTY,
+arbitrary-N navigation, exact product-plan JSON and digest approval, provider failure
+and secret redaction, authenticated V2 control, macOS AF_UNIX path fallback, no work
+before approval, daemon persistence, completed-run inspection, and reattachment. This
+does not convert a deterministic fixture into evidence for a live hosted model.
 
 ## Required controlled failures
 

@@ -1,4 +1,10 @@
 import os
+import fcntl
+import pty
+import select
+import struct
+import termios
+import time
 import subprocess
 import sys
 import tempfile
@@ -27,6 +33,54 @@ class InteractiveCliTests(unittest.TestCase):
         self.assertIn("Camol Product V0 line mode", completed.stdout)
         self.assertIn("Client detached", completed.stdout)
         self.assertNotIn("usage: camol", completed.stdout)
+
+    def test_bare_command_renders_as_a_real_full_screen_pty(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+            environment = dict(
+                os.environ,
+                CAMOL_STATE_HOME=str(Path(temporary) / "state"),
+                TERM="xterm-256color",
+            )
+            process = subprocess.Popen(
+                [sys.executable, "-m", "camol", "--no-boot", "--workspace", temporary],
+                cwd=str(ROOT), env=environment, stdin=slave, stdout=slave, stderr=slave,
+                close_fds=True,
+                preexec_fn=lambda: (os.setsid(), fcntl.ioctl(slave, termios.TIOCSCTTY, 0)),
+            )
+            os.close(slave)
+            captured = bytearray()
+            try:
+                deadline = time.time() + 8
+                while time.time() < deadline and b"ORCH" not in captured:
+                    readable, _, _ = select.select([master], [], [], 0.2)
+                    if readable:
+                        chunk = os.read(master, 65536)
+                        if not chunk:
+                            break
+                        captured.extend(chunk)
+                time.sleep(0.5)
+                process.terminate()
+                process.wait(timeout=8)
+                while True:
+                    readable, _, _ = select.select([master], [], [], 0.05)
+                    if not readable:
+                        break
+                    try:
+                        chunk = os.read(master, 65536)
+                        if not chunk:
+                            break
+                        captured.extend(chunk)
+                    except OSError:
+                        break
+            finally:
+                os.close(master)
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+        self.assertIn(b"ORCH", captured)
+        self.assertIn(b"CAMOL PRODUCT V0", captured)
 
 
 if __name__ == "__main__":

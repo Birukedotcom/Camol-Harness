@@ -1,7 +1,6 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from camol.app import InteractiveController
 
@@ -37,6 +36,8 @@ class InteractiveControllerTests(unittest.TestCase):
         response = self.complete_grill("claude:fable")
         self.assertIn("Nothing has started", response.messages[0])
         self.assertIn("tests <- [core]", response.messages[1])
+        self.assertIn("canonical product plan JSON:", response.messages[1])
+        self.assertIn('"schema": "camol.product_plan"', response.messages[1])
         digest = self.controller.session["plan_digest"]
         self.assertIsNone(self.controller.session["approved_digest"])
         confirmation = self.controller.handle("/approve")

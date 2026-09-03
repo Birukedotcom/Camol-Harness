@@ -1,8 +1,8 @@
 # Provider and model adapters
 
 Camol keeps provider behavior outside the state-machine kernel. A schema-v3
-runbook selects an adapter kind and a workspace-relative, versioned model
-profile. The profile freezes the runtime name, requested alias, allowed resolved
+runbook selects an adapter kind and a workspace-relative or packaged, versioned model
+profile. Packaged references use `@camol/PROFILE`. The profile freezes the runtime name, requested alias, allowed resolved
 model identities, tool policy, credential references, network authority, and
 turn/task/run ceilings. Its digest is part of the provider probe definition and
 therefore part of the lease's probe-policy fence.
@@ -13,7 +13,8 @@ within quota, or connected. Those properties require a short-lived
 
 ## Fable profile naming
 
-`profiles/models/claude-fable-5-1.yaml` preserves the requested “Fable 5.1”
+`profiles/models/claude-fable-5-1.yaml` and the distributable
+`@camol/claude-fable-5-1` profile preserve the requested “Fable 5.1”
 product preference in its profile id. It intentionally requests the CLI's
 `fable` alias and only accepts the concrete `claude-fable-5` identity. The
 profile remains `SPECULATIVE`. Camol will not record or display “Fable 5.1” as

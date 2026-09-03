@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .probes import Redactor
 
@@ -275,6 +275,8 @@ def _stream_cli(
             output_tokens if type(output_tokens) is int else None,
         )
     finally:
+        if "selector" in locals():
+            selector.close()
         if process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)

@@ -1,6 +1,7 @@
 """Detachable single-writer supervisor and authenticated local control protocol."""
 
 import asyncio
+import atexit
 import fcntl
 import hashlib
 import hmac
@@ -14,7 +15,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from .orchestrator import Orchestrator, StateTransitionError
@@ -33,6 +34,19 @@ class SupervisorError(RuntimeError):
 # Keep intentional detached children referenced for the lifetime of this
 # client process. Popen otherwise warns during immediate garbage collection.
 _DETACHED_CHILDREN = []
+
+
+def _reap_or_detach_children() -> None:
+    """Reap finished children and silence Popen cleanup for live daemons."""
+    for process in _DETACHED_CHILDREN:
+        if process.poll() is None:
+            # The supervisor owns a new session and is intentionally still
+            # alive after this client exits. Prevent Popen.__del__ from
+            # misreporting that expected state as a ResourceWarning.
+            process.returncode = 0
+
+
+atexit.register(_reap_or_detach_children)
 
 
 @dataclass(frozen=True)

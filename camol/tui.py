@@ -3,7 +3,7 @@
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual import work
@@ -78,6 +78,7 @@ class CamolApp(App):
         Binding("alt+up", "history(-1)", "Previous input", show=False),
         Binding("alt+down", "history(1)", "Next input", show=False),
         Binding("ctrl+q", "detach", "Detach"),
+        Binding("f10", "detach", "Detach", show=False),
     ]
 
     def __init__(

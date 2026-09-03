@@ -52,6 +52,8 @@ HELP = """Commands
   /connections             read-only connection discovery (not task readiness)
   /btw NOTE                durable out-of-band note; never mutates a frozen plan
   /events                  show new append-only events since this client cursor
+  /drain | /resume         pause admission or resume a waiting supervisor
+  /stop                    drain and stop the supervisor (work is preserved)
   /help                    show this list
   /quit                    detach this client; work keeps running
 
@@ -152,6 +154,8 @@ def render_plan(plan: Mapping[str, Any], digest: str) -> str:
     if plan["runbook"] is not None:
         lines.append("kernel runbook digest: {}".format(runbook_digest(plan["runbook"])))
     lines.append("limitation: " + plan["execution_limitation"])
+    lines.append("canonical product plan JSON:")
+    lines.append(json.dumps(plan, indent=2, sort_keys=True))
     lines.append("Approval is not implicit. Run `/approve yes` only after reviewing every line above.")
     return "\n".join(lines)
 
@@ -283,6 +287,11 @@ class InteractiveController:
             return self._box(arguments)
         if command == "/events":
             return self._events(arguments)
+        if command in {"/drain", "/resume", "/stop"}:
+            if arguments:
+                raise InteractiveError("usage: {}".format(command))
+            result = self._control(command[1:])
+            return self._respond("supervisor {} requested: {}".format(command[1:], json.dumps(result, sort_keys=True)))
         if command == "/btw":
             if not arguments:
                 raise InteractiveError("usage: /btw NOTE")
@@ -449,6 +458,7 @@ class InteractiveController:
                 self.session["session_id"], self.session["status"], self.session["model"], self.session["effort"]
             ),
             "plan={} approved={}".format(self.session["plan_digest"] or "none", self.session["approved_digest"] or "none"),
+            "state_dir={}".format(self.session["state_dir"]),
         ]
         try:
             status = self._control("status")
