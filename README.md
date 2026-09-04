@@ -63,11 +63,13 @@ camol
 ```
 
 For an isolated command available outside the clone, use pipx after the branch is
-published:
+published. This is optional and assumes `pipx` is already installed. Launch Camol
+from the root of the real Git project you want it to inspect; do not paste a
+placeholder directory literally.
 
 ```bash
 pipx install 'camol-harness[tui] @ git+https://github.com/Birukedotcom/Camol-Harness.git@codex/product-v0'
-cd /path/to/a/clean/git/repository
+cd "$(git rev-parse --show-toplevel)"  # run while already somewhere inside your project
 camol
 ```
 
@@ -373,19 +375,21 @@ come after the one-box vertical slice is backed.
 Python 3.9+ is sufficient and the simulator has no runtime dependencies:
 
 ```bash
+CAMOL_STATE="$(mktemp -d /tmp/camol-v0.XXXXXX)"
 python3 -m unittest discover -v
 python3 -m camol validate examples/local-n-box-runbook.json
-python3 -m camol doctor examples/local-n-box-runbook.json --workspace . --state-dir /path/outside/repo
+python3 -m camol doctor examples/local-n-box-runbook.json --workspace . --state-dir "$CAMOL_STATE"
 python3 -m camol run examples/local-n-box-runbook.json \
   --workspace . \
-  --state-dir /path/outside/repo/demo-state \
+  --state-dir "$CAMOL_STATE" \
   --approve-by "$USER"
 ```
 
 Run the reproducible Camol-on-Camol kernel proof from a clean checkout:
 
 ```bash
-python3 scripts/run_v0_proof.py --output /path/outside/repo/v0-proof
+CAMOL_PROOF_PARENT="$(mktemp -d /tmp/camol-proof.XXXXXX)"
+python3 scripts/run_v0_proof.py --output "$CAMOL_PROOF_PARENT/result"
 ```
 
 The checked-in compact attestation is
@@ -397,17 +401,18 @@ Or detach a draft run, inspect it, approve the exact plan, and let the daemon co
 after the client exits:
 
 ```bash
+CAMOL_SUPERVISED="$(mktemp -d /tmp/camol-supervised.XXXXXX)"
 python3 -m camol start examples/local-n-box-runbook.json \
-  --workspace . --state-dir /path/outside/repo/supervised-state
-python3 -m camol ctl status --state-dir /path/outside/repo/supervised-state
-python3 -m camol ctl approve --state-dir /path/outside/repo/supervised-state --by "$USER"
+  --workspace . --state-dir "$CAMOL_SUPERVISED"
+python3 -m camol ctl status --state-dir "$CAMOL_SUPERVISED"
+python3 -m camol ctl approve --state-dir "$CAMOL_SUPERVISED" --by "$USER"
 ```
 
 Inspect the replayed projection and immutable event stream:
 
 ```bash
-python3 -m camol status --db /path/outside/repo/demo-state/camol.sqlite3 --run-id local-n-box-demo
-python3 -m camol events --db /path/outside/repo/demo-state/camol.sqlite3 --run-id local-n-box-demo
+python3 -m camol status --db "$CAMOL_STATE/camol.sqlite3" --run-id local-n-box-demo
+python3 -m camol events --db "$CAMOL_STATE/camol.sqlite3" --run-id local-n-box-demo
 ```
 
 The local N-box example happens to register three fake workers so concurrency is easy

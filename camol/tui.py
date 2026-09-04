@@ -601,6 +601,10 @@ class CamolApp(App):
                 with self.suspend():
                     completed = subprocess.run(list(response.login_argv), check=False)
                 returncode = completed.returncode
+            except KeyboardInterrupt:
+                log.write("camol > Provider login cancelled; client detached safely.")
+                self.exit()
+                return
             except OSError:
                 returncode = None
                 log.write("camol > Provider login could not start. Verifying installation and account status…")

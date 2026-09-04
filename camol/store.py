@@ -1,7 +1,9 @@
 """Restart-safe SQLite append-only event storage."""
 
 import json
+import os
 import sqlite3
+import stat
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,7 +15,8 @@ class ConcurrentAppendError(RuntimeError):
 class SQLiteEventStore:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._secure_file(self.path, create=True)
         self.connection = sqlite3.connect(str(self.path), timeout=30)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA journal_mode=WAL")
@@ -34,6 +37,7 @@ class SQLiteEventStore:
             )
             """
         )
+        self._harden_database_files()
         self.connection.commit()
 
     def close(self) -> None:
@@ -84,11 +88,44 @@ class SQLiteEventStore:
                     ),
                 )
                 appended.append(dict(event, seq=sequence))
+            self._harden_database_files()
             self.connection.commit()
         except Exception:
             self.connection.rollback()
             raise
         return appended
+
+    @staticmethod
+    def _secure_file(path: Path, *, create: bool) -> None:
+        """Require an owner-controlled regular file and force owner-only access."""
+
+        if path.is_symlink():
+            raise OSError("event-store files must not be symlinks: {}".format(path))
+        flags = os.O_RDWR
+        if create:
+            flags |= os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(str(path), flags, 0o600)
+        except FileNotFoundError:
+            if create:
+                raise
+            return
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise OSError("event-store path is not a regular file: {}".format(path))
+            if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+                raise OSError("event-store file is not owned by the current user: {}".format(path))
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
+
+    def _harden_database_files(self) -> None:
+        self._secure_file(self.path, create=False)
+        self._secure_file(Path(str(self.path) + "-wal"), create=False)
+        self._secure_file(Path(str(self.path) + "-shm"), create=False)
 
     def read(self, run_id: str, after_seq: int = 0) -> List[Dict[str, Any]]:
         rows = self.connection.execute(

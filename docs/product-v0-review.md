@@ -128,6 +128,37 @@ charcoal, gray, and white palette, including prompts, modals, scrollbars, and fo
 bindings. Ctrl+C now takes the same non-destructive client-detach path as `/quit`;
 a real PTY regression proves that it restores the terminal and exits zero.
 
+A release-candidate adversarial pass then exercised the packaged product outside its
+source checkout. A fresh Git fixture completed the four-task local N-box run across
+three concurrent boxes, retained 106 events, exported every referenced artifact, and
+replay-verified the archive. The detached-supervisor path independently completed the
+same run after the launching client returned, remained inspectable through `ctl`, and
+stopped cleanly. Controlled negative runs proved that a dirty checkout creates no
+agent artifacts or workspace records, an unknown runbook field is denied, and a
+one-line archive-manifest mutation fails verification.
+
+That pass found and closed three release blockers:
+
+- SQLite had inherited the caller's umask, leaving the event database and WAL/SHM
+  sidecars readable as `0644` when a state directory was not private. Store creation
+  now refuses symlink/non-regular/foreign-owned targets and forces all three files to
+  owner-only `0600`.
+- Ctrl+C during a provider-owned login could bypass the ordinary detach handler.
+  Both the Textual and line clients now treat that interruption as a clean,
+  non-destructive detach.
+- the pip version bundled with older macOS Python built an empty `UNKNOWN` wheel from
+  PEP 621 metadata. A setuptools compatibility entry point now produces an installable
+  `camol-harness` wheel and console script under that pip; the documented pip upgrade
+  remains required for its legacy editable-install implementation.
+
+Clean temporary environments installed and opened both the dependency-free client
+and the `[tui]` extra from the built wheel. Read-only installed-runtime checks also
+confirmed the current Claude and Codex flag surfaces without making a model request.
+Codex planning now ignores user configuration in addition to repository rules, so a
+user-configured MCP server cannot silently expand the planning-only command surface.
+No paid Claude/Fable preflight or worker request was made, so hosted execution remains
+`SPECULATIVE` rather than being promoted by these local results.
+
 The release gate remains the complete test suite, wheel installation in clean
 environments with and without the TUI extra, strict runbook validation, Python
 compilation, focused static checks, and `git diff --check`. Live Fable performance,

@@ -101,7 +101,7 @@ def provider_argv(
         if not executable:
             raise ConversationError("Codex CLI is not installed")
         argv = [
-            executable, "exec", "--json", "--ephemeral", "--ignore-rules",
+            executable, "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules",
             "--sandbox", "read-only", "-C", str(Path(workspace).resolve()),
             "-c", 'model_reasoning_effort="{}"'.format(effort),
         ]

@@ -28,7 +28,14 @@ def run_line_ui(workspace: Path, *, state_root: Optional[Path] = None, show_boot
         if response.login_choices:
             print("Line mode has no arrow picker; type /login claude or /login codex.")
         if response.login_argv:
-            completed = subprocess.run(list(response.login_argv), check=False)
+            try:
+                completed = subprocess.run(list(response.login_argv), check=False)
+            except KeyboardInterrupt:
+                print("\nProvider login cancelled; client detached.")
+                return 0
+            except OSError as error:
+                print("Provider login could not start: {}".format(error))
+                continue
             print("provider login returned; verifying connection status")
             controller.connections.probe_all()
             confirmation = controller.confirm_provider_connection(

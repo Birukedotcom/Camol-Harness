@@ -84,6 +84,7 @@ class ConversationTests(unittest.TestCase):
             argv = provider_argv(parse_selection("codex:gpt-5.4"), "xhigh", self.workspace)
         self.assertIn("read-only", argv)
         self.assertIn("--ephemeral", argv)
+        self.assertIn("--ignore-user-config", argv)
         self.assertEqual(reply.text, "Define the invariant.")
 
     def test_manual_and_openai_execution_are_truthfully_unavailable(self):

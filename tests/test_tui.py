@@ -1,11 +1,12 @@
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from textual.widgets import Input, OptionList
 
-from camol.app import InteractiveController
+from camol.app import CommandResponse, InteractiveController
 from camol.connections import _record
 from camol.tui import CamolApp, LoginProviderScreen, PromptArea, SlashCommandScreen
 
@@ -234,6 +235,22 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("down", "enter")
             await pilot.pause()
             app._submit.assert_called_once_with("/login codex")
+
+    async def test_control_c_during_native_login_detaches_without_a_traceback(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)):
+            with (
+                patch.object(app, "suspend", return_value=nullcontext()),
+                patch("camol.tui.subprocess.run", side_effect=KeyboardInterrupt),
+            ):
+                app._apply_response(
+                    CommandResponse(
+                        login_argv=("claude", "auth", "login"),
+                        login_provider="claude",
+                    )
+                )
+            rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+            self.assertIn("Provider login cancelled; client detached safely", rendered)
 
 
 if __name__ == "__main__":
