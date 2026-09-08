@@ -157,6 +157,14 @@ protocol requests receive protocol errors. This follows the primary MCP
 [lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)
 and [tool protocol](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
 
+MCP text content contains a `camol.peer_response` envelope. A successful read's
+`result` is the audited read record, which itself contains the observation in
+`result`. For `send_message.target`, pass the unchanged observation at
+`json.loads(content[0].text)["result"]["result"]` from `observe_box`, not its outer
+read record. List rows and inbox entries likewise live inside that read record's
+`result`. Send results contain the mailbox record directly. The outer error and
+MCP `isError` must be checked before extracting successful results.
+
 The internal socket protocol is distinct from MCP. It accepts one request per
 connection, at most 64 KiB per request and 128 KiB per response, eight active
 connections and 256 total connections per endpoint. Reads have a five-second

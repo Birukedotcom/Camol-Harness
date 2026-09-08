@@ -653,3 +653,32 @@ retained `POLICY_DENIED` probe result; production admission was not relaxed.
 No hosted inference, account/config edit, model download, real remote worker or
 cloud deployment was performed. Exact native startup failure, shell-environment
 exclusion and model-directed multi-box messaging still require live acceptance.
+
+### Installed package and simultaneous relay follow-up
+
+Product checkpoint `a11eb4535f81e1f91f6859e3692730d332ef6feb` was rebuilt as a
+source distribution and then a wheel, installed in a fresh Python 3.12 environment
+with TUI/graph extras and the test-only MCP SDK. **28 installed-package tests passed
+in 37.031 seconds**, including native builds, lifecycle, Codex parsing, MCP and
+the macOS socket boundary. Parent and child imported the installed package.
+The artifact predates only the documentation and test-path corrections; its
+product modules match this checkpoint.
+
+A separately added three-relay fixture passed on Python 3.12 in **2.400 seconds**
+and Python 3.9 in **3.118 seconds**. Each simultaneously open native invocation
+uses its own endpoint and capability, lists its own caller identity, observes the
+next box and sends a message. Identical local retry IDs remain caller-scoped;
+retries produce three messages total, each in its correct inbox. Revoking one
+lease denies its relay while another remains usable. Replay matches and all
+transport parents are cleaned up. These are three actual relay subprocesses
+under owner-side fixture leases, not three autonomous hosted models or a new
+full-build acceptance claim.
+
+The first fleet fixture incorrectly passed the whole audited read record as the
+recipient; dispatch correctly denied it. It now extracts the unchanged inner
+observation, and the MCP response-envelope documentation makes that distinction
+explicit. No product permission or receipt validation was weakened.
+
+This extra fixture was added after full-suite discovery and is verified separately;
+do not include it in the already-running full-suite test count.
+The same fixture also passed against the installed wheel in **2.354 seconds**.
