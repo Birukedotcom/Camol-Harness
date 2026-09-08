@@ -1352,3 +1352,26 @@ After the correction, 53 focused transport/audit/mailbox/monitor tests passed in
 terminal navigation tests passed separately in 1.843 and 2.090 seconds, for 62
 distinct tests on each interpreter. A fresh sdist-to-wheel build succeeded; its
 installed-package group and latest whole-suite gates are tracked separately.
+
+The predecessor monitor/mailbox product
+`a48cf63e7a4ffaa8aac9819227093f91324152f9` has now completed both full suites:
+**1,099 tests in 944.605 seconds on Python 3.12**, and **1,022.731 seconds on
+Python 3.9**, with three optional skips on 3.9. Their exact logs are
+`/tmp/camol-remote-mailbox-full-py312.log` and
+`/tmp/camol-remote-mailbox-full-py39.log`. These do not verify later RPC audit code.
+
+RPC audit product `466090482f273ef352425b0a3572870ccff8fc17` is committed and pushed
+under the owner's Git identity. Its full-suite processes now write to
+`/tmp/camol-rpc-audit-full-py312.log` and `/tmp/camol-rpc-audit-full-py39.log`;
+their results remain pending. A separate fresh installed-wheel contention check
+held the audit writer lock and proved refusal before SSH launch in 1.006 seconds,
+with no captured process launch or remote request. Installed `camol remote --help`
+also exposes the new offline `usage` action. No real remote host or model account
+was used. Main remains unchanged at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`.
+
+The fresh sdist-to-wheel installation subsequently passed all **62 integration
+tests in 91.980 seconds on Python 3.12**. It imported Camol from `site-packages`
+outside the repository and byte-compared `rpc_audit.py`, `ssh_transport.py` and
+`cli.py` against source before adding test fixtures. The installed log is
+`/tmp/camol-rpc-audit-installed.log`; the isolated environment is
+`/tmp/camol-rpc-audit-package.h6tVjY29/venv`. The later full suites remain active.
