@@ -6,6 +6,7 @@ import re
 import selectors
 import shutil
 import signal
+import socket
 import subprocess
 import queue
 import threading
@@ -251,6 +252,8 @@ def _local_reply(endpoint: str, model: str, prompt: str, timeout: int, *, no_too
             resolved if isinstance(resolved, str) else None,
             usage.get("prompt_tokens"), usage.get("completion_tokens"),
         )
+    except (TimeoutError, socket.timeout) as error:
+        raise ConversationError("local planning wait timed out; the endpoint may still finish its request, so usage is unknown") from error
     except (OSError, http.client.HTTPException, ValueError, KeyError, IndexError, TypeError, AttributeError, json.JSONDecodeError) as error:
         raise ConversationError("local model request failed without a usable response") from error
 

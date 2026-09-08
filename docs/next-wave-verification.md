@@ -55,3 +55,31 @@ protocol fixtures. No paid model request, public model download/load, real SSH
 host, cloud deployment or official coding benchmark campaign was exercised.
 No release/tap/license was published. See `full-pass-verification.md` and
 `full-implementation-progress.md` for earlier evidence and remaining boundaries.
+
+## Follow-up checkpoint f782f187301819987a0807df75f333f179cd50aa
+
+The exact Python 3.12 local suite passed 636 tests in 438.888 seconds. The exact
+Python 3.9 suite ran 636 tests in 472.254 seconds with one failing SSH test: its
+0.3-second whole-request timeout sometimes expired before the identity handshake,
+correctly returning not-dispatched/rejected instead of the test's expected unknown.
+The next repair separates delayed-hello rejection from synchronized post-dispatch
+cancellation; it does not weaken the transport's unknown-effect handling.
+
+[Actions run 34180453539](https://github.com/Birukedotcom/Camol-Harness/actions/runs/34180453539)
+passed all three Ubuntu jobs and failed all three macOS jobs. Remaining failures
+included the selected Xcode's Info.plist/SharedFrameworks read paths, local model
+fixture readiness deadlines, an inner-versus-outer HTTP timeout classification
+race, and one intermittent real-terminal Ctrl+C timeout. They were not waived.
+
+The follow-up adds only the exact selected Xcode Contents runtime read grant,
+strengthens per-connection model credential checks, and records content-free
+readback phases plus fixture-only startup/terminal diagnostics. It retains the
+original readiness and terminal acceptance deadlines. The known HTTP timeout race
+now reports unknown usage consistently whichever timeout fires first.
+
+Two 12-box/25-task stress attempts hit the original 120-second trial deadline,
+first alongside the two complete suites and then separately. Neither is a passing
+soak. The diagnostic runner now accepts an explicit per-trial observation ceiling
+and optional metadata progress; the default remains 120 seconds and kernel
+authority is unchanged. A separate 600-second profiled observation showed continued
+task completion, but its result and any optimization require their own evidence.

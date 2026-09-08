@@ -657,7 +657,13 @@ def _macos_developer_selection():
     if ((current.st_dev, current.st_ino) != (selected.st_dev, selected.st_ino)
             or current.st_uid != 0 or os.readlink(selector) != target):
         raise SandboxError("macOS developer selector changed during observation")
-    return (str(selector.parent), str(pending)), tuple(links)
+    roots = (str(selector.parent), str(pending))
+    if pending != _MACOS_COMMAND_LINE_TOOLS:
+        # The selected Xcode launcher loads Info.plist and SharedFrameworks
+        # beside Developer. Those are part of this exact validated runtime,
+        # not a reason to grant all Applications or the enclosing app parent.
+        roots += (str(pending.parent),)
+    return roots, tuple(links)
 
 
 def system_read_paths(executable: Optional[str] = None) -> Tuple[str, ...]:

@@ -63,7 +63,7 @@ def runbook(boxes, iteration):
     return payload
 
 
-async def trial(boxes, iteration, interrupt):
+async def trial(boxes, iteration, interrupt, timeout_seconds=120, progress_seconds=0):
     began = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="camol-runtime-soak-") as temporary:
         root = Path(temporary)
@@ -102,7 +102,30 @@ async def trial(boxes, iteration, interrupt):
                 store = SQLiteEventStore(database)
                 orchestrator = Orchestrator(store)
             runner = HarnessRunner(orchestrator, source, state_dir=state_dir)
-            final = await asyncio.wait_for(runner.run_until_terminal(run_id), timeout=120)
+            async def report_progress():
+                while True:
+                    await asyncio.sleep(progress_seconds)
+                    snapshot = orchestrator.state(run_id)
+                    counts = {}
+                    for task in snapshot["tasks"].values():
+                        counts[task["status"]] = counts.get(task["status"], 0) + 1
+                    print(json.dumps(dict(schema="camol.runtime_soak.observation", iteration=iteration,
+                        seconds=round(time.monotonic() - began, 3), events=snapshot["last_seq"],
+                        status=snapshot["status"], tasks=counts)), file=sys.stderr, flush=True)
+            observer = asyncio.create_task(report_progress()) if progress_seconds else None
+            try:
+                final = await asyncio.wait_for(runner.run_until_terminal(run_id), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                snapshot = orchestrator.state(run_id)
+                print(json.dumps(dict(schema="camol.runtime_soak.failure", iteration=iteration,
+                    reason="trial_timeout", timeout_seconds=timeout_seconds, events=snapshot["last_seq"],
+                    status=snapshot["status"], tasks={key: value["status"] for key, value in snapshot["tasks"].items()})),
+                    file=sys.stderr, flush=True)
+                raise
+            finally:
+                if observer is not None:
+                    observer.cancel()
+                    await asyncio.gather(observer, return_exceptions=True)
             if final["status"] != "completed":
                 raise AssertionError({"status": final["status"], "tasks": {key: value["status"] for key, value in final["tasks"].items()}, "terminal": final.get("terminal")})
             integration = Path(final["integrations"][-1]["workspace"]["path"])
@@ -120,6 +143,7 @@ async def trial(boxes, iteration, interrupt):
                 "events": final["last_seq"], "artifacts": len(manifest["artifact_digests"]),
                 "source_unchanged": True, "export_replay_equal": True,
                 "seconds": round(time.monotonic() - began, 3),
+                "trial_timeout_seconds": timeout_seconds,
             }
         finally:
             store.close()
@@ -129,13 +153,20 @@ async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--boxes", type=int, default=4)
+    parser.add_argument("--trial-timeout", type=int, default=120,
+                        help="explicit per-trial observation ceiling in seconds; does not change kernel authority")
+    parser.add_argument("--progress-seconds", type=int, default=0,
+                        help="optional metadata-only progress observations; zero disables extra replay work")
     args = parser.parse_args()
     if not 1 <= args.iterations <= 100 or not 1 <= args.boxes <= 16:
         parser.error("iterations must be 1..100 and boxes 1..16")
+    if not 1 <= args.trial_timeout <= 3600 or not 0 <= args.progress_seconds <= 60:
+        parser.error("trial-timeout must be 1..3600 and progress-seconds 0..60")
     reports = []
     for iteration in range(args.iterations):
         print(json.dumps({"schema": "camol.runtime_soak.progress", "iteration": iteration, "boxes": args.boxes, "status": "starting"}), file=sys.stderr, flush=True)
-        reports.append(await trial(args.boxes, iteration, interrupt=iteration % 2 == 1))
+        reports.append(await trial(args.boxes, iteration, interrupt=iteration % 2 == 1,
+                                   timeout_seconds=args.trial_timeout, progress_seconds=args.progress_seconds))
         print(json.dumps(dict(reports[-1], schema="camol.runtime_soak.progress")), file=sys.stderr, flush=True)
     print(json.dumps({"schema": "camol.runtime_soak", "schema_version": 1, "passed": True, "trials": reports}, indent=2))
 

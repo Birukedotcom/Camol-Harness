@@ -240,6 +240,11 @@ assert oracle.read_text() == 'good'
         developer = applications / "Xcode_26.app" / "Contents" / "Developer"
         developer.mkdir(parents=True)
         (developer / "tool").write_text("selected toolchain")
+        (developer.parent / "Info.plist").write_text("selected runtime metadata")
+        frameworks = developer.parent / "SharedFrameworks"
+        frameworks.mkdir()
+        (frameworks / "required-library").write_text("selected runtime library")
+        (developer.parents[1] / "outside-contents").write_text("not a runtime read grant")
         alias = applications / "Xcode.app"
         alias.symlink_to(developer.parents[1])
         selector = self.root / "private" / "var" / "select" / "developer_dir"
@@ -260,12 +265,14 @@ assert oracle.read_text() == 'good'
 selector=pathlib.Path(%r)
 selected=pathlib.Path(os.readlink(selector))
 assert (selected/'tool').read_text() == 'selected toolchain'
+assert (selected.parent/'Info.plist').read_text() == 'selected runtime metadata'
+assert (selected.parent/'SharedFrameworks'/'required-library').read_text() == 'selected runtime library'
 assert os.readlink(%r)
 denied=0
-for file in (selector.parent/'unrelated-secret', pathlib.Path(%r)):
+for file in (selector.parent/'unrelated-secret', pathlib.Path(%r), selected.parent.parent/'outside-contents'):
     try: file.read_text()
     except PermissionError: denied += 1
-assert denied == 2, denied
+assert denied == 3, denied
 """ % (str(selector), str(alias), str(other / "secret"))
         with patch.object(sandbox, "_MACOS_APPLICATIONS", applications), patch.object(sandbox, "_MACOS_DEVELOPER_SELECTOR", selector), patch.object(
                 Path, "lstat", root_owned):

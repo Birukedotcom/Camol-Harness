@@ -189,6 +189,17 @@ class ConversationTests(unittest.TestCase):
             server.server_close()
             service.join(1)
 
+    def test_inner_socket_timeout_has_same_unknown_usage_outcome_as_outer_deadline(self):
+        import socket
+        for error in (TimeoutError("PRIVATE_TIMEOUT_CAUSE"), socket.timeout("PRIVATE_SOCKET_CAUSE")):
+            with self.subTest(kind=type(error).__name__), patch(
+                    "camol.conversation.AbortableLocalHTTP.request", side_effect=error) as request:
+                with self.assertRaisesRegex(ConversationError, "timed out.*usage is unknown") as caught:
+                    converse("local:fixture", "plan", [], effort="high", workspace=self.workspace, timeout=10)
+                self.assertNotIn("PRIVATE_", str(caught.exception))
+                self.assertEqual(request.call_count, 1)
+                self.assertFalse(any(thread.name == "camol-local-planner" and thread.is_alive() for thread in threading.enumerate()))
+
     def test_local_conversation_rejects_non_loopback_before_network_access(self):
         with patch("camol.conversation.AbortableLocalHTTP.request", side_effect=AssertionError("network called")):
             with self.assertRaisesRegex(ConversationError, "numeric loopback"):
