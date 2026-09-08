@@ -133,7 +133,7 @@ def apply(state, event):
                 raise MailboxError("worker message sender/reply subject is stale")
         elif sender["kind"] != "human" or sender["subject"] is not None or payload["reply_to"] is not None:
             raise MailboxError("invalid human message sender")
-        if payload["kind"] not in {"information", "question", "proposal", "warning"}:
+        if not isinstance(payload["kind"], str) or payload["kind"] not in {"information", "question", "proposal", "warning"}:
             raise MailboxError("message cannot carry control-plane authority")
         if (not isinstance(payload["body"], str) or not payload["body"].strip() or len(payload["body"]) > 2000
                 or any(ord(char) < 32 and char not in "\n\t" or ord(char) == 127 for char in payload["body"])):
@@ -148,6 +148,7 @@ def apply(state, event):
         records[payload["message_id"]] = dict(message=deepcopy(payload), posted_seq=event["seq"], delivered=None, consumed=None)
     else:
         fields(payload, {"message_id", "subject", "turn_number"})
+        require_identifier(payload["message_id"], "acknowledged message ID")
         record = records.get(payload["message_id"])
         if not record or payload["subject"] != record["message"]["target"]["subject"]:
             raise MailboxError("message acknowledgment has a foreign recipient")
@@ -241,6 +242,7 @@ class Mailbox:
         return self.control.state(self.run_id)["box_messages"][value["message_id"]]
 
     def acknowledge(self, assignment, message_id, *, consumed=False):
+        require_identifier(message_id, "acknowledged message ID")
         if type(consumed) is not bool:
             raise MailboxError("consumed must be a boolean")
         state, now = self.control.state(self.run_id), self.control._now()

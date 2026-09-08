@@ -8,6 +8,49 @@ upgraded to claim acknowledgment or expiry guarantees it never had.
 
 ## CLI workflow
 
+The interactive line client and TUI now expose:
+
+```text
+/message BOX TEXT
+/inbox [BOX [OFFSET]]
+/reply MESSAGE_ID TEXT
+/outbox [REQUEST_ID]
+/message retry REQUEST_ID
+```
+
+`/message` obtains an observation of the exact named box, saves the immutable send
+intent, then sends. It does not interpret pane numbers, pin order or labels as box
+identities. `/inbox` opens the inbox pane; `/box BOX inbox` selects the same view.
+The pane refresh preserves the unsent composer draft and renders message markup
+literally. A disconnected inbox uses an explicitly labeled retained ledger cut;
+corrupt or mismatched evidence is never replaced by a plausible cached inbox.
+Offline paging beyond that retained first page uses the CLI/export path.
+
+`/reply` resolves an exact message from the selected run ledger and observes its
+original worker reply address. A changed lease refuses the reply instead of
+redirecting it to the replacement task. Human-origin messages have no worker
+reply address; answer those through the orchestrator composer. Correlation IDs
+are preserved, but replies do not approve proposals or amend the plan.
+
+Before dispatch, the client fsyncs an owner-private request under the project's
+`message-outbox` directory. A lost response leaves `unknown_or_not_sent`; only an
+exact matching response records `accepted_not_consumed`. The saved request binds
+session/workspace/state directory, product/kernel plans, run, human sender and
+the full original target/body. `/message retry ID` reuses those exact fields and
+identity; it never refreshes an expired observation or retargets another run.
+The server still deduplicates an already accepted request. No automatic retry,
+intent deletion or unknown-to-success inference occurs.
+
+`/outbox` is inspection only, including requests belonging to prior plans. A
+changed session/plan/sender denies resending those old requests. The directory
+is bounded at 2,000 entries and each record at 32 KiB. Each new intent reserves
+room for its acceptance record, including after a lost response (at most 1,000
+retained requests, fewer if crash remnants occupy space); records must be private,
+regular and single-linked. Missing, altered, linked or inconsistent records are
+errors, not an empty reset. Retain this directory with project recovery state.
+Cancellation before dispatch does not undo an already committed remote send;
+an explicit retry/reconciliation remains available through the saved request.
+
 Use the actual state directory, run ID, frozen plan digest and exact box ID from
 your current run. The three mailbox commands require an authenticated live
 supervisor; `box list`, `resolve` and `read` still support offline inspection.
@@ -82,7 +125,7 @@ The embedding API supports worker sends with an explicit current assignment;
 worker-state storage remains owner-controlled, not exposed as a credentialed shell
 bridge inside arbitrary workspaces.
 
-Still open: TUI send/reply/inbox affordances, automatic fresh peer-observation
+Still open: automatic fresh peer-observation
 access for model tools, authenticated remote mailbox transport, and delegated
 new-task/plan-change workflows. No auto-discovery tool server, remote delivery,
 tiled pane layout or agent approval authority is claimed by this checkpoint.

@@ -41,7 +41,8 @@ Connected transport, account observation and task readiness are separate indicat
 | `/pin [BOX [on\|off]]`, `/group [BOX NAME\|BOX --clear]` | Persistent current-plan pins and display groups | Implemented; no authority change |
 | `/layout focus\|split\|grid` | Client-only tiled monitoring | Planned |
 | `camol box list\|resolve\|read` | Scoped observation using explicit run/box IDs, including stopped runs | Implemented; no message delivery or execution grant |
-| `camol box observe\|message\|inbox` | Lease-scoped owner CLI and embedding mailbox, idempotent sends and worker consumption receipts | Core implemented; TUI/automatic peer-tool/remote integration pending |
+| `camol box observe\|message\|inbox` | Lease-scoped owner CLI and embedding mailbox, idempotent sends and worker consumption receipts | Implemented; automatic peer-tool/remote integration pending |
+| `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX [OFFSET]]`, `/outbox [REQUEST_ID]` | Interactive sends/replies, inbox pane and immutable pending-request inspection | Implemented; explicit `/message retry ID` preserves its original scope |
 | `/delegate` | Review proposed task allocation; approved plan amendment when scope changes | Planned; kernel leasing remains authoritative |
 
 The overview is a ledger snapshot, not an active transport probe. Its digest and
@@ -166,8 +167,9 @@ itself, expand grants, evade budgets or substitute for an evaluator receipt.
 The [lease-scoped mailbox](box-mailbox.md) implements the owner CLI, embedding
 service, versioned worker sends and packet consumption protocol. Its documentation
 distinguishes prepared-packet delivery from consumption and current-generation
-preconditions from proof of actual reading. TUI messaging and automatic fresh
-peer-observation tools remain integration gates.
+preconditions from proof of actual reading. TUI messaging uses a private immutable
+outbox for uncertain outcomes. Automatic fresh peer-observation tools remain an
+integration gate.
 
 An optional tmux adapter may expose explicitly registered views later. It must
 bind its socket/server/session/pane identity, use bounded reads, and require
@@ -184,7 +186,7 @@ narrow terminals; redaction and terminal-control injection; reconnect without
 duplicate messages; stale generation/cursor denial; restart-safe inboxes; client
 closure without worker termination; and exact plan approval for new delegated work.
 Overview and switcher tests cover metadata/projection and keyboard navigation. Tiled panes,
-TUI/automatic peer-tool messaging and external tmux attachment are not claimed
+Automatic peer-tool messaging and external tmux attachment are not claimed
 implemented. The durable mailbox core has its own local execution/CLI tests.
 
 The overview/controller/TUI group passes 60 tests on Python 3.9 (15.337 seconds)

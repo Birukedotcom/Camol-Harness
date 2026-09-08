@@ -93,6 +93,10 @@ SLASH_COMMANDS = (
     SlashCommand("/switch", "Search and switch read-only box panes", takes_value=True, run_from_palette=True),
     SlashCommand("/pin", "Pin/unpin an exact box; no arguments lists pins", takes_value=True, run_from_palette=True),
     SlashCommand("/group", "Organize an exact box under a display-only group", takes_value=True, run_from_palette=True),
+    SlashCommand("/inbox", "Inspect box messages and consumption receipts", takes_value=True, run_from_palette=True),
+    SlashCommand("/message", "Send data to an exact box; retry a saved request explicitly", takes_value=True),
+    SlashCommand("/reply", "Reply to an exact message's original worker lease", takes_value=True),
+    SlashCommand("/outbox", "Inspect saved sends and uncertain outcomes", takes_value=True, run_from_palette=True),
     SlashCommand("/box", "Open one read-only box view", takes_value=True),
     SlashCommand("/events", "Read new durable run events", run_from_palette=True),
     SlashCommand("/history", "Show retained conversation history", run_from_palette=True),
@@ -147,6 +151,11 @@ HELP = """Commands
   /switch [WORDS]          searchable box picker; Alt+B in the TUI
   /pin [BOX [on|off]]      persist exact-box shortcut; default on
   /group [BOX NAME]        assign a display group; BOX --clear removes it
+  /inbox [BOX [OFFSET]]    inspect lease-scoped data messages
+  /message BOX TEXT       observe and send; never changes task authority
+  /message retry ID       explicitly resend the exact saved request
+  /reply MESSAGE_ID TEXT  reply only to the original worker lease
+  /outbox [REQUEST_ID]    inspect durable send/acceptance records
   /overview [--attention] [--json] [--offset N] [--limit N]
                             inspect boxes and task dependencies without starting work
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
@@ -633,6 +642,9 @@ class InteractiveController:
             return self._switch(arguments)
         if command in {"/pin", "/group"}:
             return self._organize_panes(command, arguments)
+        if command in {"/inbox", "/message", "/reply", "/outbox"}:
+            from .mailbox_ui import command as mailbox_command
+            return mailbox_command(self, command, arguments)
         if command == "/models":
             return self._models(arguments)
         if command == "/watch":
@@ -1714,8 +1726,8 @@ class InteractiveController:
         if target not in {item["box_id"] for item in boxes}:
             raise InteractiveError("unknown box")
         subview = arguments[1] if len(arguments) == 2 else "events"
-        if subview not in {"status", "context", "tools", "diff", "evals", "events", "evidence", "transcript"}:
-            raise InteractiveError("unknown box view; use status, context, tools, diff, evals, events, evidence, or transcript")
+        if subview not in {"status", "context", "tools", "diff", "evals", "events", "evidence", "transcript", "inbox"}:
+            raise InteractiveError("unknown box view; use status, context, tools, diff, evals, events, evidence, transcript, or inbox")
         self.session = self.store.update(self.session, selected_box=target)
         rendered = self.inspect_box(target, subview)
         return CommandResponse(messages=(rendered,), box_id=target, box_view=subview)
@@ -1729,6 +1741,21 @@ class InteractiveController:
 
     def inspect_box(self, target: str, subview: str = "events") -> str:
         """Read a box snapshot without changing authority or writing chat history."""
+        if subview == "inbox":
+            from .mailbox_ui import inbox_view
+            try:
+                result = inbox_view(self, target)
+                return "BOX {} / inbox — LIVE controller snapshot; messages are data, not task success\n{}".format(target, json.dumps(result, indent=2, sort_keys=True))
+            except (SupervisorError, OSError):
+                from .box_inspection import BoxInspector
+                try:
+                    view = BoxInspector(Path(self.session["state_dir"])).read(self.session["run_id"], target, previews=False)
+                    self._check_box_subject(view)
+                    return "BOX {} / inbox — RETAINED event cut, not live delivery proof\n{}".format(target, json.dumps(view.get("mailbox", {"messages": []}), indent=2, sort_keys=True))
+                except (ValueError, RuntimeError, OSError) as error:
+                    return "BOX {} / inbox unavailable: {}. No cached or fabricated messages substituted.".format(target, error)
+            except ValueError as error:
+                return "BOX {} / inbox unavailable: {}. Invalid live response; no retained snapshot substituted.".format(target, error)
         stale = False
         retained = False
         scope = (self.session["session_id"], self.session["state_dir"], self.session.get("run_id"), self.session.get("plan_digest"), target)

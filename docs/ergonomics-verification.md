@@ -332,3 +332,48 @@ Camol rather than the source checkout. This checkpoint used only temporary local
 repositories and deterministic agents: no paid model, credentials login, live
 remote host or downloaded model weights. Whole-suite successor verification is
 still pending and must not be inferred from predecessor results.
+
+## Interactive mailbox and immutable send recovery
+
+The frozen rate-deferral checkpoint `f3f3828bf424ce1cae6e4965474d9f79b1515fc3`
+also passed its Python 3.9 whole suite: **865 tests, 677.755 seconds**. Both
+integration and `codex/v0-next` were fast-forwarded to it after its two full-suite
+and installed-package gates. The user's installed environment was not changed.
+The frozen mailbox-core checkpoint `d7e12221c48fb936a07ed58326e546a78681cf37`
+passed **878 tests on Python 3.12 in 678.028 seconds**. Its Python 3.9 whole-suite
+check remains separate and pending at this checkpoint.
+
+The isolated `codex/v0-mailbox-ui` wave adds `/message`, `/reply`, `/inbox`,
+`/outbox`, explicit exact-intent retry, a live/retained inbox pane and private
+immutable send records. Plan amendments reject old requests instead of silently
+retargeting them. A response lost after the real mailbox commit is recovered by
+a reconstructed client without another observation or duplicate message.
+
+The **84-test** mailbox-UI/TUI/controller/session/real-terminal group passed on
+Python 3.12 (**46.735 seconds**) and Python 3.9 (**49.819 seconds**). It includes
+foreign/corrupt/linked records, changed plan and reply lease, cancellation before
+and after saving, malformed live scope, retained offline inspection, literal
+message markup, draft preservation, foreign acceptance identity and bounded
+storage. New intents reserve space for eventual acceptance files even when their
+responses are lost; saturation does not prevent inspection or exact retry.
+
+Further adversarial review found that an array/object message kind could raise
+an unexpected `TypeError` rather than a rejected-send `ValueError`. The core now
+validates that kind before set membership and validates acknowledgment IDs before
+dictionary lookup. The **13-test mailbox group** passed on Python 3.12
+(**38.879 seconds**) and Python 3.9 (**41.229 seconds**). After adding the final
+malformed-acknowledgment replay assertions, the two affected tests passed again
+on Python 3.9 (**5.155 seconds**) and in the installed-package group below.
+
+A fresh source distribution was rebuilt into a wheel and installed with the
+TUI/graph extras in a separate environment. **20 installed-package tests passed
+in 35.299 seconds**: all eleven mailbox UI cases, both malformed-message/replay
+cases, the composer/inbox test, and all six real-terminal/CLI tests. The parent
+asserted an installed `site-packages` import; CLI child processes ran from that
+package root rather than the checkout. Native-login visibility uses a fake local
+provider script, not an actual account login. No paid provider, downloaded weights
+or live remote host was used.
+
+The UI successor's complete suite is still a separate running gate. Automatic
+fresh peer-observation tools, remote mailbox transport, tiled layouts and reviewed
+task-delegation UI remain open. This is not a completed V0 or public-release claim.

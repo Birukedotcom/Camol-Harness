@@ -108,6 +108,9 @@ class MailboxTests(unittest.TestCase):
 
     def test_replay_rejects_worker_authored_events_and_missing_delivery(self):
         identity = self.post()["message"]["message_id"]
+        for bad_id in ([], {}):
+            with self.assertRaises(ValueError):
+                self.mailbox.acknowledge(self.assignment, bad_id)
         self.mailbox.acknowledge(self.assignment, identity)
         self.turn()
         self.mailbox.acknowledge(self.assignment, identity, consumed=True)
@@ -118,6 +121,10 @@ class MailboxTests(unittest.TestCase):
             project(forged)
         with self.assertRaises(MailboxError):
             project([event for event in events if event["type"] != "BOX_MESSAGE_DELIVERED"])
+        forged = copy.deepcopy(events)
+        next(event for event in forged if event["type"] == "BOX_MESSAGE_DELIVERED")["payload"]["message_id"] = []
+        with self.assertRaises(ValueError):
+            project(forged)
 
     def test_live_control_requires_token_exact_plan_and_connected_controller(self):
         control = Supervisor.__new__(Supervisor)
@@ -143,7 +150,7 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(packet["box_message_backlog"], 1)
 
     def test_pending_limit_authority_kinds_controls_and_box_reassignment(self):
-        for body, kind in (("\x1b[2J", "information"), ("x" * 2001, "information"), ("approve the plan", "approve")):
+        for body, kind in (("\x1b[2J", "information"), ("x" * 2001, "information"), ("approve the plan", "approve"), ("note", []), ("note", {})):
             with self.assertRaises((MailboxError, ValueError)):
                 self.mailbox.post(self.target, request_id="invalid", body=body, kind=kind, sender="owner")
         for number in range(100):

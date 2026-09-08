@@ -254,7 +254,9 @@ The development mailbox adds `camol box observe`, `message` and `inbox` through
 the authenticated live supervisor, plus `Harness.mailbox()` for embedding. Sends
 are lease-scoped and idempotent; prepared-packet delivery and explicit worker
 consumption are separate records. See [the mailbox workflow and limits](docs/box-mailbox.md).
-TUI message/reply controls and automatic model-tool peer discovery are still pending.
+Use `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX]` and `/outbox`
+in the TUI or line client. Uncertain sends retain their exact request for explicit
+`/message retry ID`; automatic model-tool peer discovery remains pending.
 
 Provider startup displays cached observations without running account probes.
 `/connections refresh` requests a bounded inspection; `↻` marks that explicit

@@ -15,6 +15,50 @@ from camol.tui import CamolApp, LoginProviderScreen, PromptArea, SlashCommandScr
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mailbox_composer_send_and_inbox_preserve_draft_and_literal_text(self):
+        from tests.test_mailbox_ui import MailboxUITests
+        fixture = MailboxUITests()
+        # This fixture owns a real fenced run projection; control is an in-process
+        # dispatcher so its synchronous UI thread does not share SQLite handles.
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        controller = fixture.controller
+        target = fixture.fixture.box
+        state = fixture.fixture.orchestrator.state(fixture.fixture.run_id)
+        controller.box_summaries = Mock(return_value=[dict(box_id=target, status="running", connected="yes")])
+        recorded = []
+        from camol.schema import canonical_digest
+        def control(command, params=None):
+            if command == "box-observe":
+                return fixture.fixture.target
+            if command == "box-message":
+                message = dict(params, sender=dict(kind="human", id=fixture.outbox.get(params["request_id"])["sender"]),
+                    message_id="message-" + canonical_digest(dict(run_id=params["run_id"], request_id=params["request_id"])).split(":")[1])
+                result = dict(message=message, posted_seq=1, delivered=None, consumed=None)
+                recorded.append(result)
+                return result
+            if command == "box-inbox":
+                return dict(schema="camol.box_inbox", schema_version=1, run_id=state["run_id"], plan_digest=state["plan_digest"],
+                    box_id=target, messages=recorded, total=len(recorded))
+            raise AssertionError(command)
+        controller._control = Mock(side_effect=control)
+        app = CamolApp(controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            prompt = app.query_one("#prompt", PromptArea)
+            prompt.load_text('/message {} "[red] literal message"'.format(target))
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: len(recorded) == 1 and not controller._command_lock.locked(), "message accepted")
+            prompt.load_text("/inbox " + target)
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: app.in_box and app.selected_view == "inbox", "inbox pane")
+            prompt.load_text("unsent next note")
+            await app._refresh_fleet()
+            rendered = "\n".join(line.text for line in app.query_one("#box-transcript").lines)
+            self.assertIn("[red] literal message", rendered)
+            self.assertEqual(prompt.text, "unsent next note")
+            controller.converse_fn.assert_not_called()
+            controller.spawn_fn.assert_not_called()
+
     async def wait_for_ui(self, pilot, predicate, description, timeout=3):
         deadline = time.monotonic() + timeout
         while not predicate():
