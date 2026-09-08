@@ -2291,3 +2291,43 @@ passed **45 tests in 77.418 seconds**, including real child-CLI publication and
 record inspection. Logs: `/tmp/camol-vcs-push-checked-py312.log`, `-py39.log`, and
 `/tmp/camol-vcs-push-installed.log`. Installed command help, V1 example validation
 and `git diff --check` pass. Main and the user's installed harness were untouched.
+
+## Push uncertainty acknowledgment — 2026-09-08
+
+The isolated `codex/v0-vcs-push-recovery` follow-up adds a human policy decision
+for uncertain publication: acknowledge the exact retained operation and permit a
+separately reviewed new push. It neither retries nor rewrites the old outcome,
+claims remote confirmation, changes task gates, nor proves receiver-side quiescence.
+Exact owner/run/plan/target/record binding, short approval expiry and append-time
+comparison reject stale decisions. Historical retries remain historical. A late
+local invocation that has not dispatched is denied after acknowledgment.
+
+Adversarial contract tests reproduced two uncontrolled type errors for list/dict
+statuses and receipt IDs; logs `/tmp/camol-vcs-push-recovery-red.log` and
+`/tmp/camol-vcs-push-recovery-identity-red.log`. Explicit string guards now make these
+controlled contract denials. The two pure contract tests pass.
+
+The first seven-test recovery group had one fixture error: an inherited helper
+passed `allow_write` twice. Calling the actual service with the denied permission
+fixed the test without changing production authority. Added cases cover preserved
+unknown/pending outcomes, expiry-safe historical retry, changed pending receipts,
+owner/body tampering, late-launch denial, child-CLI acknowledgment and replay/export.
+An intermediate group passed **53 tests in 65.118 seconds on Python 3.12** and
+**53 in 67.202 seconds on modern Python 3.9** before the final receipt-ID guard.
+V4 VCS snapshots explicitly distinguish acknowledgment metadata from old outcomes.
+
+The full suite remains on frozen `2da1ee07` in
+`/tmp/camol-process-intents-full-py312.log`, not either publication follow-up. All
+publication fixtures use disposable local repositories; no hosted push, account
+login, provider spending or cloud changes were performed. Remote execution and
+the wider completion gates remain open.
+
+The final groups passed **54 tests in 65.160 seconds on Python 3.12** and **54 in
+67.038 seconds on modern Python 3.9**. A rebuilt sdist/wheel was installed core-only
+into `/tmp/camol-vcs-push-recovery-package.le026cQP/venv`. Outside-checkout imports
+confirmed site-packages ownership, byte equality for all **118 product modules**,
+and absent Textual/MCP/cryptography before loading fixtures. The installed group
+passed **54 tests in 65.432 seconds**, including the actual child CLI. Logs:
+`/tmp/camol-vcs-push-recovery-checked-py312.log`, `-py39.log`, and
+`/tmp/camol-vcs-push-recovery-installed.log`. Installed command help, V1 validation
+and `git diff --check` pass. Main remains unchanged and clean.

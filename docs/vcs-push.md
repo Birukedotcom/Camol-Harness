@@ -81,8 +81,9 @@ Receipts retain elapsed time, bounded status, exact observed refs and exit code,
 not raw command output. A missing final ledger append leaves the intent pending.
 Exact retries return that historical record, never reissue a push. A pending or
 unknown operation also blocks a new request ID to the same exact destination.
-Automatic reconciliation/reset is intentionally absent: independent remote reads
-do not retroactively establish push authorship or authorize another effect.
+An explicit owner acknowledgment can lift that block for a separately reviewed
+new push, as described below. Automatic reconciliation/reset remains absent:
+independent remote reads do not retroactively establish push authorship.
 
 Events replay/export with the run. V3 VCS snapshots expose operation history and
 the latest outcome, including uncertainty, without changing task gates, usage,
@@ -91,3 +92,40 @@ already-present outcomes; other outcomes return 2.
 
 This implements bounded publication, not full SPEC §19.6: cross-run relationships,
 PR creation, ruleset evaluation and live hosted-provider acceptance remain open.
+
+## Owner acknowledgment of uncertain publication
+
+After inspecting the destination and any receiver-side effects, the owner can
+choose to permit another exact review without pretending the previous operation
+was confirmed or had no effects. This is a human policy decision, not an automated
+remote observation, proof of process quiescence, or proof a receiver hook ran once.
+
+Use `camol vcs propose-push-ack --request-id ID --reason TEXT --expires-at TIMESTAMP`,
+with the normal state/run arguments, to prepare the decision. It binds the exact
+uncertain operation record, target identity, run/plan/owner and rationale. The
+approval window is at most one hour. Review the complete JSON and save it, then use
+`camol vcs acknowledge-push --workspace SOURCE --proposal FILE --by OWNER
+--review-digest DIGEST`, plus the same state/run arguments. Both commands make no
+Git or network request. Applying takes the existing exclusive controller lock.
+
+The embedding API exposes `Harness.propose_vcs_push_acknowledgment(...)` and
+`Harness.acknowledge_vcs_push(proposal, by=..., review_digest=...)`. Active embedded
+execution is refused. `push-status` and V4 `/vcs` snapshots show the separate
+acknowledgment while preserving the original missing or unknown receipt. No gate,
+usage total or integration outcome becomes green through this decision.
+
+A changed pending result invalidates an unapproved old acknowledgment proposal.
+Wrong owners, changed bodies, foreign identities, expired/future proposals and
+attempts to claim remote confirmation or automatic retry are rejected. Exact
+retries of an already recorded acknowledgment return its historical decision
+without another event, even after its original approval window expires.
+
+Acknowledgment does **not** resend the old request. A new request ID still needs
+its own proposal, exact review digest, write/network permission, expected-ref check
+and non-fast-forward protection. A concurrent old local invocation that has not
+yet crossed the dispatch boundary is denied by its next authority check after
+acknowledgment. Already-dispatched remote work cannot be revoked by this metadata
+change and may still finish; receiver-side effects must inform the owner's decision.
+If an authentic old final result arrives later, it remains a separate receipt, not
+something inferred from acknowledgment. Reconciliation across runs or other kinds
+of external effects remains outside this narrow publication workflow.

@@ -186,6 +186,16 @@ class Harness:
             raise StateTransitionError("stop embedded execution before VCS publication")
         return VCSPush(self.orchestrator, self._require_run()).publish(proposal, **kwargs)
 
+    def propose_vcs_push_acknowledgment(self, **kwargs):
+        from .vcs_push import VCSPush
+        return VCSPush(self.orchestrator, self._require_run()).propose_acknowledgment(**kwargs)
+
+    def acknowledge_vcs_push(self, proposal, **kwargs):
+        from .vcs_push import VCSPush
+        if self._running:
+            raise StateTransitionError("stop embedded execution before acknowledging push uncertainty")
+        return VCSPush(self.orchestrator, self._require_run()).acknowledge(proposal, **kwargs)
+
     @property
     def targets(self):
         from .targets import TargetRegistry

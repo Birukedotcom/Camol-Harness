@@ -13,7 +13,7 @@ from .vcs import VCSError, _owner, _settled
 from .vcs_observations import binding
 
 
-EVENTS = frozenset({"VCS_PUSH_STARTED", "VCS_PUSH_FINISHED"})
+EVENTS = frozenset({"VCS_PUSH_STARTED", "VCS_PUSH_FINISHED", "VCS_PUSH_ACKNOWLEDGED"})
 MAX_PUSHES = 1000
 
 
@@ -68,7 +68,7 @@ def _unresolved(state, proposal):
         previous = record["proposal"]
         same = (previous["target_identity"] == proposal["target_identity"]
                 and previous["target"]["branch"] == proposal["target"]["branch"])
-        if same and (
+        if same and not record.get("acknowledgment") and (
                 record["receipt"] is None or record["receipt"]["result"]["status"] == "effect_unknown"):
             raise VCSError("this target has an unresolved push; reconcile it before another request")
 
@@ -84,6 +84,8 @@ def _result(value, proposal):
     if code is not None and (type(code) is not int or not -255 <= code <= 255):
         raise VCSError("invalid push exit status")
     status = value["status"]
+    if not isinstance(status, str):
+        raise VCSError("push outcome status must be a string")
     if status in {"confirmed", "already_present"}:
         if (value["observed_before"] != proposal["expected_old"] or value["observed_after"] != proposal["binding"]["revision"]
                 or value["error_code"] is not None):
@@ -102,6 +104,44 @@ def _result(value, proposal):
     else:
         raise VCSError("unknown push outcome")
     return deepcopy(value)
+
+
+def propose_acknowledgment(state, *, request_id, reason, issued_at, expires_at):
+    """Human attestation permits another review; never fabricates remote truth."""
+    _eligible(state, state["approved_by"])
+    require_identifier(request_id, "exact push request")
+    record = state.get("vcs_pushes", {}).get(request_id)
+    if record is None or record.get("acknowledgment"):
+        raise VCSError("push request is absent or already acknowledged")
+    outcome = "pending_effect_unknown" if record["receipt"] is None else record["receipt"]["result"]["status"]
+    if outcome not in {"pending_effect_unknown", "effect_unknown"}:
+        raise VCSError("only an uncertain push needs acknowledgment")
+    if (not isinstance(reason, str) or not reason.strip() or len(reason) > 2000
+            or any(not char.isprintable() for char in reason) or Redactor().text(reason) != reason):
+        raise VCSError("acknowledgment needs a bounded nonsecret printable owner rationale")
+    start = parse_timestamp(issued_at, "acknowledgment issued")
+    expiry = parse_timestamp(expires_at, "acknowledgment expiry")
+    if not start < expiry <= start + timedelta(hours=1):
+        raise VCSError("acknowledgment approval lifetime must be positive and at most one hour")
+    value = dict(schema="camol.vcs_push_acknowledgment", schema_version=1,
+        run_id=state["run_id"], plan_digest=state["plan_digest"], owner=state["approved_by"],
+        request_id=request_id, record_digest=canonical_digest(record),
+        target=deepcopy(record["proposal"]["target"]), target_identity=deepcopy(record["proposal"]["target_identity"]),
+        observed_status=outcome, reason=reason, issued_at=issued_at, expires_at=expires_at,
+        decision="permit_separately_reviewed_push", basis="owner_attestation_not_remote_confirmation",
+        prior_outcome_resolved=False, execution_authority=False, automatic_retry=False)
+    return dict(value, digest=canonical_digest(value))
+
+
+def _validate_acknowledgment(state, value):
+    try:
+        expected = propose_acknowledgment(state, request_id=value["request_id"], reason=value["reason"],
+                                         issued_at=value["issued_at"], expires_at=value["expires_at"])
+        if canonical_digest(value) != canonical_digest(expected):
+            raise VCSError("acknowledgment differs from the current exact uncertain push and owner decision")
+        return expected
+    except (KeyError, TypeError) as error:
+        raise VCSError("invalid push acknowledgment fields") from error
 
 
 def apply(state, event):
@@ -123,9 +163,20 @@ def apply(state, event):
             raise VCSError("push request reused or history full")
         _unresolved(state, proposal)
         records[proposal["request_id"]] = dict(proposal=proposal, started_at=value["started_at"], receipt=None)
+    elif event["type"] == "VCS_PUSH_ACKNOWLEDGED":
+        if not isinstance(value, dict) or set(value) != {"proposal", "approved_digest", "acknowledged_at"}:
+            raise VCSError("invalid push acknowledgment event")
+        proposal = _validate_acknowledgment(state, value["proposal"])
+        if value["approved_digest"] != proposal["digest"] or value["acknowledged_at"] != event["occurred_at"]:
+            raise VCSError("push acknowledgment approval or timestamp differs")
+        now = parse_timestamp(value["acknowledged_at"], "acknowledged")
+        if not parse_timestamp(proposal["issued_at"], "issued") <= now < parse_timestamp(proposal["expires_at"], "expires"):
+            raise VCSError("push acknowledgment is expired or future issued")
+        records[proposal["request_id"]]["acknowledgment"] = deepcopy(value)
     else:
         fields = {"request_id", "proposal_digest", "finished_at", "elapsed_ms", "result", "digest"}
-        if not isinstance(value, dict) or set(value) != fields or value["request_id"] not in records:
+        if (not isinstance(value, dict) or set(value) != fields
+                or not isinstance(value["request_id"], str) or value["request_id"] not in records):
             raise VCSError("push outcome has no exact intent")
         record = records[value["request_id"]]
         if record["receipt"] is not None or value["proposal_digest"] != record["proposal"]["digest"]:
@@ -145,6 +196,26 @@ class VCSPush:
 
     def propose(self, **kwargs):
         return propose(self.orchestrator.state(self.run_id), **kwargs)
+
+    def propose_acknowledgment(self, **kwargs):
+        return propose_acknowledgment(self.orchestrator.state(self.run_id), **kwargs)
+
+    def acknowledge(self, proposal, *, by, review_digest):
+        state = self.orchestrator.state(self.run_id)
+        _eligible(state, by)
+        if not isinstance(proposal, dict) or review_digest != proposal.get("digest"):
+            raise VCSError("approve the exact push acknowledgment digest")
+        request_id = require_identifier(proposal.get("request_id"), "push acknowledgment request")
+        prior = state.get("vcs_pushes", {}).get(request_id, {}).get("acknowledgment")
+        if prior is not None:
+            if canonical_digest(prior["proposal"]) != canonical_digest(proposal):
+                raise VCSError("push acknowledgment retry differs from the recorded decision")
+            return deepcopy(prior)
+        proposal = _validate_acknowledgment(state, proposal)
+        now = self.orchestrator._now()
+        value = dict(proposal=proposal, approved_digest=review_digest, acknowledged_at=now)
+        self._append("VCS_PUSH_ACKNOWLEDGED", value, by, now, state)
+        return deepcopy(value)
 
     def _append(self, kind, value, by, when, state):
         from .state import apply_event
@@ -178,7 +249,7 @@ class VCSPush:
             if not parse_timestamp(proposal["issued_at"], "issued") <= self.orchestrator.clock() < parse_timestamp(proposal["expires_at"], "expires"):
                 raise VCSError("push approval expired before dispatch")
             retained = current["vcs_pushes"][proposal["request_id"]]
-            if retained["proposal"] != proposal or retained["receipt"] is not None:
+            if retained["proposal"] != proposal or retained["receipt"] is not None or retained.get("acknowledgment"):
                 raise VCSError("push intent changed before dispatch")
 
         outcome = git_push.publish(proposal, token=token, cancel_event=cancel_event, authorize=authorize)

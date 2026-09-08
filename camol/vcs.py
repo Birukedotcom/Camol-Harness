@@ -99,6 +99,8 @@ def snapshot(state):
     if state.get("vcs_pushes"):
         result["schema_version"] = 3
         result["pushes"] = deepcopy(list(state["vcs_pushes"].values()))
+        if any(item.get("acknowledgment") for item in result["pushes"]):
+            result["schema_version"] = 4
         result["coverage"]["remote_push_observed"] = any(
             item["receipt"] is not None and item["receipt"]["result"]["status"] == "confirmed"
             for item in result["pushes"])
@@ -246,6 +248,8 @@ def render_snapshot(graph, *, offset=0, limit=50):
             outcome = latest["receipt"]["result"]["status"] if latest["receipt"] is not None else "pending_effect_unknown"
             lines.append("Push {}: {}; request {} (retained, not a gate)".format(
                 _label(node["candidate_id"], 128), outcome, _label(latest["proposal"]["request_id"], 128)))
+            if latest.get("acknowledgment"):
+                lines.append("  Owner acknowledged uncertainty; a new push still needs separate exact approval.")
         if node.get("remote_observations"):
             latest = node["remote_observations"][-1]
             lines.append("Remote read {}: {} at {}; request {} (retained, not a gate)".format(

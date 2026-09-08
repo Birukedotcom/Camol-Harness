@@ -160,6 +160,9 @@ retained receipt offline. This does not push, merge or approve anything; see
 `camol vcs propose-push`, `push` and `push-status` add separately reviewed
 single-branch publication of a completed integration, with durable unknown-effect
 handling and no automatic retries. See [push approval and limits](docs/vcs-push.md).
+Uncertain publication can be explicitly acknowledged with `propose-push-ack` and
+`acknowledge-push`; this permits a separately reviewed new request without erasing
+the prior uncertainty or retrying automatically.
 
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference

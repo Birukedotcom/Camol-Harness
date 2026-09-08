@@ -288,6 +288,11 @@ destination. Local bare repositories support real offline tests; GitHub HTTPS
 requires separate explicit network/write permission and supplied credentials.
 This does not close hosted-provider, PR, ruleset or cross-run acceptance; see
 [publication boundaries](vcs-push.md).
+The `codex/v0-vcs-push-recovery` follow-up adds an exact owner acknowledgment of
+uncertain publication. It preserves the old outcome and only permits a separately
+approved new request; no automatic retry, remote success claim or task-gate change
+is introduced. Pending-result changes invalidate old reviews, and a pre-dispatch
+old invocation cannot continue past an acknowledged intent's authority check.
 
 - The legacy manual grill still produces a V4 runbook. Seed-assisted proposals
   preserve reviewed V5/V6 authority. The new `/grill --draft` path proposes V5 from

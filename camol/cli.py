@@ -377,6 +377,17 @@ def command_vcs(args: argparse.Namespace) -> int:
         result = state.get("vcs_pushes", {}).get(args.request_id)
         if result is None:
             raise VCSError("unknown exact push request ID")
+    elif args.vcs_action == "propose-push-ack":
+        from .vcs_push import propose_acknowledgment
+        from datetime import datetime, timezone
+        result = propose_acknowledgment(state, request_id=args.request_id, reason=args.reason,
+            issued_at=datetime.now(timezone.utc).isoformat(), expires_at=args.expires_at)
+    elif args.vcs_action == "acknowledge-push":
+        proposal = load_contract(args.proposal, max_bytes=65536)
+        with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+            if harness.run_id != args.run_id:
+                raise VCSError("push acknowledgment requires the exact current run")
+            result = harness.acknowledge_vcs_push(proposal, by=args.by, review_digest=args.review_digest)
     elif args.vcs_action == "push":
         import os
         import re
@@ -1276,7 +1287,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     vcs = subparsers.add_parser("vcs", help="inspect candidate lineage and explicitly review bounded Git publication")
     vcs_commands = vcs.add_subparsers(dest="vcs_action", required=True)
-    for name in ("inspect", "impact", "propose", "apply", "observe", "observation", "propose-push", "push", "push-status"):
+    for name in ("inspect", "impact", "propose", "apply", "observe", "observation", "propose-push", "push", "push-status", "propose-push-ack", "acknowledge-push"):
         operation = vcs_commands.add_parser(name)
         operation.add_argument("--state-dir", required=True)
         operation.add_argument("--db", help="existing database inside state-dir; default camol.sqlite3")
@@ -1325,6 +1336,15 @@ def build_parser() -> argparse.ArgumentParser:
             operation.add_argument("--token-env", help="explicit GitHub token variable; no login or ambient credential lookup")
         elif name in {"observation", "push-status"}:
             operation.add_argument("--request-id", required=True)
+        elif name == "propose-push-ack":
+            operation.add_argument("--request-id", required=True)
+            operation.add_argument("--reason", required=True, help="owner rationale; acknowledgment does not prove the prior effect resolved")
+            operation.add_argument("--expires-at", required=True)
+        elif name == "acknowledge-push":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--proposal", required=True)
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--review-digest", required=True)
         operation.set_defaults(handler=command_vcs)
 
     box = subparsers.add_parser("box", help="inspect exact boxes or send lease-scoped data messages through a live controller")
