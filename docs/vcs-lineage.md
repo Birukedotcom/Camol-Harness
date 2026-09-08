@@ -102,8 +102,10 @@ Recorded state requires the same owner-controlled storage as the rest of Camol.
 ## Remaining §19.6 scope
 
 Explicit GitHub branch/PR/check/review observations are now implemented in a
-separate owner workflow. Actual push-operation receipts, ruleset/approval-policy
+separate owner workflow. [Explicit bounded push operations](vcs-push.md) now have
+owner-reviewed single-ref publication and replayable outcomes; live GitHub
+acceptance remains unverified. Ruleset/approval-policy
 evaluation, cross-run or cross-repository objects, live change detection and Git
-mutations remain open. Relationships are owner declarations, not ancestry or
+mutations beyond that reviewed push path remain open. Relationships are owner declarations, not ancestry or
 deployment proof. This is not completion of the full VCS specification or
 distributed build execution.

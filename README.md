@@ -157,6 +157,9 @@ See [candidate relationships and remaining VCS scope](docs/vcs-lineage.md).
 observations for an exact accepted integration. `camol vcs observation` reads its
 retained receipt offline. This does not push, merge or approve anything; see
 [setup, credentials and evidence limits](docs/vcs-observations.md).
+`camol vcs propose-push`, `push` and `push-status` add separately reviewed
+single-branch publication of a completed integration, with durable unknown-effect
+handling and no automatic retries. See [push approval and limits](docs/vcs-push.md).
 
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference

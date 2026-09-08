@@ -2256,3 +2256,38 @@ without installing either multiplexer or treating raw terminal input as delegate
 authority. The pane/overview/organization/switcher/delegation/box-inspection group
 passed **61 tests in 87.863 seconds on Python 3.12**; log:
 `/tmp/camol-process-intents-pane-review.log`.
+
+## Reviewed VCS publication — 2026-09-08
+
+The isolated `codex/v0-vcs-push` follow-up adds real single-ref publication from
+completed integrated code, separately reviewed by the exact owner. Preparation
+uses an object-only scratch repository; expected-ref comparison and an atomic
+Git ref lease prevent unnoticed concurrent ref replacement, while an independent
+ancestry check refuses non-fast-forward history rewriting. Each operation has a
+durable intent and a confirmed/already-present/not-dispatched/unknown outcome.
+Lost outcomes cannot reissue automatically. See [complete scope](vcs-push.md).
+
+The first group passed **9 tests in 26.682 seconds**. Review added local directory
+identity checks, GitHub case-alias normalization, exact ref races, source-hook and
+URL-rewrite traps, and credential-channel assertions. The reviewed group passed
+**13 tests in 28.132 seconds**. An expanded intermediate group passed **45 tests
+in 78.798 seconds on Python 3.12** and **45 in 81.688 seconds on modern Python 3.9**.
+Those groups began before the final credential-prevalidation change; the later
+13-test runs passed in **30.256 / 30.972 seconds** respectively. The last change
+also exposes push outcomes and pending uncertainty in the existing `/vcs` display.
+
+Tests perform real Git publication only into disposable local bare repositories.
+GitHub's command/credential path uses a test double with no hosted write or network
+request. This is not live GitHub acceptance, PR/ruleset integration or distributed
+worker completion. The single full Python-3.12 suite remains at frozen `2da1ee07`
+in `/tmp/camol-process-intents-full-py312.log`; it does not cover this push follow-up.
+
+Final groups passed **45 tests in 77.124 seconds on Python 3.12** and **45 in
+79.189 seconds on modern Python 3.9**. A rebuilt sdist/wheel installed core-only
+into `/tmp/camol-vcs-push-package.Yai0GIrJ/venv`; outside-checkout imports checked
+site-packages ownership and byte equality of all **118 product modules** before
+loading fixtures. Textual/MCP/cryptography were absent. The same installed group
+passed **45 tests in 77.418 seconds**, including real child-CLI publication and
+record inspection. Logs: `/tmp/camol-vcs-push-checked-py312.log`, `-py39.log`, and
+`/tmp/camol-vcs-push-installed.log`. Installed command help, V1 example validation
+and `git diff --check` pass. Main and the user's installed harness were untouched.

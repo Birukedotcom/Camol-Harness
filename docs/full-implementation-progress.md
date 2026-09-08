@@ -197,7 +197,7 @@ usable Python/CLI entry points. A fixture cannot establish live provider maturit
 | Capacity / heterogeneous N boxes | Implemented; integration ongoing | Shared broker, fresh observed/owner-declared pools, suspect reservations, real two-run single-slot fairness/cancellation and broker-cursor wake; V6 |
 | Watchers and correctable evidence | Local scheduled source implemented | Durable approved polling, normalized JSONL source, daemon restart, interleaving/expiry/cursor/cancellation tests; live cloud source adapters pending |
 | Repository dependency graph | Implemented; adversarial tests ongoing | Safe static Python/packaging/npm/Docker/runbook scans, evidence-linked impact/path/cycle queries; JSON/DOT/GraphML |
-| VCS integration lineage | Same-run relationships, prospective impact and explicit GitHub observations implemented | Replay/export, exact code identity, seven relations, `/vcs`, bounded branch/PR/check/review reads; actual push receipts, approval-policy interpretation, cross-run objects and Git mutations remain open |
+| VCS integration lineage | Same-run relationships, prospective impact, GitHub observations and bounded reviewed publication implemented | Replay/export, exact code identity, seven relations, `/vcs`, branch/PR/check/review reads and single-ref push receipts; hosted push acceptance, approval-policy interpretation, cross-run objects and other Git mutations remain open |
 | Local model lifecycle | Download foundation; owned loader in next wave | Exact owner manifests and pinned bytes; one-shot owned llama.cpp lifecycle with local protocol fixtures. No actual model/inference or planner/worker handoff proof |
 | Evaluator compiler / benchmark campaigns | Core protocols and offline SWE-bench adapter implemented | Explicit V5 mapping; pinned 3-arm campaign, real gold/no-op fixtures, crash/cleanup reconciliation, protected official-grader protocol; live public trials pending |
 | Remote targets / workflow profiles | Pinned SSH control, read-only terminal monitor and owner mailbox relay implemented | Exact host/bridge/target/run scope, durable uncertain mutations and content-free RPC usage; no distributed worker adoption, provisioning or live cloud/voice proof |
@@ -280,6 +280,15 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 
 ## Remaining product and validation gates
 
+The isolated `codex/v0-vcs-push` follow-up implements an exact completed-integration
+push proposal, owner approval, durable pre-effect intent, isolated object-only Git
+publication, expected-ref race protection and final readback. Unknown outcomes
+cannot auto-retry or bypass uncertainty through a new request ID to the same
+destination. Local bare repositories support real offline tests; GitHub HTTPS
+requires separate explicit network/write permission and supplied credentials.
+This does not close hosted-provider, PR, ruleset or cross-run acceptance; see
+[publication boundaries](vcs-push.md).
+
 - The legacy manual grill still produces a V4 runbook. Seed-assisted proposals
   preserve reviewed V5/V6 authority. The new `/grill --draft` path proposes V5 from
   human intent with fixed worker/scope/limits and exact review/approval. Semantic
@@ -348,8 +357,9 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 - Same-run VCS relationships support owner review and prospective rerun sets.
   Explicit GitHub observations now retain matching/moved refs, PR identity, checks
   and reviews, with durable intent and no fallback to old green after failure.
-  These do not transfer green gates, infer push authorship or approval policy, or
-  automatically watch remote changes. Full §19.6 remains open; see [VCS scope](vcs-lineage.md).
+  These reads do not transfer green gates, infer push authorship or approval policy,
+  or automatically watch remote changes. A separate reviewed push path records
+  actual operations and uncertainty. Full §19.6 remains open; see [VCS scope](vcs-lineage.md).
 
 This ledger is a progress record, not a claim that the entire specification is
 implemented. Current limitations remain open until backed by the named gate.

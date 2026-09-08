@@ -96,6 +96,18 @@ def snapshot(state):
         result["basis"] = "recorded_candidates_relations_and_external_observations_not_live_git"
         result["coverage"]["pull_requests_observed"] = any(row["pull_request"] is not None for rows in external.values() for row in rows)
         result["coverage"]["remote_observation_requests_recorded"] = True
+    if state.get("vcs_pushes"):
+        result["schema_version"] = 3
+        result["pushes"] = deepcopy(list(state["vcs_pushes"].values()))
+        result["coverage"]["remote_push_observed"] = any(
+            item["receipt"] is not None and item["receipt"]["result"]["status"] == "confirmed"
+            for item in result["pushes"])
+        for node in nodes:
+            history = [item for item in result["pushes"] if item["proposal"]["binding"]["candidate_id"] == node["candidate_id"]]
+            if history:
+                node["push_history"] = history
+                latest = history[-1]
+                node["remote_push_receipt"] = latest["receipt"]
     return _digest(result)
 
 
@@ -229,6 +241,11 @@ def render_snapshot(graph, *, offset=0, limit=50):
         lines.append("{} --{}--> {}".format(_label(edge["source"], 128), edge["relation"], _label(edge["target"], 128)))
     lines.append("{} candidates / {} relationships; graph {}".format(len(graph["nodes"]), len(graph["relations"]), graph["digest"]))
     for node in graph["nodes"][offset:offset + limit]:
+        if node.get("push_history"):
+            latest = node["push_history"][-1]
+            outcome = latest["receipt"]["result"]["status"] if latest["receipt"] is not None else "pending_effect_unknown"
+            lines.append("Push {}: {}; request {} (retained, not a gate)".format(
+                _label(node["candidate_id"], 128), outcome, _label(latest["proposal"]["request_id"], 128)))
         if node.get("remote_observations"):
             latest = node["remote_observations"][-1]
             lines.append("Remote read {}: {} at {}; request {} (retained, not a gate)".format(

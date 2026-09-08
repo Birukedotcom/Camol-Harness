@@ -176,6 +176,16 @@ class Harness:
             raise StateTransitionError("stop embedded execution before synchronous external VCS observation")
         return self.orchestrator.observe_vcs(run_id, **kwargs)
 
+    def propose_vcs_push(self, **kwargs):
+        from .vcs_push import VCSPush
+        return VCSPush(self.orchestrator, self._require_run()).propose(**kwargs)
+
+    def push_vcs(self, proposal, **kwargs):
+        from .vcs_push import VCSPush
+        if self._running:
+            raise StateTransitionError("stop embedded execution before VCS publication")
+        return VCSPush(self.orchestrator, self._require_run()).publish(proposal, **kwargs)
+
     @property
     def targets(self):
         from .targets import TargetRegistry

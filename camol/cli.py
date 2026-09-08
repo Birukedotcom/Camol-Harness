@@ -366,6 +366,33 @@ def command_vcs(args: argparse.Namespace) -> int:
     elif args.vcs_action == "propose":
         result = propose(state, source=args.source, target=args.target, relation=args.relation,
                          action=args.action, reason=args.reason)
+    elif args.vcs_action == "propose-push":
+        from .vcs_push import propose as propose_push
+        from datetime import datetime, timezone
+        result = propose_push(state, candidate_id=args.candidate, integration_id=args.integration,
+            target=load_contract(args.target, max_bytes=65536), expected_old=args.expected_old,
+            request_id=args.request_id, issued_at=datetime.now(timezone.utc).isoformat(),
+            expires_at=args.expires_at, timeout_seconds=args.timeout)
+    elif args.vcs_action == "push-status":
+        result = state.get("vcs_pushes", {}).get(args.request_id)
+        if result is None:
+            raise VCSError("unknown exact push request ID")
+    elif args.vcs_action == "push":
+        import os
+        import re
+        token = None
+        if args.token_env is not None:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", args.token_env):
+                raise VCSError("token-env must name one explicit environment variable")
+            token = os.environ.get(args.token_env)
+            if not token:
+                raise VCSError("the explicitly named push credential is unavailable")
+        proposal = load_contract(args.proposal, max_bytes=65536)
+        with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+            if harness.run_id != args.run_id:
+                raise VCSError("push requires the exact current run")
+            result = harness.push_vcs(proposal, by=args.by, review_digest=args.review_digest,
+                allow_write=args.allow_write, allow_network=args.allow_network, token=token)
     elif args.vcs_action == "observation":
         result = state.get("vcs_observations", {}).get(args.request_id)
         if result is None:
@@ -395,6 +422,9 @@ def command_vcs(args: argparse.Namespace) -> int:
                 raise VCSError("VCS apply requires the exact current run of this state directory")
             result = harness.apply_vcs_relation(proposal, by=args.by, review_digest=args.review_digest)
     _write_json(result)
+    if args.vcs_action == "push":
+        receipt = result.get("receipt")
+        return 0 if receipt and receipt["result"]["status"] in {"confirmed", "already_present"} else 2
     if args.vcs_action == "observe":
         receipt = result.get("receipt")
         if not receipt or receipt["status"] != "observed":
@@ -1244,9 +1274,9 @@ def build_parser() -> argparse.ArgumentParser:
     delivery.add_argument("--allow-network", action="store_true", help="explicitly authorize one TLS evidence exchange")
     delivery.set_defaults(handler=command_worker_delivery)
 
-    vcs = subparsers.add_parser("vcs", help="record candidate relationships and inspect prospective verification impact; never Git mutation")
+    vcs = subparsers.add_parser("vcs", help="inspect candidate lineage and explicitly review bounded Git publication")
     vcs_commands = vcs.add_subparsers(dest="vcs_action", required=True)
-    for name in ("inspect", "impact", "propose", "apply", "observe", "observation"):
+    for name in ("inspect", "impact", "propose", "apply", "observe", "observation", "propose-push", "push", "push-status"):
         operation = vcs_commands.add_parser(name)
         operation.add_argument("--state-dir", required=True)
         operation.add_argument("--db", help="existing database inside state-dir; default camol.sqlite3")
@@ -1275,7 +1305,25 @@ def build_parser() -> argparse.ArgumentParser:
             operation.add_argument("--token-env", help="optional explicit credential variable; never logs in or reads other account stores")
             operation.add_argument("--request-id", help="stable observation request ID; exact retry never reissues network calls")
             operation.add_argument("--timeout", type=float, default=30)
-        elif name == "observation":
+        elif name == "propose-push":
+            operation.add_argument("--candidate", required=True)
+            operation.add_argument("--integration", required=True)
+            operation.add_argument("--target", required=True, help="exact local_bare or github_https push target JSON")
+            previous = operation.add_mutually_exclusive_group(required=True)
+            previous.add_argument("--expected-old", help="reviewed exact destination commit")
+            previous.add_argument("--create-branch", action="store_true", help="require destination branch to be absent")
+            operation.add_argument("--request-id", required=True)
+            operation.add_argument("--expires-at", required=True, help="approval deadline, at most one hour after proposal")
+            operation.add_argument("--timeout", type=int, default=30)
+        elif name == "push":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--proposal", required=True)
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--review-digest", required=True)
+            operation.add_argument("--allow-write", action="store_true")
+            operation.add_argument("--allow-network", action="store_true")
+            operation.add_argument("--token-env", help="explicit GitHub token variable; no login or ambient credential lookup")
+        elif name in {"observation", "push-status"}:
             operation.add_argument("--request-id", required=True)
         operation.set_defaults(handler=command_vcs)
 
