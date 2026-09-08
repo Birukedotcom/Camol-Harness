@@ -1478,3 +1478,19 @@ and exact-product full-suite gates are tracked below when complete. Main remains
 unchanged at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; user installation and
 account configuration are untouched. Distributed workers, native live execution,
 push/PR mutations and the remaining acceptance-ledger gates are still open.
+
+Product `8ef7d150bdea0cf8f8950fbde08ea19645ee77da` is now committed and pushed on
+`codex/v0-vcs-observations` under the owner's Git identity. The fresh installed
+wheel passed **88 integration tests in 79.744 seconds on Python 3.12**, importing
+from `site-packages` outside the repository and byte-comparing all eight changed
+product modules before adding source test fixtures. The installed environment is
+`/tmp/camol-vcs-observations-package.gcv7lAsI/venv`, with results in
+`/tmp/camol-vcs-observations-installed.log`. It also replayed the prior installed
+archive with the identical V1 graph digest after the final redaction fixes.
+Core imports and `camol vcs observe --help` passed with Textual, MCP and
+cryptography imports explicitly refused.
+
+Both full suites for this frozen product have started; their results remain
+pending in `/tmp/camol-vcs-observations-full-py312.log` and
+`/tmp/camol-vcs-observations-full-py39.log`. The installed and focused gates do not
+stand in for those whole-suite results, live agent acceptance or public release.
