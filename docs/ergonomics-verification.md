@@ -1210,3 +1210,17 @@ on Python 3.12** and **988.464 seconds on Python 3.9** (three optional skips).
 Managed-source product `c16dfdf02612e23ef6682011773336d3da73bedd` passed **1,070
 tests in 921.424 seconds on Python 3.12**; its Python 3.9 run remains in progress
 at this checkpoint. Neither result validates this later placement change.
+
+The placement product is `8f4e557bf0b4598e73dfc064f640c831c0ffdc8c`, pushed on
+`codex/v0-execution-placement` under the owner's identity. A fresh sdist-to-wheel
+installation with TUI/graph/recovery extras passed the final **39-test union in
+64.702 seconds on Python 3.12**. It imported Camol from `site-packages` outside the
+repository before adding test fixtures, and byte-compared all four changed product
+modules against source. Installed `camol --help` and validation of the original
+three-agent runbook also passed. No paid model or cloud action was performed.
+
+Full Python 3.12 and 3.9 suites for the placement product are running, not yet a
+passed gate. The predecessor managed-source product subsequently finished its
+Python 3.9 full suite: **1,070 tests in 1,009.943 seconds, three optional skips**.
+Main remains clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; neither the
+main checkout nor the user's installed application was upgraded in this pass.
