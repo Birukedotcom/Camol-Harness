@@ -71,7 +71,9 @@ def profile_run(events):
         if elapsed < 0:
             elapsed = None
     terminal = state["status"] in {"completed", "blocked", "superseded"}
-    return dict(schema="camol.diagnostic_profile", schema_version=1, run_id=state["run_id"], status=state["status"],
+    from .peer_telemetry import profile as peer_profile
+    peer_fields = dict(peer_tools=peer_profile(state)) if state.get("peer_tool_calls") else {}
+    return dict(schema="camol.diagnostic_profile", schema_version=1, run_id=state["run_id"], status=state["status"], **peer_fields,
                 source_digest=canonical_digest(ordered), as_of_seq=state["last_seq"], event_counts=dict(sorted(observed_types.items())),
                 wait_event_counts=dict(sorted(waits.items())), task_hotspots=hotspots, lifecycle_spans=spans, clock_issues=issues,
                 ledger_elapsed_ms=elapsed, ledger_elapsed_right_censored=not terminal, usage=usage,
@@ -87,7 +89,13 @@ def profile_run(events):
 def event_metadata(event):
     """A log-sink record without user prose, command arguments or source bodies."""
     payload = event["payload"]
-    return dict(schema="camol.log_metadata", schema_version=1, run_id=event["run_id"], seq=event["seq"],
+    extra = {}
+    subject = {key: payload[key] for key in ("task_id", "agent_id", "lease_id", "watcher_id", "case_id") if key in payload}
+    if event["type"] in {"BOX_PEER_CALL_STARTED", "BOX_PEER_CALL_FINISHED"}:
+        extra["peer_call"] = {key: payload[key] for key in ("call_id", "operation", "outcome", "elapsed_ns", "reused", "error_kind") if key in payload}
+        caller = payload.get("subject", {})
+        subject.update({key: caller[key] for key in ("task_id", "box_id", "lease_id") if key in caller})
+    return dict(schema="camol.log_metadata", schema_version=1, run_id=event["run_id"], seq=event["seq"], **extra,
                 event_type=event["type"], occurred_at=event["occurred_at"], actor_id=event["actor_id"],
-                subject={key: payload[key] for key in ("task_id", "agent_id", "lease_id", "watcher_id", "case_id") if key in payload},
+                subject=subject,
                 event_digest=canonical_digest(event))

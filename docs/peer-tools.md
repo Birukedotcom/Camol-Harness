@@ -81,8 +81,52 @@ provider/context envelope. The tools themselves make no model requests.
 
 Denied requests raise typed errors without successful-read events. A send that
 succeeds is durably represented by the mailbox event; a read is not a successful
-send receipt. Full failed-tool-attempt telemetry and provider-facing execution
-remain integration work, not claims made by this interface.
+send receipt. Admitted attempts, including failures and retries, now have the
+separate telemetry records below. Provider-facing execution remains integration
+work, not a claim made by this interface.
+
+## Attempt logger and optimization profile
+
+Before dispatch, the bridge appends `BOX_PEER_CALL_STARTED` with a generated call
+ID, exact caller/turn, logical retry ID, whitelisted operation label, argument
+digest and whether a matching result already existed. It never stores argument
+prose in this attempt record; send-body digests use the mailbox-redacted body.
+An invalid operation is labeled `unsupported`, not copied into diagnostic prose.
+A start-publication failure prevents the operation from running.
+
+`BOX_PEER_CALL_FINISHED` records success, error or interruption and locally
+measured monotonic operation time. A successful finish must reference a matching
+durable peer read or worker message and bind its exact request/result digest.
+Replayed timing is a trusted local bridge observation, not independently measured
+CPU, network latency, provider tokens or dollar cost. It excludes publication of
+the final audit record. Provider usage stays in the existing provider receipts.
+
+If completion publication fails or the process disappears, the durable start
+remains **unknown**. A missing measurement is never displayed as zero duration.
+A tool error does not prove that no message was committed: retry the same logical
+request to use the mailbox's existing idempotency. That retry gets a new attempt
+record and a `reused` result; it does not erase the first unknown measurement or
+manufacture a fresh observation. Failure-log publication preserves the original
+exception, leaving the start unknown instead of replacing it with a misleading
+outcome. Measurement completion may occur after caller revocation, but cannot
+start another operation or grant authority.
+
+`camol profile --db PATH --run-id RUN` includes an optional `peer_tools` section
+grouped by operation and task: attempts, successes, errors, interruptions, unknown
+outcomes, reused results, measured-call counts and the sum of known elapsed times.
+Its data and the JSONL metadata logger contain no request/response prose. Box
+inspection associates both call events with the explicit caller; exports replay
+them. The profile field is absent for legacy runs with no attempt records.
+
+Calls are capped at 128 admitted attempts per turn and 10,000 per run, independently
+of the lower successful-read cap. Reconstructing a tool object does not reset
+these counters. A closed/revoked caller, malformed request identity or exhausted
+logging allowance is denied before admission; these pre-admission rejections do
+not append into a sealed or unauthorized run. Native/remote transport security
+logging for those rejected connections remains separate integration work. The
+additional events can exceed a reader's default 20,000-event inspection allowance;
+bounded reader overrides or exports are required rather than silently truncating
+the run to a healthy-looking partial history.
 
 ## Remaining native integration
 

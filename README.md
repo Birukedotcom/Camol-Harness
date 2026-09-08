@@ -266,6 +266,9 @@ recorded state/usage, not live readiness, and never send terminal input to worke
 Python embedding adapters may opt into [turn-scoped peer tools](docs/peer-tools.md)
 for replayable peer observations and read-before-send. This does not yet register
 tools inside native Claude/Codex CLI processes or provide a remote worker bridge.
+Peer-tool attempts, failures, retries and unknown completions are visible in
+`camol profile --db PATH --run-id RUN`, without storing message prose in the
+attempt logger or equating missing timing with zero cost.
 
 Provider startup displays cached observations without running account probes.
 `/connections refresh` requests a bounded inspection; `↻` marks that explicit

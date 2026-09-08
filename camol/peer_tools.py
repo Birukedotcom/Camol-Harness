@@ -99,12 +99,17 @@ class PeerTools:
         return state, now
 
     def call(self, operation, arguments, *, request_id):
+        from .peer_telemetry import attempt
+        return attempt(self, operation, arguments, request_id,
+                       lambda: self._call(operation, arguments, request_id=request_id))
+
+    def _call(self, operation, arguments, *, request_id):
         state, now = self._check()
         require_identifier(request_id, "peer request ID")
         key = _key(self.caller, self.turn, request_id)
         previous = state.get("peer_tool_reads", {}).get(key)
         if previous:
-            if previous["operation"] != operation or previous["arguments"] != arguments:
+            if previous["operation"] != operation or canonical_digest(previous["arguments"]) != canonical_digest(arguments):
                 raise MailboxError("peer request ID was already used for different content")
             return deepcopy(previous)
         result = _read(state, self.caller, operation, arguments, now)
@@ -117,8 +122,18 @@ class PeerTools:
         return deepcopy(value)
 
     def send(self, target, *, request_id, body, kind="information", correlation_id=None, ttl_seconds=300):
+        from .peer_telemetry import attempt
+        require_identifier(request_id, "peer send request ID")
+        identity = "peer-" + _key(self.caller, self.turn, request_id).split(":")[1]
+        args = dict(target=target, body=self.control.redactor.text(body) if isinstance(body, str) else body,
+                    kind=kind, correlation_id=identity if correlation_id is None else correlation_id, ttl_seconds=ttl_seconds)
+        return attempt(self, "send", args, request_id, lambda: self._send(request_id=request_id, **args))
+
+    def _send(self, target, *, request_id, body, kind="information", correlation_id=None, ttl_seconds=300):
         state, now = self._check()
         require_identifier(request_id, "peer send request ID")
+        if correlation_id is not None:
+            require_identifier(correlation_id, "peer correlation ID")
         if not any(item["subject"] == self.caller and item["turn_number"] == self.turn
                    and item["operation"] == "observe" and item["result"] == target
                    for item in state.get("peer_tool_reads", {}).values()):

@@ -56,6 +56,8 @@ persistent current-plan pins/groups are implemented. Focus/split/paginated-grid
 metadata monitoring is implemented; the automatic peer-tool bridge remains an
 implementation gate. The new turn-scoped Python peer-tool interface supports
 explicit embedding adapters with replayable reads; native transport is not enabled.
+Admitted peer calls also have content-free start/finish telemetry, replay-bound
+results, explicit unknown outcomes and per-task/operation timing profiles.
 The durable
 lease-scoped mailbox now has owner CLI, embedding, worker delivery/consumption,
 idempotency, rejection records and offline inspection. Interactive sends/replies,

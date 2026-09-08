@@ -472,3 +472,39 @@ embedding build/approval/export/reopen case. The launcher asserted an installed
 model weights or remote host was used. Complete successor suites remain a separate
 gate. Native CLI tool transport, failed-tool-attempt telemetry and the broader
 remaining spec gates are explicitly listed in [peer-tools.md](peer-tools.md).
+
+## Peer-call telemetry checkpoint
+
+Completed predecessor gates: mailbox UI `fac94d1` passed **890 tests on Python
+3.9 in 699.406 seconds**; tiled monitor `d8856da` passed **897 tests on Python
+3.9 in 699.479 seconds**. Peer tools `d4c17af` passed **906 tests on Python 3.12
+in 662.252 seconds**; its Python 3.9 full suite is a separate running gate.
+
+The isolated `codex/v0-peer-telemetry` successor records admitted tool starts and
+success/error/interruption finishes, tying success to a durable matching read or
+message. Lost finishes remain unknown even when the message committed. Retries
+cannot erase that uncertainty, refresh a receipt or duplicate the message. The
+content-free profile groups attempts and observed monotonic elapsed time by task
+and operation; unmeasured durations are null, not zero or invented provider cost.
+
+An early **42-test** peer/telemetry/inspection/diagnostic/usage group passed on
+Python 3.12 (**61.596 seconds**) and Python 3.9 (**65.385 seconds**). After the
+final typed-retry and correlation guards, the **17-test** peer/telemetry/diagnostic
+group passed on Python 3.12 (**53.383 seconds**) and Python 3.9 (**57.103 seconds**).
+A fresh source distribution rebuilt into an installed wheel passed those same
+**17 tests in 68.710 seconds**, including an actual local subprocess build and
+the public profile CLI. Parent and child imports selected the installed package.
+
+Adversarial cases include logging failure before dispatch, a committed message
+with a lost finish, revocation during interruption, original-error preservation,
+forged result/actor/timing/reuse fields, 128 attempts across reconstructed tool
+objects, Boolean-versus-integer retry arguments, and invalid correlation IDs.
+An intermediate profile test incorrectly selected the first sorted operation
+instead of the send row; its fixture was corrected, not the product assertion.
+Closed/revoked callers and malformed identities are rejected before admission and
+do not append telemetry into unauthorized runs. Those transport-security logs
+remain future native/remote integration work.
+
+No paid model request, real login, model-weight download or remote host was used.
+This successor still requires its own complete suites. Native peer transport,
+reviewed delegation and the remaining V0 acceptance gates are not claimed complete.
