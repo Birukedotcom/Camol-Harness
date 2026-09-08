@@ -1407,3 +1407,20 @@ ledger instead of mocking its state, and confirms a missing ledger cannot become
 a planned healthy view. The 18 VCS/overview tests passed again in 13.088 seconds
 on Python 3.12 and 14.628 seconds on 3.9. The final source was rebuilt through
 sdist into a fresh wheel; the installed integration group is the next gate.
+
+Product `6a827f90dc791c91314856875369c7a271ba7c50` is pushed on
+`codex/v0-vcs-lineage` under the owner's Git identity. Its fresh installed wheel
+passed the full **73-test integration group in 54.415 seconds on Python 3.12**,
+from outside the source repository. All seven changed product modules were
+byte-compared with source before loading test fixtures. A separate core import
+and CLI parser check explicitly refused Textual, MCP and cryptography imports and
+still passed. The final package environment is
+`/tmp/camol-vcs-package.w17sepu6/venv`; installed results are in
+`/tmp/camol-vcs-installed.log`.
+
+Both full suites for this exact VCS product have started, writing to
+`/tmp/camol-vcs-full-py312.log` and `/tmp/camol-vcs-full-py39.log`. The predecessor
+RPC audit suites remain their own running processes, not substituted results.
+Main remains clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; the user's installed
+Camol and account configuration are unchanged. Full VCS/remote execution scope
+and real provider acceptance remain open in the acceptance ledger.
