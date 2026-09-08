@@ -83,3 +83,27 @@ soak. The diagnostic runner now accepts an explicit per-trial observation ceilin
 and optional metadata progress; the default remains 120 seconds and kernel
 authority is unchanged. A separate 600-second profiled observation showed continued
 task completion, but its result and any optimization require their own evidence.
+
+## Checkpoint 0323fe8aef9c62c25bdb55897f204e2a49dfe802
+
+[Actions run 34181559644](https://github.com/Birukedotcom/Camol-Harness/actions/runs/34181559644)
+passed all three Ubuntu jobs. Each macOS job ran 641 tests and failed the same
+five local model-host fixture loads; the previous sandbox, HTTP timeout and
+terminal failures did not recur in this run. Fixture-stage diagnostics identify
+`HTTPServer.server_bind → socket.getfqdn` as the stalled phase, before listening.
+The child imported successfully within milliseconds but remained in that DNS
+lookup beyond the original five-second load deadline.
+
+The following fixture-only repair binds its numeric loopback socket directly
+and sets a fixed test-server label without DNS. A real subprocess regression
+replaces `getfqdn` with an exception and still observes a loaded owned host.
+All 13 host-lifecycle tests passed on Python 3.9 (13.530 seconds) and 3.12
+(9.836 seconds). Production readiness checks, credentials, deadlines and listener
+identity were not relaxed. Hosted CI confirmation of this repair is separate.
+
+The extended diagnostic 12-box run completed all 25 tasks, with 1,092 events and
+77 artifacts in 386.774 seconds. Source remained unchanged and archive replay
+matched exactly. This used an explicit 600-second observation ceiling, not the
+default 120-second soak acceptance. Profiling attributed 279.56 cumulative seconds
+to repeated deep copies of growing state. A performance repair must preserve
+detached snapshots, replay semantics and fresh admission/evaluation checks.
