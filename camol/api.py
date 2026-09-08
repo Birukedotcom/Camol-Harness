@@ -247,6 +247,26 @@ class Harness:
         return RunArchive.export(run_id, self.events(), ArtifactStore(self.paths.state_dir), Path(destination),
                                  lineage_events=collect_revision_lineage(self.store, run_id))
 
+    def recovery_plan(self) -> dict:
+        """Review recorded evidence/code coverage for an already completed run."""
+        from .run_recovery import plan_run_recovery
+        run_id = self._require_run()
+        if self._running:
+            raise StateTransitionError("finish and drain execution before run recovery")
+        return plan_run_recovery(events=self.events(), lineage=collect_revision_lineage(self.store, run_id))
+
+    def export_recovery(self, destination: Path, *, by: str, review_digest: str,
+                        allow_encrypted_raw: bool, key: bytes) -> dict:
+        """Owner-locked exact-review export, never cleanup or resume permission."""
+        from .run_recovery import export_run_recovery
+        run_id = self._require_run()
+        if self._running:
+            raise StateTransitionError("finish and drain execution before run recovery")
+        return export_run_recovery(source=self.workspace, state_dir=self.paths.state_dir,
+            events=self.events(), lineage=collect_revision_lineage(self.store, run_id),
+            by=by, review_digest=review_digest, allow_encrypted_raw=allow_encrypted_raw,
+            key=key, output=Path(destination), recheck=self.recovery_plan)
+
     def mailbox(self):
         """Owner-scoped observation/post/inbox API; no implicit execution."""
         from .mailbox import Mailbox

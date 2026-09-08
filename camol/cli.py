@@ -784,9 +784,28 @@ def command_recovery(args: argparse.Namespace) -> int:
 
     if args.recovery_action == "keygen":
         result = generate_recovery_key(output=Path(args.output))
+    elif args.recovery_action in {"plan-run", "export-run"}:
+        state_dir = Path(args.state_dir)
+        database = Path(args.db) if args.db else state_dir / "camol.sqlite3"
+        if state_dir.is_symlink() or database.is_symlink() or not database.is_file():
+            raise RecoveryError("run recovery requires an existing non-linked run database")
+        with Harness(Path(args.source), state_dir, database=database) as harness:
+            harness.run_id = args.run_id
+            if args.recovery_action == "plan-run":
+                result = harness.recovery_plan()
+            else:
+                result = harness.export_recovery(Path(args.output), by=args.by,
+                    review_digest=args.review_digest, allow_encrypted_raw=args.allow_encrypted_raw,
+                    key=load_recovery_key(path=Path(args.key_file)))
     else:
         key = load_recovery_key(path=Path(args.key_file))
-        if args.recovery_action == "export":
+        if args.recovery_action in {"verify-run", "restore-run"}:
+            from .run_recovery import restore_run_recovery, verify_run_recovery
+            if args.recovery_action == "verify-run":
+                result = verify_run_recovery(archive=Path(args.archive), key=key)
+            else:
+                result = restore_run_recovery(archive=Path(args.archive), key=key, output=Path(args.output))
+        elif args.recovery_action == "export":
             result = export_workspace_recovery(
                 source=Path(args.source), state_dir=Path(args.state_dir),
                 salvage=SalvageReceipt.from_dict(load_contract(Path(args.salvage))),
@@ -1142,6 +1161,23 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--archive", required=True)
             if action == "restore":
                 command.add_argument("--output", required=True)
+        command.set_defaults(handler=command_recovery)
+    for action in ("plan-run", "export-run", "verify-run", "restore-run"):
+        command = recovery_actions.add_parser(action, help="review/export or reconstruct completed-run evidence and code; no adoption")
+        if action in {"plan-run", "export-run"}:
+            for name in ("source", "state-dir", "run-id"):
+                command.add_argument("--" + name, required=True)
+            command.add_argument("--db")
+        else:
+            command.add_argument("--archive", required=True)
+        if action != "plan-run":
+            command.add_argument("--key-file", required=True)
+        if action in {"export-run", "restore-run"}:
+            command.add_argument("--output", required=True)
+        if action == "export-run":
+            command.add_argument("--by", required=True)
+            command.add_argument("--review-digest", required=True)
+            command.add_argument("--allow-encrypted-raw", action="store_true")
         command.set_defaults(handler=command_recovery)
     return parser
 

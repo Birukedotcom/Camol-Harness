@@ -454,6 +454,12 @@ class RunArchive:
 
     @classmethod
     def verify(cls, source: Path) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        manifest, events, _ = cls.verify_snapshot(source)
+        return manifest, events
+
+    @classmethod
+    def verify_snapshot(cls, source: Path):
+        """Return the verified main stream and its exact verified lineage together."""
         try:
             with ArchiveRoot(source) as root:
                 return cls._verify_root(root)
@@ -523,7 +529,7 @@ class RunArchive:
                 or len(content) != reference.stored_bytes
             ):
                 raise ArtifactError("run archive artifact is missing or corrupt: {}".format(digest))
-        return manifest, events
+        return manifest, events, lineage
 
     @classmethod
     def replay(cls, source: Path) -> Dict[str, Any]:

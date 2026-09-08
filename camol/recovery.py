@@ -16,6 +16,7 @@ import time
 import unicodedata
 
 from .archive_io import ArchiveRoot
+from .artifacts import ArtifactError
 from .git_safety import GIT_SAFETY_ARGS
 from .json_contracts import decode_contract
 from .probes import sanitized_environment
@@ -43,7 +44,7 @@ def _public(function):
             return function(**kwargs)
         except RecoveryError:
             raise
-        except (OSError, ValueError, TypeError, KeyError, RecursionError, WorkspaceError) as error:
+        except (OSError, ValueError, TypeError, KeyError, RecursionError, WorkspaceError, ArtifactError) as error:
             raise RecoveryError("recovery refused invalid, unsafe or changed input; partial output may remain") from error
     return guarded
 
@@ -273,7 +274,7 @@ def _tree_content(git, destination, entries):
     return records, content, total
 
 
-def _materialize(git, destination, salvage, bundle, blobs):
+def _materialize(git, destination, salvage, bundle, blobs, *, resource_budget=None):
     """No checkout filters: reconstruct the index, then copy object bytes."""
     _check_bundle(bundle, salvage)
     algorithm = "sha1" if len(salvage.base_revision) == 40 else "sha256"
@@ -299,6 +300,13 @@ def _materialize(git, destination, salvage, bundle, blobs):
         if len(entries) + len(salvage.untracked) > MAX_FILES:
             raise RecoveryError("restored workspace exceeds its file ceiling")
         records, contents, used = _tree_content(git, destination, entries)
+        if resource_budget is not None:
+            total_bytes = used + sum(item["bytes"] for item in salvage.untracked)
+            total_files = len(records) + len(salvage.untracked)
+            if total_bytes > resource_budget["bytes"] or total_files > resource_budget["files"]:
+                raise RecoveryError("combined recovery exceeds its restored-content budget")
+            resource_budget["bytes"] -= total_bytes
+            resource_budget["files"] -= total_files
         paths = set()
         for mode, relative, oid in records:
             content = contents[oid]

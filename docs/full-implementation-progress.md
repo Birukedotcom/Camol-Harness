@@ -46,6 +46,16 @@ per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
+The isolated recovery sequence follows the pane/peer/cancellation checkpoints:
+ordinary archive boundary, encrypted captured-workspace recovery, then
+`codex/v0-run-recovery` for owner-reviewed completed-run evidence and code.
+The predecessor workspace product `b5121a40dd7de1af4c3728fa679dac81096c67aa`
+passed 1,037 full-suite tests on Python 3.12 and 3.9 (three optional skips on 3.9).
+Those results are not a gate for the subsequent run-recovery additions. See the
+[checkpoint verification record](ergonomics-verification.md) for exact coverage.
+Main and the user installation remain unchanged; isolated implementation is not
+the same as a released or globally installed product.
+
 The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`
@@ -95,13 +105,14 @@ usable Python/CLI entry points. A fixture cannot establish live provider maturit
 | Invariants, obligations, thresholds, final acceptance | Implemented V5; integration ongoing | Explicit evaluator mappings, candidate+integration gates, exact owner acceptance; 5 E2E gate tests passed |
 | Plan amendment / migration | Conservative mode implemented | Exact owner-approved linked successor, atomic source seal, all tasks reverified, inherited costs, self-contained lineage export; public API E2E passed |
 | Real provider execution | Claude/Codex/local adapter code implemented; live gates pending | Explicit capability tiers, frozen profiles and crash-safe invocation intents; no live paid/inference validation |
-| Box inspection and build workflow | In progress | Overview, scoped switcher, offline evidence, pins/groups, tiled monitoring and durable mailbox; turn-scoped peer tools for Python embeddings; declared-compatibility view and human revision review; native peer transport/automatic delegation remain open |
+| Box inspection and build workflow | Implemented bounded local workflow; live gates pending | Overview, scoped switcher, offline evidence, pins/groups, tiled metadata monitoring and durable mailbox; embedding and opt-in native peer transport; bounded seed-assisted delegation into exact human revision review. Native live acceptance, live lease reassignment and unrestricted autonomous plan expansion remain open |
 | Capacity / heterogeneous N boxes | Implemented; integration ongoing | Shared broker, fresh observed/owner-declared pools, suspect reservations, real two-run single-slot fairness/cancellation and broker-cursor wake; V6 |
 | Watchers and correctable evidence | Local scheduled source implemented | Durable approved polling, normalized JSONL source, daemon restart, interleaving/expiry/cursor/cancellation tests; live cloud source adapters pending |
 | Repository dependency graph | Implemented; adversarial tests ongoing | Safe static Python/packaging/npm/Docker/runbook scans, evidence-linked impact/path/cycle queries; JSON/DOT/GraphML |
 | Local model lifecycle | Download foundation; owned loader in next wave | Exact owner manifests and pinned bytes; one-shot owned llama.cpp lifecycle with local protocol fixtures. No actual model/inference or planner/worker handoff proof |
 | Evaluator compiler / benchmark campaigns | Core protocols and offline SWE-bench adapter implemented | Explicit V5 mapping; pinned 3-arm campaign, real gold/no-op fixtures, crash/cleanup reconciliation, protected official-grader protocol; live public trials pending |
 | Remote targets / workflow profiles | SSH control attachment in next wave | Pinned host/bridge/target/run control with durable uncertain outcomes; no distributed worker adoption, provisioning or live cloud/voice proof |
+| Retention / evidence and code recovery | Inspection, ordinary archive hardening and encrypted recovery implemented in isolated branches | Independent workspace and completed-run/ancestry reconstruction; exact review and no resume/cleanup authority. Operational control/accounting adoption, key lifecycle, expiry and safe teardown remain open |
 | Public packaging / portability | In progress | Wheel/sdist built; independent Python 3.12 wheel install+line CLI passed; Homebrew resource hashes verified; OS CI/license/retention remain |
 | Extended final verification | Pending | Repeated DAGs, failure/refinement, process interruption, package and UI tests |
 
@@ -181,8 +192,9 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   ledger, including by a newly opened client. Durable offline inspection is
   implemented. Exact current-plan pins and custom display groups now persist across
   clients and reorder/search worker navigation without changing authority.
-  Task-qualified dependency evidence/selection and scoped
-  automatic peer-tool integration still needs its gates. Interactive mailbox
+  Native peer integration is implemented at explicit capability tiers; its real
+  provider compatibility and live cross-pane acceptance still need their gates.
+  Interactive mailbox
   commands and retained/live inbox panes now use a private immutable outbox.
   Split/grid metadata tiles retain the orchestrator composer and scope-checked
   detail selection; they do not mirror arbitrary terminal sessions. The
@@ -216,6 +228,9 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 - Remote worker authentication/distribution, live cloud/voice profiles, complete
   retention enforcement, multi-platform CI evidence and the owner's public license
   decision remain open. The spatial visualizer is explicitly post-v1.
+- Recorded completed-run evidence/code recovery does not close operational restore
+  or retention. Independent archive reconstruction cannot authorize reuse of old
+  leases, credentials, budgets, remote effects, or removal of the original stores.
 
 This ledger is a progress record, not a claim that the entire specification is
 implemented. Current limitations remain open until backed by the named gate.

@@ -128,6 +128,10 @@ private directory, which is not declared complete and is not automatically erase
 Private temporary files are removed normally, not securely erased; no guarantee
 is made against host swap, privileged access or forensic disk recovery.
 
+For recorded evidence plus every captured candidate and accepted commit across a
+completed run's ancestry, see [completed-run recovery](run-recovery.md). That
+additional layer still does not restore operational authority.
+
 Full retention enforcement, expiry, archive-key lifecycle, multi-user authorization,
 complete run/control/accounting capture and relocation/adoption remain separate
 requirements. This recovery proof alone does not release any hold described in

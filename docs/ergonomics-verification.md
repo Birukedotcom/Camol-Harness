@@ -1020,3 +1020,43 @@ boundary, linked revisions and embedding API. `camol` was loaded from
 `site-packages` before source fixtures, and all three changed product modules were
 byte-checked against the final source. Main remains clean and unchanged; only the
 isolated branch and disposable verification environments were modified.
+
+The workspace-recovery full runs subsequently completed: **1,037 tests in
+824.518 seconds on Python 3.12** (explicit native Codex parser included), and
+**1,037 tests in 901.239 seconds on Python 3.9**, with three optional skips. These
+are gates for the workspace predecessor, not the later run-recovery implementation.
+
+## Completed-run evidence/code recovery (2026-09-08)
+
+The isolated `codex/v0-run-recovery` branch adds a replay-derived, exact-owner
+review and export of the completed run's ordinary evidence, complete revision
+ancestry, every recorded captured workspace and every accepted commit. Independent
+reconstruction works without source/state directories. It does not restore a
+mutable operational run, credentials, accounting journals, effects or authority;
+see [run recovery](run-recovery.md). Ordinary redacted ledger members are not
+additionally encrypted; raw code parts and the coverage manifest are encrypted.
+
+The first focused module run passed 21 tests but included seven inadvertently
+imported API tests; the fixture import was corrected, not counted as new coverage.
+The aggregate-budget test initially altered a plan-bound constant and only tested
+coverage mismatch. It now exhausts the same budget object between real restored
+parts and requires the second reconstruction to refuse. The expanded group then
+passed **72 tests in 100.964 seconds on Python 3.12** and **111.990 seconds on
+Python 3.9**.
+
+A subsequent adversarial review found that export had not pinned ordinary ledger
+members through the final callback/publication window. Export now verifies the
+complete ledger snapshot, pins each member through the owning descriptor, and
+rechecks before publishing the sealed manifest. A regression mutates the event
+file after verification while returning an unchanged review; publication refuses
+without a root manifest. That test passed in **35.406 seconds** including the real
+completed four-task fixture setup. Final expanded, installed-package and full
+gates are recorded separately when complete.
+
+The final expanded group passed **73 tests in 113.630 seconds on Python 3.12**
+and **120.399 seconds on Python 3.9**, including the publication-race regression,
+aggregate reconstruction budget, exact review, every recorded code part, complete
+linked ancestry, source-independent restoration, actual CLI round trip and the
+predecessor archive/recovery/revision cases. No user source was archived and no
+provider/model call ran. Fresh installed-package and whole-suite verification
+remain separate from these focused results.

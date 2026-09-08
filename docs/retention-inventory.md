@@ -5,6 +5,10 @@ ordinary artifact references and names protected storage boundaries. It does **n
 enforce expiry, approve cleanup, archive data, truncate logs, remove files, unload
 models, reconcile remote effects, or claim a complete recoverable snapshot.
 
+Separate [completed-run recovery](run-recovery.md) can reconstruct recorded code
+and historical evidence under an exact review. Its result does not change this
+inventory's holds or prove operational/control/accounting recovery.
+
 ## Public API
 
 The CLI exposes the same inspection only:
