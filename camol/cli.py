@@ -182,14 +182,22 @@ def command_overview(args: argparse.Namespace) -> int:
 
 def command_target(args: argparse.Namespace) -> int:
     from .targets import TargetError, snapshot
+    from .target_runtime import local_profile
     try:
+        if args.action == "local-profile" and not args.live:
+            if any((args.state_dir, args.db, args.run_id, args.plan_digest)):
+                raise TargetError("local-profile without --live measures this process; omit supervisor scope arguments")
+            _write_json(local_profile())
+            return 0
         if args.live:
-            if not args.plan_digest:
-                raise TargetError("live target control requires the exact --plan-digest")
+            if not args.plan_digest or not args.state_dir or not args.run_id:
+                raise TargetError("live target control requires exact --state-dir, --run-id and --plan-digest")
             params = {}
             if args.db:
                 params["expected_database"] = str(Path(args.db).resolve())
-            if args.action == "inspect":
+            if args.action == "local-profile":
+                pass
+            elif args.action == "inspect":
                 params.update(offset=args.offset, limit=args.limit)
             else:
                 params.update(approved_by=args.by, expected_workspace=str(Path(args.workspace).resolve()))
@@ -197,6 +205,9 @@ def command_target(args: argparse.Namespace) -> int:
                     params.update(descriptor=load_contract(args.descriptor, max_bytes=8192), expires_at=args.expires_at)
                 elif args.action == "adopt":
                     params.update(proposal=load_contract(args.proposal, max_bytes=16384), approval_digest=args.approval_digest)
+                elif args.action == "observe-local":
+                    params.update(generation=args.generation, adoption_digest=args.adoption_digest,
+                                  request_id=args.request_id, ttl_seconds=args.ttl_seconds)
                 else:
                     params.update(generation=args.generation, adoption_digest=args.adoption_digest, reason=args.reason)
             response = asyncio.run(send_control_v2(Path(args.state_dir), "target-" + args.action,
@@ -218,6 +229,9 @@ def command_target(args: argparse.Namespace) -> int:
                     result = harness.targets.propose(load_contract(args.descriptor, max_bytes=8192), by=args.by, expires_at=args.expires_at)
                 elif args.action == "adopt":
                     result = harness.targets.adopt(load_contract(args.proposal, max_bytes=16384), by=args.by, approval_digest=args.approval_digest)
+                elif args.action == "observe-local":
+                    result = harness.targets.observe_local(args.generation, by=args.by, adoption_digest=args.adoption_digest,
+                                                          request_id=args.request_id, ttl_seconds=args.ttl_seconds)
                 else:
                     result = harness.targets.retire(args.generation, by=args.by, adoption_digest=args.adoption_digest, reason=args.reason)
         _write_json(result)
@@ -1137,14 +1151,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     targets = subparsers.add_parser("target", help="review adopted target identities; never connect, execute, provision or delete")
     target_actions = targets.add_subparsers(dest="action", required=True)
-    for name in ("inspect", "propose", "adopt", "retire"):
+    for name in ("inspect", "propose", "adopt", "retire", "local-profile", "observe-local"):
         operation = target_actions.add_parser(name)
-        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--state-dir", required=name != "local-profile")
         operation.add_argument("--db")
-        operation.add_argument("--run-id", required=True)
+        operation.add_argument("--run-id", required=name != "local-profile")
         operation.add_argument("--live", action="store_true", help="use the existing supervisor without taking ownership")
-        operation.add_argument("--plan-digest", required=name != "inspect")
-        if name == "inspect":
+        operation.add_argument("--plan-digest", required=name not in {"inspect", "local-profile"})
+        if name == "local-profile":
+            pass
+        elif name == "inspect":
             operation.add_argument("--offset", type=int, default=0)
             operation.add_argument("--limit", type=int, default=50)
         else:
@@ -1159,7 +1175,11 @@ def build_parser() -> argparse.ArgumentParser:
             else:
                 operation.add_argument("--generation", required=True)
                 operation.add_argument("--adoption-digest", required=True)
-                operation.add_argument("--reason", required=True)
+                if name == "observe-local":
+                    operation.add_argument("--request-id", required=True)
+                    operation.add_argument("--ttl-seconds", type=int, default=300)
+                else:
+                    operation.add_argument("--reason", required=True)
         operation.set_defaults(handler=command_target)
 
     gateway = subparsers.add_parser("worker-gateway", help="owner-control the supervisor's optional TLS evidence listener and capture pump")

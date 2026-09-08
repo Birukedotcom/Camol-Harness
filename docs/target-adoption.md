@@ -5,6 +5,9 @@ This implements the identity/review portion of SPEC 19.5. It does **not** discov
 a host, attest its identity, register a runnable worker, connect to a transport,
 provision infrastructure or authorize execution/deletion. Those gates remain open.
 Provider inventory and transport observations must not be mistaken for readiness.
+The [local runtime observation path](target-runtime.md) now measures reviewed local
+profiles and records generation-bound reports; authenticated remote observation
+and execution admission remain separate.
 
 ## Operator workflow
 

@@ -1852,3 +1852,46 @@ were absent. The same **81 tests passed in 37.967 seconds**, logged in
 shows the target command/inspection help successfully. No whole-suite result is
 claimed for target adoption, and no real model/provider call or cloud mutation was
 made by these tests.
+
+## Local target runtime checkpoint — 2026-09-08
+
+Isolated `codex/v0-target-runtime` begins at target-adoption product
+`3a0cd1f5f5d980bc70a5e7e5ddfd26ecf1fde4b7`. That predecessor is pushed under
+`Birukedotcom <birukehdix@gmail.com>`, with no agent coauthor. The older gateway
+whole-suite process remains running in its own frozen checkout; it has not been
+restarted or promoted into a result for either newer target implementation.
+
+The [local runtime path](target-runtime.md) provides actual installed Python/package
+hashes, hostname/OS/architecture and observed CPU count, through standalone CLI,
+embedding and live supervisor controls. Reports bind exact adopted local generations,
+run/plan/owner, observation intervals and idempotent requests. Replay and archives
+retain the reports without promoting them into readiness, slots, task success or
+provider billing. Remote authenticated observation and execution remain unfinished.
+
+Initial local/live tests passed **8 tests in 1.871 seconds**. Expanded groups passed
+**78 tests in 21.712 seconds on Python 3.12** and **78 in 21.420 seconds on modern
+Python 3.9**. Review then identified a liveness hazard in doing file measurement
+directly on the supervisor event loop. Measurements now use one bounded background
+slot and a 10-second request wait, with no store access in the reader. Cancellation
+or timeout cannot publish a late report. Run/plan/shutdown state and current adoption
+are revalidated afterward; unrelated run progress can advance without spuriously
+denying the report, while the final append retains compare-and-swap protection.
+
+The added blocked-reader test confirms that control pings remain responsive,
+overlapping measurements are denied, and cancelling the request does not publish
+a result or free the still-running read slot. Other tests cover changed profiles,
+retirement during measurement, unknown CPU count, clock regression, history bounds,
+worker-authored/rehashed forgeries, protected request IDs, append failure and lost
+responses. The async-focused group passed **11 tests in 2.366 seconds**.
+
+Final runtime/target/installed-identity/supervisor/gateway/artifact/archive groups:
+**80 tests in 19.403 seconds on Python 3.12**, **80 in 18.843 seconds on modern
+Python 3.9**, passed. Logs: `/tmp/camol-target-runtime-final-py312.log` and `-py39.log`.
+The V1 example validates and `git diff --check` passes. The sdist was built into a
+wheel and installed without dependencies into
+`/tmp/camol-target-runtime-package.lt3wbkjl/venv`. Isolated imports outside the checkout
+verified site-packages ownership and byte equality for all six changed product
+modules before loading test fixtures. Textual, MCP and cryptography were absent.
+The same **80 tests passed in 19.760 seconds**, including the live child CLI paths;
+log: `/tmp/camol-target-runtime-installed.log`. No current-product whole gate is
+claimed. Main and the user installation remain unchanged.

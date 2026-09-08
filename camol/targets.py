@@ -131,6 +131,10 @@ def snapshot(state, *, offset=0, limit=50):
         plan_digest=state["plan_digest"], cursor=state["last_seq"], count=len(records), offset=offset,
         targets=[deepcopy(records[key]) for key in sorted(records)[offset:offset + limit]],
         meaning="owner_reviewed_identity_not_host_attestation_or_execution_readiness")
+    for target in result["targets"]:
+        request_id = target.get("latest_runtime_observation")
+        if request_id is not None:
+            target["runtime_observation"] = deepcopy(state["target_runtime_observations"][request_id])
     # Inspection can redact newly protected values without rewriting historical approval.
     result = Redactor().value(result)
     result["snapshot_digest"] = canonical_digest(result)
@@ -194,3 +198,7 @@ class TargetRegistry:
 
     def inspect(self, *, offset=0, limit=50):
         return snapshot(self.orchestrator.state(self.run_id), offset=offset, limit=limit)
+
+    def observe_local(self, generation, **kwargs):
+        from .target_runtime import observe_local
+        return observe_local(self, generation, **kwargs)

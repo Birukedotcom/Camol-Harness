@@ -136,6 +136,9 @@ owner-reviewed run/plan/listener policy; it does not launch remote workers.
 `camol target propose|adopt|inspect|retire` and `Harness.targets` maintain
 [owner-reviewed target identities](docs/target-adoption.md), including live local
 supervisor control. Adoption is not a readiness, execution or deletion grant.
+`camol target local-profile` and `observe-local` add
+[measured local runtime reports](docs/target-runtime.md), including a live
+supervisor path. These reports do not grant task readiness or reserved capacity.
 `camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` inspects local
 content-free RPC counts, durations and byte measurements without connecting.
 These measurements include monitor reads, not provider billing. See

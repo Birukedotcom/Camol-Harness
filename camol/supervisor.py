@@ -222,6 +222,7 @@ class Supervisor:
         self.watch_runtime = None
         self.watch_error = None
         self.worker_gateway = None
+        self._target_profile_task = None
         self._worker_task = None
         self._force_task = None
         self.orphans = []
@@ -519,6 +520,28 @@ class Supervisor:
         if self.orphans:
             raise SupervisorError("persisted orphan ownership cannot be proven by the legacy birth marker; inspect and reconcile externally before resuming")
 
+    async def _measure_target_profile(self):
+        from .target_runtime import local_profile
+        if self._target_profile_task is not None and not self._target_profile_task.done():
+            raise TargetError("a local runtime measurement is already in progress")
+        task = asyncio.create_task(asyncio.to_thread(local_profile))
+        self._target_profile_task = task
+        def consume(finished):
+            if not finished.cancelled():
+                finished.exception()  # Retrieve failures even if the requesting client timed out.
+        task.add_done_callback(consume)
+        try:
+            # Timeout/cancellation cannot stop a blocking filesystem read. Keep
+            # its one slot occupied until it finishes; it cannot access the store.
+            return await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        except asyncio.TimeoutError as error:
+            raise TargetError("local runtime measurement timed out; no report was recorded") from error
+
+    def _target_measurement_scope(self, run_id, plan_digest):
+        if (self._shutdown.is_set() or self.run_id != run_id
+                or self.orchestrator.state(self.run_id)["plan_digest"] != plan_digest):
+            raise TargetError("target run or plan changed during runtime measurement")
+
     async def _dispatch(self, request: Dict[str, Any]) -> Dict[str, Any]:
         version = request.get("schema_version")
         fields = (
@@ -538,9 +561,8 @@ class Supervisor:
         if not isinstance(request.get("token"), str) or not hmac.compare_digest(request["token"], self.token):
             raise SupervisorError("control authentication failed")
         if version == 3:
-            # Every mutating branch below remains synchronous through dispatch.
-            # The only awaited control is read-only event polling. New awaited
-            # mutations must revalidate this binding after their final await.
+            # Awaited mutations (currently target runtime measurement) must
+            # revalidate this binding after their final await, before append.
             state = self.orchestrator.state(self.run_id)
             if (request.get("expected_run_id") != self.run_id
                     or request.get("expected_plan_digest") != state["plan_digest"]):
@@ -603,22 +625,38 @@ class Supervisor:
                 if name in params and params.pop(name) != expected:
                     raise SupervisorError("target control expected workspace or database differs from this supervisor")
             contracts = {
+                "target-local-profile": set(),
                 "target-inspect": {"offset", "limit"},
                 "target-propose": {"descriptor", "expires_at", "approved_by"},
                 "target-adopt": {"proposal", "approval_digest", "approved_by"},
                 "target-retire": {"generation", "adoption_digest", "reason", "approved_by"},
+                "target-observe-local": {"generation", "adoption_digest", "request_id", "ttl_seconds", "approved_by"},
             }
             if command not in contracts or set(params) != contracts[command]:
                 raise SupervisorError("invalid target command or fields")
             if "approved_by" in params and params["approved_by"] != request.get("requested_by"):
                 raise SupervisorError("target approval identity differs from the control actor")
             registry = TargetRegistry(self.orchestrator, self.run_id)
-            if command == "target-inspect":
+            if command == "target-local-profile":
+                bound_run, bound_plan = self.run_id, self.orchestrator.state(self.run_id)["plan_digest"]
+                result = await self._measure_target_profile()
+                self._target_measurement_scope(bound_run, bound_plan)
+            elif command == "target-inspect":
                 result = registry.inspect(offset=params["offset"], limit=params["limit"])
             elif command == "target-propose":
                 result = registry.propose(params["descriptor"], by=params["approved_by"], expires_at=params["expires_at"])
             elif command == "target-adopt":
                 result = registry.adopt(params["proposal"], by=params["approved_by"], approval_digest=params["approval_digest"])
+            elif command == "target-observe-local":
+                from .target_runtime import prepare_local, finish_local
+                prepared = prepare_local(registry, params["generation"], by=params["approved_by"], adoption_digest=params["adoption_digest"],
+                                         request_id=params["request_id"], ttl_seconds=params["ttl_seconds"])
+                if "receipt" in prepared:
+                    result = prepared["receipt"]
+                else:
+                    profile = await self._measure_target_profile()
+                    self._target_measurement_scope(registry.run_id, prepared["state"]["plan_digest"])
+                    result = finish_local(registry, prepared, profile)
             else:
                 result = registry.retire(params["generation"], by=params["approved_by"], adoption_digest=params["adoption_digest"], reason=params["reason"])
             return {"ok": True, "result": result}

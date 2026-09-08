@@ -95,6 +95,13 @@ control. [Target adoption boundaries](target-adoption.md) distinguish this regis
 from authenticated host discovery, worker readiness, launch and fleet-wide salvage;
 those distributed-execution gates remain open.
 
+The `codex/v0-target-runtime` follow-up measures actual local installed/runtime
+identity and records expiring generation-bound reports via Python, CLI and live
+supervisor control. Background measurement preserves control responsiveness and
+revalidates owner/run/plan/adoption before append. [Runtime observation limits](target-runtime.md)
+distinguish observed CPU count from capacity and local self-observation from remote
+attestation or task readiness. Remote execution remains unfinished.
+
 The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`
