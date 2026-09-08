@@ -141,10 +141,20 @@ reservation, and is never automatically retried. Even a known HTTP error after
 dispatch cannot establish zero work or zero cost. Owner-approved lifecycle unload
 is separate authority, not an inferred response to an inference failure.
 
-SQLite contention is bounded to at most a short 50 ms busy wait, clipped further
-by an active operation's remaining deadline; there is no hidden ten-second lock
-wait. Contention before durable intent fails without dispatch. If an outcome
-cannot be committed after dispatch, the caller receives `unknown` with
+Each SQLite busy wait is at most 50 ms, clipped further by the active operation's
+remaining deadline; there is no hidden ten-second lock wait. The separate owned
+host ledger receives a durable heartbeat every 100 ms. Its DELETE-journal commit
+can briefly block the client's read-only host/load snapshot. Only that
+SELECT-only observation is retried on SQLite busy/locked errors: passive
+prepare/approve allow at most one second, and inference uses its original
+absolute deadline and cancellation signal. The inference deadline starts at
+method entry, so these initial reads do not extend the request ceiling.
+Authority is checked again after observation. Corruption and other SQLite
+errors are distinct failures, not reasons to retry. No credential read, HTTP
+readback, POST, inference-ledger write, or outcome commit is retried by this path.
+
+Inference-ledger write contention before durable intent still fails without
+dispatch. If an outcome cannot be committed after dispatch, the caller receives `unknown` with
 `outcome_persisted: false`, no response text, and the durable in-flight intent
 continues to hold its reservation. Camol does not manufacture a persisted success
 or repeat a request to repair the missing outcome.

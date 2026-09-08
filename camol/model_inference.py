@@ -50,13 +50,35 @@ def _digest(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+class InferenceLedgerBusy(ModelError):
+    """A bounded local SQLite contention observation, never a POST retry."""
+
+
+class InferenceLedgerUnavailable(ModelError):
+    """A non-contention SQLite failure; retrying it cannot establish authority."""
+
+
+def _sqlite_contention(error):
+    # Python 3.9 does not expose sqlite_errorcode. Its canonical SQLite messages
+    # are used only for classification, never copied into a public error/log.
+    code = getattr(error, "sqlite_errorcode", None)
+    if type(code) is int:
+        return (code & 255) in (5, 6)  # SQLITE_BUSY / SQLITE_LOCKED, including extensions
+    message = str(error)
+    return message in {"database is locked", "database table is locked", "database schema is locked"} or any(
+        message.startswith(prefix) for prefix in ("database table is locked:", "database schema is locked:")
+    )
+
+
 def _ledger_errors(function):
     @wraps(function)
     def bounded(*args, **kwargs):
         try:
             return function(*args, **kwargs)
-        except sqlite3.Error:
-            raise ModelError("inference ledger is busy or unavailable; no automatic retry") from None
+        except sqlite3.Error as error:
+            if _sqlite_contention(error):
+                raise InferenceLedgerBusy("inference ledger is busy or unavailable (SQLite contention); no automatic retry") from None
+            raise InferenceLedgerUnavailable("inference or host ledger is unavailable (non-contention SQLite error); no automatic retry") from None
     return bounded
 
 
@@ -347,7 +369,33 @@ class ModelInference:
         if not parse_timestamp(plan.issued_at, "issued_at").timestamp() <= now < parse_timestamp(plan.expires_at, "expires_at").timestamp():
             raise ModelError("inference authority is future-issued or expired")
 
-    def _host_subject(self, plan):
+    def _host_subject(self, plan, *, deadline=None, cancel_event=None):
+        # The owned helper heartbeats into host.sqlite3 every 100 ms. DELETE
+        # journaling can briefly block these read-only observations during its
+        # durable commit. Retry only this SELECT-only snapshot, never a request,
+        # inference-ledger write, credential read, or HTTP readiness operation.
+        # Passive prepare/approve are bounded to one second; inference supplies
+        # its original operation deadline, including all pre-dispatch latency.
+        if deadline is None:
+            deadline = time.monotonic() + 1.0
+        while True:
+            _check_deadline(deadline, cancel_event)
+            milliseconds = min(50, max(0, int((deadline - time.monotonic()) * 1000)))
+            self.host.connection.execute("PRAGMA busy_timeout=" + str(milliseconds))
+            try:
+                result = self._host_subject_once(plan)
+            except sqlite3.Error as error:
+                if not _sqlite_contention(error):
+                    raise
+                _check_deadline(deadline, cancel_event)
+                delay = min(.01, max(0, deadline - time.monotonic()))
+                time.sleep(delay)
+                continue
+            _check_deadline(deadline, cancel_event)
+            self._fresh(plan)
+            return result
+
+    def _host_subject_once(self, plan):
         row, host_plan = self.host._plan(plan.host_plan_digest)
         operation = self.host._operation(plan.host_plan_digest)
         if (host_plan.owner != plan.owner or row["approved_by"] != plan.owner or operation is None
@@ -470,6 +518,8 @@ class ModelInference:
 
     @_ledger_errors
     def infer(self, plan_digest, by, *, prompt_path, cancel_event=None):
+        monotonic_start = time.monotonic()
+        started = time.time()
         self._check(write=True)
         row, plan = self._row(plan_digest)
         if by != plan.owner or row["approved_by"] != plan.owner:
@@ -479,18 +529,17 @@ class ModelInference:
         if row["state"] != "approved":
             raise ModelError("inference plan is not approved")
         self._fresh(plan)
-        host_plan, operation = self._host_subject(plan)
+        deadline = monotonic_start + min(plan.timeout_seconds,
+            parse_timestamp(plan.expires_at, "expires_at").timestamp() - started)
+        _check_deadline(deadline, cancel_event)
+        host_plan, operation = self._host_subject(plan, deadline=deadline, cancel_event=cancel_event)
+        deadline = min(deadline, monotonic_start + operation["created_at"] + host_plan.lifetime_seconds - started)
         prompt = _prompt_bytes(prompt_path)
         if len(prompt) != plan.prompt_size_bytes or _digest(prompt) != plan.prompt_digest:
             raise ModelError("prompt file differs from the exact approved bytes")
         payload = json.dumps({"model": plan.model_alias, "messages": [{"role": "user", "content": prompt.decode("utf-8")}],
                               "max_tokens": plan.max_output_tokens, "stream": False, "n": 1},
                              separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        started = time.time()
-        monotonic_start = time.monotonic()
-        available = min(plan.timeout_seconds, parse_timestamp(plan.expires_at, "expires_at").timestamp() - started,
-                        operation["created_at"] + host_plan.lifetime_seconds - started)
-        deadline = monotonic_start + available
         _check_deadline(deadline, cancel_event)
         lock_path = self._lock_path(plan_digest)
         descriptor = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -538,7 +587,7 @@ class ModelInference:
 
                 def authorize():
                     self._fresh(plan)
-                    current_host, current_load = self._host_subject(plan)
+                    current_host, current_load = self._host_subject(plan, deadline=deadline, cancel_event=cancel_event)
                     _assert_listener(current_load["detail"].get("child_pid"), current_host.port,
                                      deadline=deadline, cancel_event=cancel_event)
                     private_key[0] = self.host._credential(plan.host_plan_digest)
