@@ -916,9 +916,52 @@ and installed with TUI/graph extras into a fresh Python 3.12 environment.
 terminal group and all linked delegation-proposal tests. The install was selected
 from `site-packages` before loading source fixtures.
 
-Canonical full-suite reruns for this combined product are active on Python 3.12
-and 3.9, using verbose names and per-test stall tracebacks. Their results are not
-yet established. The failed 981-test predecessor results remain recorded above;
-focused and installed results do not supersede the missing full gate. The isolated
+The canonical full-suite rerun for this combined product passed **997 tests on
+Python 3.12 in 845.603 seconds**, including the native Codex parser fixture.
+Python 3.9 is still running, using verbose names and per-test stall tracebacks.
+The failed 981-test predecessor results remain recorded above; the repaired
+checkpoint's passing run does not retroactively change them. The isolated
 branch is pushed under the owner's identity; main and the user's installation
 remain unchanged.
+
+## Portable archive boundary (2026-09-08)
+
+Recovery work exposed unsafe prerequisites in the ordinary ledger archive. A
+read-only baseline experiment loaded the predecessor implementation from Git and
+confirmed it accepted a symlinked archive root, a symlinked blob ancestor, and
+duplicate event JSON keys. The repaired boundary rejects those fixtures, special
+files and hard links; pins descriptor-relative member access; bounds bytes, event
+counts and aggregate JSON structure; and writes private, exclusive archive files.
+It also rejects path-bearing v2 lineage IDs before file access.
+
+Export now derives its inventory/redaction/lineage from one captured encoded
+snapshot. A caller mutation fixture cannot substitute a later artifact inventory.
+The CLI projects the verified event snapshot directly instead of rereading an
+archive with a potentially different manifest. No new archive format, restore
+authority, raw-salvage backup, Git-object backup or deletion permission is claimed;
+see [the archive contract](archive-boundary.md).
+
+The initial expanded group passed **85 tests in 92.412 seconds on Python 3.12**
+and **97.408 seconds on Python 3.9**, including runner, revision, API, CLI and
+retention coverage. Further empty-identity/private-output and caller-mutation
+checks were added afterward. The final archive/artifact/revision group passed
+**38 tests in 14.679 seconds on Python 3.12** and **15.611 seconds on Python 3.9**.
+The initial 32-test attempt had one assertion expecting a more specific error
+message than the identifier validator returns; rejection itself was correct. That
+fixture was corrected, not the safety predicate weakened.
+
+Product checkpoint `d9a6fe0dd1315b3fca0e77e3afdd5d7e92ba2ac7` is isolated on
+`codex/v0-archive-boundary`, committed under the owner's identity. Fresh installed
+package verification is separate from these source results. The predecessor's
+997-test Python 3.12 full gate passed as recorded above; its Python 3.9 gate remains
+in progress. Neither the predecessor nor the smaller archive groups establishes
+a full gate for this new checkpoint.
+
+The final checkpoint was rebuilt sdist-to-wheel and installed with TUI/graph
+extras in a disposable Python 3.12 environment. **50 installed-package tests
+passed in 77.065 seconds**, including archive attacks, ordinary artifacts, linked
+revision replay, actual local runner completion and embedding API export.
+`camol` was imported from `site-packages` before adding source test fixtures, and
+all three changed product modules matched their source bytes. Example runbook
+validation and `git diff --check` passed. The original main checkout remains clean
+at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; the user installation was not changed.
