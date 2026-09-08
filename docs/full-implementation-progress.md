@@ -30,6 +30,18 @@ plus a fresh installed wheel/terminal check. See
 acceptance remains separate, and the later fixture/performance changes need
 their own results.
 
+The projection checkpoint `9e5420a` passed a new 170-task/eight-box, five-restart
+soak (5,636 events, 530 artifacts, source unchanged, replay equal). Its remote
+matrix passed five jobs; GitHub billing prevented the sixth job from starting.
+Subsequent integration adds durable provider-preflight accounting, cancellable
+bounded native probes, contention-aware read-only host checks, and a read-only
+retention inventory/CLI. Whole-suite verification follows those merges.
+
+An independent mixed-launch review reproduced a run-wide budget race: concurrent
+hosted calls saw the same remaining committed balance. The repair requires
+atomic in-flight reservation and crash-safe settlement before this flow is
+accepted; per-invocation caps and provider overrun caveats do not fix it.
+
 ## Acceptance ledger
 
 Each row needs implementation, negative-path tests, replay/recovery evidence, and

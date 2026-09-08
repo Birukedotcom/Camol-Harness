@@ -28,3 +28,28 @@ host-lifecycle tests passed separately on both runtimes; it changes tests only,
 not model-host authority. See [next-wave verification](next-wave-verification.md)
 for the previous remote failures and diagnostic evidence. Whole-suite and hosted
 matrix results for successor commits must be reported independently.
+
+## Projection checkpoint: 9e5420a41ef124303a036700d2b6d87139aa4873
+
+The unchanged default `python scripts/run_runtime_soak.py --iterations 10 --boxes 8`
+passed ten trials on Python 3.12: 170 tasks, five verifier restarts, 5,636 events
+and 530 artifacts. The per-trial 120-second ceiling was unchanged. All trials
+preserved source and matched exported replay. Summed trial time was 745.343 seconds;
+the individual results are in [ergonomics-soak.json](ergonomics-soak.json).
+This is recovery/correctness evidence, not a controlled speed comparison with
+the older foundation run, an arbitrary-scale guarantee or a live-provider result.
+
+The predecessor `69a9f40c49ffcac28a0e42aa610d7a64267aef18`
+[Actions run 34182478937](https://github.com/Birukedotcom/Camol-Harness/actions/runs/34182478937)
+passed four of six jobs. Ubuntu 3.12 exposed inference host-ledger read contention
+and TUI persistence/navigation races. macOS 3.13 exposed a terminal-daemon stop
+test racing an already-closing socket. These failures are tracked repairs, not
+waived by local successes. The whole-suite/matrix gate for the integrated repairs
+must be recorded against its own commit.
+
+The projection checkpoint's
+[Actions run 34182978365](https://github.com/Birukedotcom/Camol-Harness/actions/runs/34182978365)
+passed five jobs. macOS 3.12 never started: its GitHub check annotation reports
+failed account payments or an Actions spending limit. It has no runner or test
+steps, so it supplies no macOS 3.12 test result. No billing settings were changed.
+This is an incomplete matrix, not six-platform success or a code-test failure.

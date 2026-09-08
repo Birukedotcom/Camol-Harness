@@ -107,3 +107,10 @@ matched exactly. This used an explicit 600-second observation ceiling, not the
 default 120-second soak acceptance. Profiling attributed 279.56 cumulative seconds
 to repeated deep copies of growing state. A performance repair must preserve
 detached snapshots, replay semantics and fresh admission/evaluation checks.
+
+## Hosted confirmation: a2948d9af1e9ba332ff9506248b9c85d3a5ff518
+
+[Actions run 34182138343](https://github.com/Birukedotcom/Camol-Harness/actions/runs/34182138343)
+passed all six Ubuntu/macOS Python 3.9, 3.12 and 3.13 jobs, including the two
+Python 3.12 recovery soaks. This confirms the narrow portability/fixture repair
+at that checkpoint; it does not establish success for subsequent feature merges.

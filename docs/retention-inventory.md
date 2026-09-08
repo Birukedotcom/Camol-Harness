@@ -7,6 +7,17 @@ models, reconcile remote effects, or claim a complete recoverable snapshot.
 
 ## Public API
 
+The CLI exposes the same inspection only:
+
+```sh
+camol retention inspect --state-dir /absolute/state --db /absolute/state/camol.sqlite3 --run-id EXACT_RUN --policy inspection-policy.json
+```
+
+Replace the illustrative paths and run identity with the actual stopped run.
+Output binds `inventory` and `inventory_digest`; exit zero means inspection
+completed, never that removal is safe. Refusal exits two. No default run, policy,
+archive, or purge action is inferred. The strict policy file is bounded to 64 KiB.
+
 ```python
 from pathlib import Path
 from camol.retention import (

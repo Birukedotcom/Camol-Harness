@@ -1,0 +1,20 @@
+{
+  "schema": "camol.runtime_soak",
+  "schema_version": 1,
+  "checkpoint": "9e5420a41ef124303a036700d2b6d87139aa4873",
+  "command": "python scripts/run_runtime_soak.py --iterations 10 --boxes 8",
+  "claim_scope": "Local Python 3.12 subprocess fixtures; no live model/provider or cloud readiness claim",
+  "passed": true,
+  "trials": [
+    {"iteration": 0, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 563, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 68.717},
+    {"iteration": 1, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 563, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 76.602},
+    {"iteration": 2, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 565, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 74.543},
+    {"iteration": 3, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 563, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 75.941},
+    {"iteration": 4, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 565, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 74.457},
+    {"iteration": 5, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 563, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 77.439},
+    {"iteration": 6, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 565, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 74.394},
+    {"iteration": 7, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 562, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 71.346},
+    {"iteration": 8, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 564, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 73.510},
+    {"iteration": 9, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 563, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 78.394}
+  ]
+}

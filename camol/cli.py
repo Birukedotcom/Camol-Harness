@@ -39,6 +39,7 @@ from .diagnostics import profile_run, event_metadata
 from .json_contracts import load_contract
 from .ssh_protocol import ALL_COMMANDS as SSH_COMMANDS, MUTATING_COMMANDS as SSH_MUTATIONS, SSHTarget, SSHTransportError
 from .source_binding import SourceBindingError
+from .retention import RetentionError, RetentionPolicy, inspect_retention
 
 
 def _write_json(value: Any) -> None:
@@ -140,6 +141,15 @@ def command_logs(args: argparse.Namespace) -> int:
             print(json.dumps(event_metadata(event), sort_keys=True, separators=(",", ":")))
     finally:
         store.close()
+    return 0
+
+
+def command_retention(args: argparse.Namespace) -> int:
+    # No latest-run lookup, live store, inferred policy, or cleanup authorization.
+    policy = RetentionPolicy.from_dict(load_contract(args.policy, max_bytes=65536))
+    inventory = inspect_retention(state_dir=Path(args.state_dir), database=Path(args.db),
+                                  run_id=args.run_id, policy=policy)
+    _write_json(dict(inventory=inventory.to_dict(), inventory_digest=inventory.digest()))
     return 0
 
 
@@ -781,6 +791,14 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("--limit", type=int, choices=range(1, 10001), default=1000, metavar="1..10000")
     logs.set_defaults(handler=command_logs)
 
+    retention = subparsers.add_parser("retention", help="inspect bounded cold-state references; never archive or delete")
+    retention.add_argument("retention_action", choices=("inspect",))
+    retention.add_argument("--state-dir", required=True, help="existing absolute canonical state directory")
+    retention.add_argument("--db", required=True, help="existing absolute database path inside the state directory")
+    retention.add_argument("--run-id", required=True, help="exact frozen run; no latest-run fallback")
+    retention.add_argument("--policy", required=True, help="strict owner-matched inspection policy JSON")
+    retention.set_defaults(handler=command_retention)
+
     watch = subparsers.add_parser("watch", help="approve and schedule bounded, durable read-only observation")
     watch.add_argument("watch_action", choices=("validate", "create", "schedule", "inspect", "poll", "run", "stop", "reopen"))
     watch.add_argument("--state-dir")
@@ -999,7 +1017,7 @@ def main(argv: Any = None) -> int:
     except (
         ArtifactError, RunbookError, SchemaError, StateTransitionError, SourceBindingError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
         WorkspaceError, ProviderError, SupervisorError, BenchmarkError, OSError, json.JSONDecodeError,
-        ConnectionError, ConversationError, SessionError, InteractiveError,
+        ConnectionError, ConversationError, SessionError, InteractiveError, RetentionError,
     ) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2
