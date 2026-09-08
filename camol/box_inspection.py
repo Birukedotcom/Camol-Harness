@@ -83,6 +83,10 @@ def box_snapshot(run_id, runbook, state, events, box_id, *, after_seq=0, limit=2
         if event.get("type") in {"BOX_PEER_CALL_STARTED", "BOX_PEER_CALL_FINISHED"}:
             caller = payload.get("subject") or state.get("peer_tool_calls", {}).get(payload.get("call_id"), {}).get("start", {}).get("subject", {})
             associated = associated or (caller.get("run_id") == run_id and caller.get("box_id") == box_id)
+        if event.get("type") in {"WORKER_STREAM_ENROLLED", "WORKER_STREAM_REVOKED"}:
+            enrollment = payload.get("proposal") or state.get("worker_streams", {}).get(payload.get("scope"), {}).get("proposal", {})
+            subject = enrollment.get("stream", {}).get("fence", {})
+            associated = associated or (subject.get("run_id") == run_id and subject.get("box_id") == box_id)
         if associated and event.get("seq", 0) > after_seq:
             relevant.append(event)
     task_ids = sorted(task_id for task_id, task in state["tasks"].items() if task.get("agent_id") == box_id)

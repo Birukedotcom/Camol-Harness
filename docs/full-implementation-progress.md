@@ -63,6 +63,13 @@ delivery boundary, not remote execution. Owner enrollment, confidential transpor
 target-side launch and serialized kernel promotion remain required; see
 [worker delivery scope](worker-delivery.md).
 
+The `codex/v0-worker-enrollment` follow-up adds reviewed per-lease stream/key
+commitments, public enrollment/revocation events, offline CLI and owner API access,
+and kernel-write-serialized receipt ingestion. This closes the arbitrary embedding
+callback's lease-mutation race for users of that service, not the distributed
+executor gap. It neither promotes worker claims into kernel results nor adopts a
+machine; see [enrollment boundaries](worker-enrollment.md).
+
 The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`

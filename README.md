@@ -647,5 +647,7 @@ evidence.
 
 The isolated build includes [durable worker evidence delivery](docs/worker-delivery.md):
 lease-bound outboxes/inboxes, authenticated receipt recovery, backpressure and
-`camol worker-delivery inspect`. This is an embeddable protocol primitive, not yet
-remote worker enrollment, scheduling or execution.
+`camol worker-delivery inspect`. [Owner stream enrollment](docs/worker-enrollment.md)
+adds `camol worker-enrollment` review/revocation and lease-serialized receipt
+ingestion. These are embeddable protocol components, not yet remote machine adoption,
+scheduling or execution.

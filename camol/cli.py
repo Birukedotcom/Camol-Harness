@@ -180,6 +180,32 @@ def command_overview(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_worker_enrollment(args: argparse.Namespace) -> int:
+    from .worker_delivery import DeliveryError
+    try:
+        inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+        if args.action == "inspect":
+            state, _, _ = inspector._cut(args.run_id)
+            result = state.get("worker_streams", {}).get(args.scope)
+            if result is None:
+                raise DeliveryError("unknown enrolled worker stream")
+        else:
+            with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+                if harness.run_id != args.run_id:
+                    raise DeliveryError("worker enrollment requires the exact current run")
+                service = harness.worker_streams
+                if args.action == "prepare":
+                    result = service.prepare(load_contract(args.stream, max_bytes=8192), by=args.by)
+                elif args.action == "approve":
+                    result = service.approve(load_contract(args.proposal, max_bytes=16384), by=args.by, review_digest=args.review_digest)
+                else:
+                    result = service.revoke(args.scope, by=args.by, reason=args.reason)
+        _write_json(result)
+    except DeliveryError as error:
+        raise SchemaError(str(error)) from error
+    return 0
+
+
 def command_worker_delivery(args: argparse.Namespace) -> int:
     from .worker_delivery import DeliveryError, WorkerDelivery, read_enrollment_key
     try:
@@ -981,6 +1007,27 @@ def build_parser() -> argparse.ArgumentParser:
     overview.add_argument("--limit", type=int, choices=range(1, 201), default=50, metavar="1..200")
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(handler=command_overview)
+
+    enrollment = subparsers.add_parser("worker-enrollment", help="owner-review an exact lease-bound evidence stream; not machine adoption or execution")
+    enrollment_actions = enrollment.add_subparsers(dest="action", required=True)
+    for name in ("prepare", "approve", "revoke", "inspect"):
+        operation = enrollment_actions.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--db")
+        operation.add_argument("--run-id", required=True)
+        if name != "inspect":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--by", required=True)
+        if name == "prepare":
+            operation.add_argument("--stream", required=True, help="exact current worker stream binding JSON")
+        elif name == "approve":
+            operation.add_argument("--proposal", required=True)
+            operation.add_argument("--review-digest", required=True)
+        else:
+            operation.add_argument("--scope", required=True)
+            if name == "revoke":
+                operation.add_argument("--reason", required=True)
+        operation.set_defaults(handler=command_worker_enrollment)
 
     delivery = subparsers.add_parser("worker-delivery", help="inspect a private worker evidence spool; never enroll, connect or execute")
     delivery.add_argument("action", choices=["inspect"])

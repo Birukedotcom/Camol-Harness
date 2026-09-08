@@ -176,6 +176,11 @@ class Harness:
             raise StateTransitionError("stop embedded execution before synchronous external VCS observation")
         return self.orchestrator.observe_vcs(run_id, **kwargs)
 
+    @property
+    def worker_streams(self):
+        from .worker_enrollment import WorkerEnrollment
+        return WorkerEnrollment(self.orchestrator, self._require_run(), self.paths.state_dir)
+
     def events(self, *, after_seq: int = 0, limit: Optional[int] = None) -> list:
         """Read one durable cursor page; omit limit for a complete legacy snapshot.
 

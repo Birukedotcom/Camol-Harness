@@ -1549,3 +1549,49 @@ Full suites for this frozen product have started in
 `/tmp/camol-worker-delivery-full-py39.log`; results remain pending. The earlier VCS
 observation full suites are separate live processes and have not been restarted.
 Main was rechecked clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`.
+
+## Worker stream enrollment checkpoint
+
+The prior VCS observation product `8ef7d150bdea0cf8f8950fbde08ea19645ee77da`
+completed both full suites: **1,134 tests in 1,064.943 seconds on Python 3.12** and
+**1,154.774 seconds on Python 3.9**, with three optional skips on 3.9. Its existing
+`/tmp/camol-vcs-observations-full-py312.log` and `...-py39.log` retain the results.
+Those processes are finished, not substituted for later worker protocol changes.
+
+The isolated `codex/v0-worker-enrollment` branch records exact owner-reviewed
+stream/key commitments and revocation in the kernel ledger, with private material
+outside ordinary exports. The service authenticates before requesting a kernel
+write reservation, rechecks under that reservation and commits the receiver spool
+while competing kernel lease writers are excluded. No worker result, heartbeat or
+usage claim is promoted into task state, readiness, gates or billing by this step.
+
+The first seven tests errored on both interpreters (6.488 seconds on 3.12, 6.872 on
+3.9): the new fixture supplied macOS's symlinked temporary path to a boundary that
+requires a resolved private state root. The fixture was corrected without relaxing
+that boundary. The next **20 tests passed in 10.262 and 11.508 seconds**. They cover
+real admitted kernel leases, key/proposal mismatch, owner forgery, approval races,
+revocation, epoch/expiry denial, receipt restart, export/replay, box association,
+partial setup and contention against a separate SQLite writer.
+
+Further review reproduced a credential echo in free-text revocation notes; the
+reproduction printed only a boolean. Enrollment-specific key redaction now protects
+those notes. Lost, changed or unsafe key material does not prevent revocation: the
+free-text note is withheld instead. Historical replay remains independent of later
+credential environment values. The expanded group passed **54 tests in 47.600
+seconds on Python 3.12 and 50.963 seconds on Python 3.9**. The final CLI-inclusive
+group and fresh installed-package result follow below.
+
+The owner CLI and `Harness.worker_streams` API expose prepare, exact review,
+revocation and retained inspection. Preparing key material does not enroll a stream,
+and old approval cannot resurrect a revoked stream. Enrollment is for an already
+admitted lease, not machine discovery/adoption or remote worker launch. The
+authenticated confidential network transport, target-side launch, artifact transfer,
+kernel promotion cursors, and operational key/spool recovery remain open.
+
+The final CLI-inclusive source group passed **55 tests in 47.895 seconds on Python
+3.12 and 51.693 seconds on Python 3.9**. The logs are
+`/tmp/camol-worker-enrollment-final-focused-py312.log` and
+`/tmp/camol-worker-enrollment-final-focused-py39.log`. A fresh sdist-to-wheel build
+and core-only installation succeeded in `/tmp/camol-worker-enrollment-package.7isa87Dv/venv`;
+the installed integration gate is tracked separately. No live remote host, account,
+model inference or user installation was used.

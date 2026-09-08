@@ -14,9 +14,10 @@ workspace, evaluator, readiness, grant and reservation identities. Display names
 pane numbers, host reachability and capacity labels cannot replace these fields.
 
 The owner supplies a fresh random 32-byte key for this exact stream, generation
-and runtime. Distribute it only over a separately authenticated, confidential
-enrollment channel. Enrollment, host authentication, worker registration and key
-rotation are **not implemented by this module**. HMAC-SHA256 authenticates possession
+and runtime. The [owner enrollment service](worker-enrollment.md) now issues and
+reviews that material against an active kernel lease. Distribute it only over a
+separately authenticated, confidential channel. Host authentication, machine
+registration and automatic key rotation are **not implemented by this module**. HMAC-SHA256 authenticates possession
 of the scoped key; it is neither encryption, remote attestation, nor proof that
 worker claims are true. Producer and receiver share that key and can both produce
 MACs. Keys and spool directories must remain outside model/workspace write grants.
@@ -113,7 +114,9 @@ acknowledged producer is not proof of kernel consumption or safe worker teardown
 
 ## Remaining execution integration
 
-The next required work is an authenticated worker service and owner enrollment,
+Owner-reviewed stream enrollment and controller-serialized receipt ingestion are
+now implemented separately in [worker enrollment](worker-enrollment.md). The next
+required work is an authenticated remote worker service and machine adoption,
 source/workspace delivery, target-side admission and fenced launch, independent
 artifact/evaluator ingestion, controller-serialized promotion cursors, heartbeat
 reconciliation, remote cancellation and salvage. Generation-key rotation,

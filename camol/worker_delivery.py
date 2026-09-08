@@ -124,6 +124,18 @@ def read_enrollment_key(path):
             os.close(descriptor)
 
 
+def key_redactor(key):
+    forms = {key.hex(), key.hex().upper(), base64.b64encode(key).decode(), base64.urlsafe_b64encode(key).decode()}
+    forms.update(value.rstrip("=") for value in tuple(forms))
+    try:
+        literal = key.decode("utf-8")
+        if literal.isprintable():
+            forms.add(literal)
+    except UnicodeError:
+        pass
+    return Redactor(env={**os.environ, **{"CAMOL_ENROLLMENT_TOKEN_" + str(i): value for i, value in enumerate(sorted(forms))}})
+
+
 class WorkerDelivery:
     """One private database for one enrolled stream and one direction.
 
@@ -181,16 +193,7 @@ class WorkerDelivery:
         return hmac.new(self._key, b"camol.worker.delivery.v1\0" + domain.encode() + b"\0" + _bytes(value), hashlib.sha256).hexdigest()
 
     def _redactor(self):
-        forms = {self._key.hex(), self._key.hex().upper(), base64.b64encode(self._key).decode(),
-                 base64.urlsafe_b64encode(self._key).decode()}
-        forms.update(value.rstrip("=") for value in tuple(forms))
-        try:
-            literal = self._key.decode("utf-8")
-            if literal.isprintable():
-                forms.add(literal)
-        except UnicodeError:
-            pass
-        return Redactor(env={**os.environ, **{"CAMOL_ENROLLMENT_TOKEN_" + str(i): value for i, value in enumerate(sorted(forms))}})
+        return key_redactor(self._key)
 
     def _paths(self):
         _private(self.root, True)
@@ -276,10 +279,9 @@ class WorkerDelivery:
             raise DeliveryError("worker batch exceeds its byte ceiling")
         return raw
 
-    def accept(self, raw, *, authorize):
+    def validate_batch(self, raw):
+        """Authenticate bounded input without taking a storage or kernel lock."""
         self._role("receiver")
-        if not callable(authorize):
-            raise DeliveryError("worker ingestion requires an authoritative lease guard")
         message = decode_contract(raw, max_bytes=FRAME_BYTES)
         _fields(message, {"schema", "schema_version", "scope", "records", "mac"})
         unsigned = {k: v for k, v in message.items() if k != "mac"}
@@ -290,6 +292,13 @@ class WorkerDelivery:
         values = [self._record(value) for value in message["records"]]
         if any(right["seq"] != left["seq"] + 1 or right["previous"] != left["digest"] for left, right in zip(values, values[1:])):
             raise DeliveryError("worker batch must contain a contiguous hash chain")
+        return values
+
+    def accept(self, raw, *, authorize):
+        self._role("receiver")
+        if not callable(authorize):
+            raise DeliveryError("worker ingestion requires an authoritative lease guard")
+        values = self.validate_batch(raw)
         with self._db(write=True) as db:
             last = db.execute("SELECT seq,digest FROM records ORDER BY seq DESC LIMIT 1").fetchone() or (0, ZERO)
             for value in values:
