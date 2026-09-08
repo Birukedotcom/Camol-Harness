@@ -596,3 +596,14 @@ No hosted-model call, account login, downloaded model weights, real remote worke
 or cloud deployment was used. Native Claude/Codex registration and exact frozen
 sandbox/runtime grants remain separate integration gates. There is no automatic
 native peer-tool support or complete-V0 claim at this checkpoint.
+
+### Native transport OS-boundary follow-up
+
+The separate `codex/v0-peer-sandbox` successor to `3cb1c97` adds a real macOS
+Seatbelt fixture without changing product code or sandbox policy. A denied-network
+worker cannot dispatch; an explicitly network-permitted worker with the exact
+socket/runtime read roots reads its bound scope but cannot unlink the owner socket.
+The fixture passed on Python 3.12 in **2.458 seconds** and Python 3.9 in **2.981
+seconds**. This is not a Linux enforcement result, and it does not grant networking
+to any existing frozen profile. The native profile/admission/runner integration
+sequence is recorded in [peer tools](peer-tools.md).

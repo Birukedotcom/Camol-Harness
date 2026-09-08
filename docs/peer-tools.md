@@ -193,3 +193,39 @@ interfaces, not a hosted model autonomously calling these tools. The owner has a
 is not an agent-facing approval tool or automatic proposal generator.
 Native/provider tool registration, remote transport, broader read-only peer views,
 natural-language delegation and live provider acceptance remain separate gates.
+
+### Next native boundary: explicit profile and admission
+
+The real macOS Seatbelt fixture in `tests/test_peer_sandbox.py` shows that the
+current denied-network policy blocks Unix peer communication. The exact socket
+directory plus trusted Python/package read roots and an explicitly permitted
+network policy allow a read; the worker still cannot unlink the owner socket.
+No sandbox rule was changed for this experiment. It does not justify adding `*`
+network access to a denied profile: a network-denied peer integration would need
+a separately specified, tested narrow Unix-socket policy.
+
+For Codex, the [official MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+provides stdio command/arguments, forwarded environment names, a tool allowlist
+and required-server initialization. The current Camol adapter explicitly sets
+`mcp_servers={}`. Replacing that exclusion is an authority change, not cosmetic
+CLI plumbing. The remaining implementation sequence is:
+
+1. Add a versioned, frozen opt-in peer policy to the model profile. Existing
+   schema1/schema2 profiles retain their current digests and no-peer behavior.
+   Reject unsupported adapter/profile combinations before a paid launch.
+2. Admission binds an owner-private short-path transport directory, trusted relay
+   runtime read roots and the exact permitted environment names. Worker source,
+   cwd and PATH must not select or replace the relay. No token enters the plan,
+   invocation argv, artifacts, global CLI configuration or peer message bodies.
+3. Runner ownership creates/closes one endpoint around one actual provider turn.
+   Recovered provider results need no new live endpoint. Failed startup, timeout,
+   cancellation and revocation close it, preserving ambiguous billed/tool outcomes.
+4. Build a per-invocation native server configuration with only the four peer
+   tools, explicit initialization failure and bounded startup/tool timeouts.
+   Verify token forwarding to the relay separately from the agent's shell
+   environment. Require real sandboxed fake-CLI and native protocol acceptance;
+   independent SDK compatibility alone does not establish Codex/Claude behavior.
+
+Claude registration must separately account for its current safe-mode and tool
+allowlist behavior. Neither provider's account-wide configuration will be modified
+as an implicit consequence of enabling a Camol worker.
