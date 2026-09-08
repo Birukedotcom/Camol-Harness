@@ -46,6 +46,12 @@ per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
+The `codex/v0-admission-liveness` follow-up addresses a reproduced control-plane
+stall during initial readiness probes. Per-box preparation now uses a tracked local
+child; pause/terminal state and the exact subject are rechecked before publication
+and leasing. [Preparation lifetime and limits](admission-liveness.md) distinguish
+this local liveness fix from distributed target admission/execution.
+
 The `codex/v0-target-identity` review closes two reproduced adoption defects: a
 changed GCP account label could duplicate the same provider resource, and retirement
 ignored leased work before process launch. Exact resource identity and outstanding

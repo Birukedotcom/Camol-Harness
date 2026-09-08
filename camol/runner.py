@@ -993,7 +993,7 @@ class HarnessRunner:
         self._evaluator_bundle = bundle
         return bundle
 
-    def _ensure_admissions(self, run_id: str) -> None:
+    def _admission_preparations(self, run_id: str):
         if self.workspaces is None:
             return
         source_binding = self._ensure_source_binding(run_id)
@@ -1044,16 +1044,26 @@ class HarnessRunner:
             if not eligible:
                 continue
             for agent in sorted(eligible, key=lambda candidate: self.orchestrator._agent_order(candidate, task)):
+                preparation_error = None
                 try:
-                    bundle, handle = controller.prepare(
+                    bundle, handle = yield controller, dict(
                         plan_digest=state["plan_digest"], task=task, agent=agent,
                         granted_by=state["approved_by"], base_revision=integration_base,
                         expected_evaluator_digest=(self._evaluator_bundle.evaluator_digest if self._evaluator_bundle else None),
                     )
                 except (AdmissionError, WorkspaceError, SandboxError) as error:
-                    code = "WORKSPACE_CONFLICT" if isinstance(error, WorkspaceError) else "POLICY_DENIED"
+                    preparation_error = error
+                current = self.orchestrator.state(run_id)
+                if (current.get("terminal") is not None
+                        or current["plan_digest"] != state["plan_digest"]
+                        or current["approved_by"] != state["approved_by"]
+                        or current["tasks"][task["id"]]["status"] not in {"pending", "waiting"}
+                        or current["agents"][agent["id"]]["status"] != "idle"):
+                    return  # Recompute the next admission pass from current truth.
+                if preparation_error is not None:
+                    code = "WORKSPACE_CONFLICT" if isinstance(preparation_error, WorkspaceError) else "POLICY_DENIED"
                     self.orchestrator.wait_task(run_id, task["id"], WaitingReason(
-                        code=code, detail="admission preparation failed: {}".format(error),
+                        code=code, detail="admission preparation failed: {}".format(preparation_error),
                         wake_condition="repair the admission prerequisite and retry probing",
                         task_id=task["id"], box_id=agent["id"],
                     ))
@@ -1076,6 +1086,48 @@ class HarnessRunner:
                     remaining -= 1
                     idle_agents = [item for item in idle_agents if item["id"] != agent["id"]]
                     break
+
+    def _ensure_admissions(self, run_id: str) -> None:
+        """Synchronous embedding/test compatibility; never used by the async driver."""
+        steps = self._admission_preparations(run_id)
+        try:
+            job = next(steps)
+            while True:
+                controller, arguments = job
+                try:
+                    prepared = controller.prepare(**arguments)
+                except (AdmissionError, WorkspaceError, SandboxError) as error:
+                    job = steps.throw(error)
+                else:
+                    job = steps.send(prepared)
+        except StopIteration:
+            return
+        finally:
+            steps.close()
+
+    async def _ensure_admissions_async(self, run_id, *, should_drain=None):
+        from .admission_process import prepare_async
+        steps = self._admission_preparations(run_id)
+        try:
+            job = next(steps)
+            while True:
+                if should_drain is not None and should_drain():
+                    return
+                controller, arguments = job
+                try:
+                    prepared = await prepare_async(controller, arguments)
+                except (AdmissionError, WorkspaceError, SandboxError) as error:
+                    if should_drain is not None and should_drain():
+                        return
+                    job = steps.throw(error)
+                else:
+                    if should_drain is not None and should_drain():
+                        return
+                    job = steps.send(prepared)
+        except StopIteration:
+            return
+        finally:
+            steps.close()
 
     def _deadlock_details(self, run_id: str) -> Dict[str, Any]:
         state = self.orchestrator.state(run_id)
@@ -1341,15 +1393,20 @@ class HarnessRunner:
                 draining = should_drain is not None and should_drain()
                 if not draining:
                     try:
-                        self._ensure_admissions(run_id)
+                        await self._ensure_admissions_async(run_id, should_drain=should_drain)
                     except (AdmissionError, WorkspaceError, SandboxError, StateTransitionError, CapacityError) as error:
                         if running:
                             raise
                         self.orchestrator.block_run(run_id, "admission_failure", {"detail": str(error)})
                         return self.orchestrator.state(run_id)
-                    self._ensure_source_binding(run_id)
-                    for assignment in self.orchestrator.lease_ready_tasks(run_id):
-                        running[assignment["task_id"]] = asyncio.create_task(self._run_assignment(run_id, assignment))
+                    draining = should_drain is not None and should_drain()
+                    current = self.orchestrator.state(run_id)
+                    if current["status"] != "running":
+                        return current
+                    if not draining:
+                        self._ensure_source_binding(run_id)
+                        for assignment in self.orchestrator.lease_ready_tasks(run_id):
+                            running[assignment["task_id"]] = asyncio.create_task(self._run_assignment(run_id, assignment))
                 if not running:
                     state = self.orchestrator.state(run_id)
                     if draining:

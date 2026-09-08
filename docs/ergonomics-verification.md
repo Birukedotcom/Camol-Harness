@@ -2063,3 +2063,60 @@ The installed group passed **80 tests in 28.083 seconds**; log:
 `/tmp/camol-target-identity-installed.log`. Main remains clean at `cca1b4b` and
 the user's installation is unchanged. No new full-suite or distributed-execution
 acceptance is claimed for this repair.
+
+## Initial admission liveness review — 2026-09-08
+
+The isolated `codex/v0-admission-liveness` follow-up reproduced an event-loop
+stall against `9848a970c5f27a71da788c5e1b13d45d137862cb`. A real, owner-installed
+interpreter wrapper outside the workspace/control directories gated its version
+probe. The concurrent owner pause callback could not run until that probe timed
+out. The original regression failed in **16.281 seconds**, without any model call;
+log: `/tmp/camol-admission-liveness-red.log`.
+
+Per-box preparation now runs in a tracked local child with bounded input/output,
+deadline and cancellation settlement. Only the controller can publish admission,
+reserve capacity or lease work. The child validates the frozen plan and selected
+task/agent; the controller checks the returned subject and current kernel state.
+This is not a remote executor or a worker sandbox. See
+[preparation lifetime and remaining limits](admission-liveness.md).
+
+The first liveness/API group passed **8 tests in 19.953 seconds**. Extending the
+control cases exposed another defect: after an owner terminal transition during
+preparation, the driver still attempted to lease. The three-test control run
+errored once; adding a current-run status check produced **3 tests in 5.622
+seconds**, all passed. Logs: `/tmp/camol-admission-liveness-controls.log` and
+`/tmp/camol-admission-liveness-controls-fixed.log`.
+
+Actual authenticated supervisor-socket status/drain, embedded pause, settled
+cancellation and no-late-publication cases passed **4 tests in 7.760 seconds on
+Python 3.12** and **4 in 7.594 seconds on modern Python 3.9**. The additional
+changed-plan/subject contract test brought the focused group to **5 tests in
+6.863 seconds**, passed. The intermediate 62-test groups passed on both runtimes,
+but final product checks were still being refined while those groups ran, so they
+are not treated as the final exact-product gate.
+
+Final unchanged-product groups passed **66 tests in 233.043 seconds on Python
+3.12** and **66 in 231.404 seconds on modern Python 3.9**. Logs:
+`/tmp/camol-admission-liveness-final-py312.log` and `-py39.log`. They cover the
+five new liveness/contract tests plus embedding, admission, runtime recovery,
+N-box execution, capacity and supervisor regressions. V1 example validation and
+`git diff --check` pass. Main remains clean at `cca1b4b`; no global installation
+or live provider work was performed.
+
+The fresh sdist-built wheel installed without dependencies into
+`/tmp/camol-admission-liveness-package.lFmzVI7p/venv`. Isolated imports outside the
+checkout confirmed site-packages ownership and byte equality for all **114 product
+modules**, with Textual/MCP/cryptography absent, before loading fixtures. The
+installed group passed **66 tests in 241.307 seconds**; log:
+`/tmp/camol-admission-liveness-installed.log`. Installed help and V1 validation
+also passed. No current-checkpoint full-suite result is claimed by these groups.
+
+## Inventory full-suite result — 2026-09-08
+
+The single frozen `da7c054a166edf17f895fd84eb8f38cdeb16dc1a` Python 3.12
+full-suite process finished with **1,238 tests in 1,464.468 seconds, all passed**.
+Log: `/tmp/camol-target-inventory-full-py312.log`. The original process was
+observed to completion, not restarted on observation timeouts. This result covers
+the usage activity and offline inventory additions, but **not** the subsequent
+target identity or initial-admission liveness repairs. It remains local/fixture
+verification, not live native-provider, GCP or distributed-worker acceptance.
