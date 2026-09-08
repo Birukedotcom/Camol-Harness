@@ -1595,3 +1595,17 @@ The final CLI-inclusive source group passed **55 tests in 47.895 seconds on Pyth
 and core-only installation succeeded in `/tmp/camol-worker-enrollment-package.7isa87Dv/venv`;
 the installed integration gate is tracked separately. No live remote host, account,
 model inference or user installation was used.
+
+Product `610d27b590dc8bb269a7727cc01b5e60eaab14b7` is committed and pushed on
+`codex/v0-worker-enrollment` under the owner's Git identity. Its fresh installed
+wheel passed **55 tests in 49.285 seconds on Python 3.12**, without Textual, MCP or
+cryptography installed. All seven changed product modules were byte-compared to
+source before adding source test fixtures, and package imports came from
+`site-packages` outside the repository. The exact installed result is in
+`/tmp/camol-worker-enrollment-installed.log`.
+
+Both full suites for this frozen product have started in
+`/tmp/camol-worker-enrollment-full-py312.log` and
+`/tmp/camol-worker-enrollment-full-py39.log`; they remain pending. The preceding
+worker-delivery full suites remain independent live processes, not substituted
+verification. Main and the user installation are unchanged.
