@@ -8,13 +8,16 @@ import os
 import shutil
 import signal
 import stat
+import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from .schema import canonical_digest
+from .rpc_audit import RPCAudit
 from .probes import Redactor
 from .sandbox import SandboxError, process_start_fingerprint
 from .ssh_protocol import (MUTATING_COMMANDS, REMOTE_COMMAND, REQUEST_LIMIT, RESPONSE_LIMIT, SSHTarget,
@@ -31,13 +34,34 @@ class SSHRequestCancelled(asyncio.CancelledError):
         self.request_id, self.outcome = request_id, outcome
 
 
+class _MeasuredReader:
+    """Bytes consumed from the protocol pipe, not SSH/network traffic totals."""
+    def __init__(self, reader):
+        self.reader, self.bytes = reader, 0
+
+    async def readexactly(self, count):
+        try:
+            data = await self.reader.readexactly(count)
+        except asyncio.IncompleteReadError as error:
+            self.bytes += len(error.partial)
+            raise
+        self.bytes += len(data)
+        return data
+
+    async def read(self, count):
+        data = await self.reader.read(count)
+        self.bytes += len(data)
+        return data
+
+
 def cancellation_receipt(error):
     """Python 3.9 wraps task cancellation; preserve its receipt via context."""
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
         if isinstance(error, SSHRequestCancelled):
-            return {"request_id": error.request_id, "outcome": error.outcome}
+            return {"request_id": error.request_id, "outcome": error.outcome,
+                    **({"audit_error": error.audit_error} if hasattr(error, "audit_error") else {})}
         error = error.__context__
     return None
 
@@ -81,6 +105,10 @@ class SSHControlClient:
             metadata = self.root.lstat()
             if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
                 raise SSHTransportError("POLICY_DENIED", "transport receipt directory must be owner-only")
+        self.audit = RPCAudit(self.root)
+
+    def usage(self, *, after=0, limit=100):
+        return self.audit.inspect(self.target.digest(), after=after, limit=limit)
 
     @contextmanager
     def _lock(self):
@@ -193,6 +221,8 @@ class SSHControlClient:
         return cleanup
 
     async def request(self, command, *, params=None, requested_by=None):
+        if self.read_only:
+            raise SSHTransportError("POLICY_DENIED", "receipt/usage inspection cannot dispatch remote calls")
         target = self.target
         requested_by = target.owner if requested_by is None else requested_by
         if not isinstance(command, str) or command not in target.allowed_commands or requested_by != target.owner or (params is not None and not isinstance(params, dict)):
@@ -209,6 +239,8 @@ class SSHControlClient:
         return await self._request(command, frozen_params, requested_by, mutating=False)
 
     async def _request(self, command, params, requested_by, *, mutating):
+        started = time.monotonic_ns()
+        measured_stdout, request_bytes = None, 0
         target = self.target
         request_id = "ssh-" + uuid4().hex
         record = dict(schema="camol.ssh_dispatch_receipt", schema_version=1, request_id=request_id,
@@ -217,6 +249,7 @@ class SSHControlClient:
                       request_digest=canonical_digest({"command": command, "params": params}), created_at=_now(), status="prepared")
         record["history"] = [{"status": "prepared", "at": record["created_at"]}]
         path = self.root / (request_id + ".json")
+        self.audit.start(record, mutating=mutating)
         if mutating:
             _save(path, record)
         process, stderr_task, snapshot, process_started = None, None, None, None
@@ -241,7 +274,7 @@ class SSHControlClient:
             environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"}
 
             async def exchange():
-                nonlocal process, stderr_task, dispatched, process_started
+                nonlocal process, stderr_task, dispatched, process_started, measured_stdout, request_bytes
                 process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=environment, start_new_session=True,
                     limit=RESPONSE_LIMIT)
@@ -250,7 +283,8 @@ class SSHControlClient:
                 except (OSError, ValueError, SandboxError):
                     process_started = None
                 stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
-                hello = await read_frame(process.stdout)
+                measured_stdout = _MeasuredReader(process.stdout)
+                hello = await read_frame(measured_stdout)
                 fields(hello, {"schema", "schema_version", "nonce", "identity"})
                 if hello["schema"] != "camol.ssh_hello" or type(hello["schema_version"]) is not int or hello["schema_version"] != 1:
                     raise SSHTransportError("IDENTITY_DENIED", "unsupported remote bridge handshake")
@@ -261,15 +295,17 @@ class SSHControlClient:
                                target_id=target.target_id, target_digest=target.target_digest, run_id=target.run_id,
                                plan_digest=target.plan_digest, command=command, requested_by=requested_by, params=params)
                 frame = encode_frame(request)
+                request_bytes = len(frame)
+                record.update(status="dispatched", dispatched_at=_now())
+                record["history"].append({"status": "dispatched", "at": record["dispatched_at"]})
                 if mutating:
-                    record.update(status="dispatched", dispatched_at=_now())
-                    record["history"].append({"status": "dispatched", "at": record["dispatched_at"]})
                     _save(path, record)
+                self.audit.dispatched(request_id)
                 dispatched = True
                 process.stdin.write(frame)
                 await process.stdin.drain()
                 process.stdin.close()
-                response = await read_frame(process.stdout)
+                response = await read_frame(measured_stdout)
                 if response.get("schema") == "camol.ssh_error":
                     fields(response, {"schema", "schema_version", "request_id", "target_id", "code", "outcome"})
                     if response["request_id"] != request_id or response["target_id"] != target.target_id:
@@ -283,7 +319,7 @@ class SSHControlClient:
                         or type(response["response"].get("ok")) is not bool
                         or response["response"]["ok"] != (response["outcome"] == "completed")):
                     raise SSHTransportError("PROTOCOL_DENIED", "remote response does not bind the exact dispatched request")
-                if await process.stdout.read(1):
+                if await measured_stdout.read(1):
                     raise SSHTransportError("PROTOCOL_DENIED", "unexpected trailing transport output")
                 await process.wait()
                 if process.returncode != 0:
@@ -310,14 +346,32 @@ class SSHControlClient:
                 "SSH control outcome is unknown; inspect and reconcile before another mutation" if outcome == "unknown" else str(error) or "SSH control was not dispatched",
                 request_id=request_id, outcome=outcome) from error
         finally:
-            if process is not None:
-                record["cleanup"] = await asyncio.shield(self._stop_process(process, process_started))
-                if mutating:
-                    _save(path, record)
-            if stderr_task is not None:
-                if not stderr_task.done():
-                    stderr_task.cancel()
-                await asyncio.gather(stderr_task, return_exceptions=True)
-            if snapshot is not None:
-                # Only the exact private temporary directory created above.
-                shutil.rmtree(snapshot)
+            try:
+                if process is not None:
+                    record["cleanup"] = await asyncio.shield(self._stop_process(process, process_started))
+                    if mutating:
+                        _save(path, record)
+                if stderr_task is not None:
+                    if not stderr_task.done():
+                        stderr_task.cancel()
+                    await asyncio.gather(stderr_task, return_exceptions=True)
+                if snapshot is not None:
+                    # Only the exact private temporary directory created above.
+                    shutil.rmtree(snapshot)
+            finally:
+                pending_error = sys.exc_info()[1]
+                stderr_bytes = 0 if process is None else None
+                if stderr_task is not None and stderr_task.done() and not stderr_task.cancelled() and stderr_task.exception() is None:
+                    stderr_bytes = stderr_task.result()["bytes"]
+                metrics = dict(elapsed_ms=max(0, (time.monotonic_ns() - started) // 1000000),
+                               request_bytes=request_bytes, stdout_bytes=measured_stdout.bytes if measured_stdout else 0,
+                               stderr_bytes=stderr_bytes)
+                try:
+                    self.audit.finish(record, **metrics)
+                    record["rpc_usage"] = metrics
+                except SSHTransportError as error:
+                    if pending_error is not None:
+                        pending_error.audit_error = "AUDIT_UNAVAILABLE"
+                    else:
+                        raise SSHTransportError("AUDIT_UNAVAILABLE", "RPC transport outcome={}; usage completion failed, inspect before retrying".format(record["status"]),
+                                                request_id=request_id, outcome=record["status"]) from error

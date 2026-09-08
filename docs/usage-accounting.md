@@ -160,3 +160,11 @@ does not expose every internal provider request.
 Use profiles to select a concrete hypothesis, then compare fixed tasks/conditions
 through the benchmark campaign. The profiler deliberately makes no automatic
 savings, causation, quality or promotion claim.
+
+Remote control-plane calls have a separate content-free local SQLite audit.
+`camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` reports retained
+per-command/status call counts, local duration and protocol byte measurements,
+including remote monitor reads. It does not connect, inspect provider billing or
+merge RPC duration into worker execution time. Prepared/interrupted calls remain
+explicitly unmeasured; profile changes and older unrecorded calls limit coverage.
+See [RPC measurement and failure semantics](ssh-control.md#local-rpc-usage-audit).

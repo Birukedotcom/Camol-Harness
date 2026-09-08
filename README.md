@@ -124,6 +124,10 @@ Explicit owner-side remote mailbox relay is available separately through the
 Python `RemoteMailbox` API and allowlisted `remote request` commands. It requires
 an exact lease observation and does not turn messages into task authority; see
 [observe/review/send and retry rules](docs/ssh-control.md#scoped-remote-mailbox-relay).
+`camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` inspects local
+content-free RPC counts, durations and byte measurements without connecting.
+These measurements include monitor reads, not provider billing. See
+[coverage and failure rules](docs/ssh-control.md#local-rpc-usage-audit).
 
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference

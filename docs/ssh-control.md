@@ -222,3 +222,53 @@ journal retains request/parameter digests, not message bodies; the remote run le
 retains redacted message content and delivery state. Locally persisted intents are
 the caller's responsibility. All verification so far uses disposable local bridge,
 supervisor and lease fixtures, not real SSH hosts or hosted model accounts.
+
+## Local RPC usage audit
+
+`camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL --after 0 --limit 100`
+reads the private local audit without SSH, model calls, state creation or mutation
+reconciliation. Substitute the same actual target profile and journal directory
+used for your requests. Python embeddings use `SSHControlClient.usage(...)`;
+constructing a client with `read_only=True` permits only local inspection, never
+network dispatch, including remote read commands.
+
+Validated remote calls now append content-free metadata to `rpc-audit.sqlite3`,
+separate from the mutation-only dispatch receipts. Monitor polling is included.
+Rows contain generated request ID, exact target-profile digest, command name,
+mutation flag, transport status, timestamps and measurements. They contain no
+host name, actor name, key path, params, message body, response or stderr text.
+This is owner-controlled local storage, not a tamper-proof audit against the owner
+UID. Legacy calls and pre-validation denials are explicitly unmeasured.
+
+The report filters by the exact current profile digest. `entries` paginate by
+`next_seq` (`--after`) with `more`; `by_command` aggregates all retained calls for
+that profile, not just the page. `limit` is 1..1,000. Changed profiles have separate
+coverage; an empty report is not proof that no historical remote work occurred.
+
+- `elapsed_ms` is local monotonic time through transport cleanup, including audit
+  preparation and waits, but excluding the final audit commit. It is not remote
+  execution time or provider-internal latency.
+- `request_bytes` counts the encoded request frame, including its four-byte header,
+  not proof that those bytes reached the remote process. Zero means no encoded
+  frame was produced for the recorded call.
+- `stdout_bytes` counts consumed protocol pipe bytes, including hello/frame headers
+  and partial reads; `stderr_bytes` counts a completed stderr drain. These are not
+  total wire bytes or SSH encryption overhead. An unfinished stderr drain is null.
+- Prepared/dispatched rows left after interruption retain null measurements;
+  aggregate `known_calls` distinguishes measured zeros from missing values.
+  `known_total` is only the sum of observed measurements. Provider tokens and cost
+  remain null: RPC counts/bytes cannot establish a model bill.
+
+Audit preparation must succeed before SSH launch. Unsafe files, invalid schema,
+bounded lock contention or a full audit deny new dispatch. The store permits up
+to 1,000,000 records, then stops new calls; this is a record ceiling, not a disk
+quota. No automatic deletion, archive rotation or complete retention workflow is
+implemented. Do not delete the journal to clear uncertain mutation holds.
+
+If final audit persistence fails after a confirmed remote result, the API reports
+`AUDIT_UNAVAILABLE` with that known `outcome` and request ID. Inspect the independent
+mutation receipt before any retry: a completed mutation is not made safe to repeat
+by a logging failure. During a transport error or cancellation, that original
+outcome is preserved with `audit_error`; cancellation remains cancellation. Abrupt
+termination can leave pending audit rows. Audit rows cannot authorize execution,
+clear mutation uncertainty, or prove delivery, consumption or task success.

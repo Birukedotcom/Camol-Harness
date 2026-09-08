@@ -248,6 +248,11 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   exact target-profile and lease scope, while the existing remote kernel enforces
   deduplication/fencing. Lost post replies remain unknown until explicit operator
   reconciliation. This is not autonomous cross-host worker authentication.
+  A separate private content-free RPC audit now records validated remote reads
+  and mutations, including monitor polling, with local latency and protocol byte
+  measurements. Offline pagination/aggregation cannot clear mutation uncertainty
+  or establish provider billing. Unknown measurements remain null. The fixed
+  record ceiling stops new calls; complete archival/retention remains open.
 - Recorded completed-run evidence/code recovery does not close operational restore
   or retention. Independent archive reconstruction cannot authorize reuse of old
   leases, credentials, budgets, remote effects, or removal of the original stores.

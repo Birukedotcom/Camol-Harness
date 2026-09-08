@@ -1326,3 +1326,29 @@ remote-mailbox, SSH protocol, monitor and orchestrator modules were byte-compare
 with source before adding test fixtures. The two composed whole-suite processes
 remain active and unclaimed; their later terminal results are the outstanding
 local integration gate for this exact product.
+
+## Content-free remote-call measurements checkpoint
+
+The isolated `codex/v0-rpc-audit` branch adds a separate private SQLite audit to
+SSH control calls, including read-only monitoring. It records generated request
+identity, exact profile digest, command/status, local monotonic duration and
+protocol pipe measurements, not raw content or provider billing. Preparation
+failure stops dispatch. Final logging failure preserves confirmed remote outcomes
+and mutation receipts; cancellation retains its unknown outcome and audit warning.
+Offline usage inspection is noncreating and cannot dispatch a remote request.
+
+The initial expanded group passed 61 tests in 93.203 seconds on Python 3.12 and
+89.495 seconds on Python 3.9. A subsequent nine-test run failed one assertion on
+3.12 (7.339 seconds), while 3.9 passed (4.047 seconds): the concurrency test
+incorrectly assumed submission index zero always received the first SQLite
+sequence. It now locates that unfinished request by exact ID. Concurrent commits
+can also remove a transient SQLite sidecar between validation checks; only a
+disappearing sidecar is tolerated, never an unsafe or missing main database.
+Final source/package gates follow. The predecessor mailbox whole suites are
+still independent processes and their results are not inferred from this group.
+
+After the correction, 53 focused transport/audit/mailbox/monitor tests passed in
+89.780 seconds on Python 3.12 and 85.736 seconds on Python 3.9. The nine CLI and
+terminal navigation tests passed separately in 1.843 and 2.090 seconds, for 62
+distinct tests on each interpreter. A fresh sdist-to-wheel build succeeded; its
+installed-package group and latest whole-suite gates are tracked separately.

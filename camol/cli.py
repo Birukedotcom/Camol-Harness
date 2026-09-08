@@ -739,9 +739,11 @@ def command_remote(args: argparse.Namespace) -> int:
         raise SSHTransportError("POLICY_DENIED", "acknowledge-unknown requires --request-id, --by and --reason; it does not establish success")
     params = load_contract(args.params) if args.params else {}
     client = SSHControlClient(target, state_dir=Path(args.state_dir), ssh_binary=args.ssh_binary,
-                              timeout=args.timeout, read_only=args.remote_action == "receipts")
+                              timeout=args.timeout, read_only=args.remote_action in {"receipts", "usage"})
     if args.remote_action == "receipts":
         result = client.receipts()
+    elif args.remote_action == "usage":
+        result = client.usage(after=args.after, limit=args.limit)
     elif args.remote_action == "acknowledge-unknown":
         result = client.acknowledge_unknown(args.request_id, requested_by=args.by, note=args.reason)
     else:
@@ -1135,7 +1137,7 @@ def build_parser() -> argparse.ArgumentParser:
     inference.set_defaults(handler=command_model_inference)
 
     remote = subparsers.add_parser("remote", help="explicit authenticated SSH control-plane connection; never worker provisioning")
-    remote.add_argument("remote_action", choices=("validate", "identity", "request", "receipts", "acknowledge-unknown", "monitor"))
+    remote.add_argument("remote_action", choices=("validate", "identity", "request", "receipts", "acknowledge-unknown", "monitor", "usage"))
     remote.add_argument("--target", help="strict pinned SSH target profile JSON")
     remote.add_argument("--state-dir", help="private local dispatch journal, separate from the remote run state")
     remote.add_argument("--command", dest="remote_command", choices=sorted(SSH_COMMANDS))
@@ -1147,6 +1149,8 @@ def build_parser() -> argparse.ArgumentParser:
     remote.add_argument("--ssh-binary", default="/usr/bin/ssh", help="explicit local OpenSSH executable")
     remote.add_argument("--timeout", type=float, default=45)
     remote.add_argument("--interval", type=float, default=5, help="read-only monitor refresh interval in seconds (2..300)")
+    remote.add_argument("--after", type=int, default=0, help="RPC usage entry cursor")
+    remote.add_argument("--limit", type=int, default=100, help="RPC usage page size (1..1000)")
     remote.set_defaults(handler=command_remote)
 
     revise = subparsers.add_parser("revise", help="review or apply an immutable successor plan (execution must be stopped before apply)")
@@ -1206,7 +1210,8 @@ def main(argv: Any = None) -> int:
         return args.handler(args)
     except SSHTransportError as error:
         _write_json(dict(ok=False, error=dict(code=error.code, message=str(error)),
-                         request_id=error.request_id, outcome=error.outcome))
+                         request_id=error.request_id, outcome=error.outcome,
+                         **({"audit_error": error.audit_error} if hasattr(error, "audit_error") else {})))
         return 2
     except (
         ArtifactError, RecoveryError, RunbookError, SchemaError, StateTransitionError, SourceBindingError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
