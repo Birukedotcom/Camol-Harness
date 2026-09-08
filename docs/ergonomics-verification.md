@@ -1076,3 +1076,31 @@ and per-test stall diagnostics. They are not yet passing gates. No main checkout
 user installation, account configuration or hosted model was changed by these
 checks. The active acceptance ledger retains the remaining implementation and
 live-validation gates.
+
+## Repository graph read-only boundary (2026-09-08)
+
+The next isolated branch is `codex/v0-graph-boundary`. Two initial adversarial
+fixtures failed against its predecessor: PATH resolution executed a repository
+`git` trap, and an outside-file hard link became Python graph evidence with
+`STATIC_OBSERVED` status. All inputs were synthetic disposable repositories;
+neither fixture read user secrets or ran a provider.
+
+The repair restricts inventory Git to system plumbing with a private environment,
+no allowed protocols/lazy fetch, bounded live output capture, and existing callback
+overrides. File reads use the already tested descriptor-anchored reader, refusing
+links/special files and rechecking accepted file identities before returning.
+Normal skipped-file cases remain incomplete observations rather than fabricated
+runtime readiness. See [the graph contract](repository-graph.md).
+
+The initial repaired graph group passed **11 tests in 1.794 seconds on Python
+3.12**. With directory/FIFO swaps, late content mutation, callback/environment
+traps, missing Git and shared output-limit checks, the expanded group passed
+**48 tests in 14.255 seconds on Python 3.12** and **14.876 seconds on Python 3.9**
+(one optional stdlib TOML skip). The final protocol-permission regression brings
+the group to **49 tests in 15.407 seconds on Python 3.12** and **15.994 seconds on
+Python 3.9**, with the same optional skip. The group includes graph scanners,
+preflight cancellation/accounting and actual graph/revision CLI coverage.
+
+These are focused source results. Installed-package and whole-suite gates for
+this new checkpoint remain separate; running predecessor suites cannot establish
+them. Main and the user installation remain unchanged.

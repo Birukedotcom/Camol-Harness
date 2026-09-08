@@ -12,9 +12,11 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import subprocess
+import tempfile
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -24,6 +26,8 @@ from xml.etree import ElementTree
 
 from .probes import GIT_SAFETY_ARGS, Redactor, sanitized_environment
 from .git_safety import safe_git_argv
+from .archive_io import ArchiveRoot, ArchiveIOError
+from .preflight_process import bounded_preflight_run
 from .schema import canonical_digest
 
 
@@ -116,10 +120,21 @@ class ScanContext:
 
 
 def _git(root: Path, *arguments: str) -> bytes:
-    completed = subprocess.run(
-        safe_git_argv("git", ["-C", str(root), *arguments], env=sanitized_environment()), stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=sanitized_environment(), timeout=30, check=False,
-    )
+    # A repository may be on PATH, including via an empty/relative entry. Only
+    # installed system plumbing is eligible for this read-only observation.
+    binary = shutil.which("git", path="/usr/bin:/bin")
+    if not binary:
+        raise GraphError("a trusted system Git is required for repository inventory")
+    try:
+        with tempfile.TemporaryDirectory(prefix="camol-graph-git-") as scratch:
+            env = sanitized_environment({"PATH": "/usr/bin:/bin", "HOME": scratch})
+            env.update(GIT_NO_LAZY_FETCH="1", GIT_LFS_SKIP_SMUDGE="1", GIT_ALLOW_PROTOCOL="")
+            completed = bounded_preflight_run(
+                safe_git_argv(binary, ["-C", str(root), *arguments], env=env),
+                cwd=scratch, env=env, timeout=30, max_output_bytes=32 << 20,
+            )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise GraphError("Git inventory exceeded its bounds or could not run safely") from error
     if completed.returncode:
         raise GraphError("Git inventory could not read a repository root and revision")
     if len(completed.stdout) > 32 << 20:
@@ -143,6 +158,14 @@ def _excluded(path: str, policy: CrawlPolicy) -> bool:
 
 def inventory_repository(root: Path, policy: CrawlPolicy) -> RepositoryInventory:
     root = Path(root).resolve()
+    try:
+        with ArchiveRoot(root) as reader:
+            return _inventory_repository(root, policy, reader)
+    except (OSError, ArchiveIOError) as error:
+        raise GraphError("repository files changed or became unsafe during inventory") from error
+
+
+def _inventory_repository(root: Path, policy: CrawlPolicy, reader: ArchiveRoot) -> RepositoryInventory:
     top = Path(_git(root, "rev-parse", "--show-toplevel").decode().strip()).resolve()
     if top != root:
         raise GraphError("crawl root must be the Git repository root")
@@ -176,22 +199,14 @@ def inventory_repository(root: Path, policy: CrawlPolicy) -> RepositoryInventory
             if total + metadata.st_size > policy.max_total_bytes:
                 warnings.append("total byte ceiling reached")
                 break
-            descriptor = os.open(str(target), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            with os.fdopen(descriptor, "rb") as handle:
-                opened = os.fstat(handle.fileno())
-                if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
-                    raise GraphError("source changed during crawl: " + relative)
-                content = handle.read(policy.max_file_bytes + 1)
-                finished = os.fstat(handle.fileno())
-            if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
-                warnings.append("source changed during crawl: " + relative)
+            content = reader.read(relative, min(policy.max_file_bytes, policy.max_total_bytes - total))
             if len(content) > policy.max_file_bytes or total + len(content) > policy.max_total_bytes:
                 warnings.append("file grew beyond the byte ceiling: " + relative)
                 continue
             total += len(content)
             files[relative] = content
-        except (OSError, GraphError) as error:
-            warnings.append(str(error) if isinstance(error, GraphError) else "unreadable source: " + relative)
+        except (OSError, GraphError, ArchiveIOError) as error:
+            warnings.append(str(error) if isinstance(error, GraphError) else "unsafe or unreadable source skipped: " + relative)
     dirty = canonical_digest({name: "sha256:" + hashlib.sha256(content).hexdigest() for name, content in files.items()})
     if _git(root, "rev-parse", "HEAD^{commit}").decode().strip() != revision:
         warnings.append("source revision changed during crawl")

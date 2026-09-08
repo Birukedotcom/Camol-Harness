@@ -13,7 +13,9 @@ class PreflightProcessCancelled(OSError):
         self.dispatched = dispatched
 
 
-def bounded_preflight_run(argv, *, cwd, env, input=None, timeout=120, stdout=None, stderr=None, check=False, cancel_event=None):
+def bounded_preflight_run(argv, *, cwd, env, input=None, timeout=120, stdout=None, stderr=None, check=False, cancel_event=None, max_output_bytes=1 << 20):
+    if type(max_output_bytes) is not int or not 1 <= max_output_bytes <= 32 << 20:
+        raise ValueError("process output ceiling must be an integer from 1 to 32 MiB")
     if input is not None and (not isinstance(input, bytes) or len(input) > 4096):
         raise ValueError("preflight input exceeds the fixed request ceiling")
     if cancel_event is not None and cancel_event.is_set():
@@ -54,7 +56,7 @@ def bounded_preflight_run(argv, *, cwd, env, input=None, timeout=120, stdout=Non
                         selector.unregister(key.fileobj)
                     else:
                         output[key.data].extend(data)
-                        if sum(map(len, output.values())) > 1 << 20:
+                        if sum(map(len, output.values())) > max_output_bytes:
                             raise OSError("preflight process exceeded its output ceiling")
         result = subprocess.CompletedProcess(argv, process.wait(timeout=max(.001, deadline - time.monotonic())),
                                              bytes(output["stdout"]), bytes(output["stderr"]))

@@ -118,6 +118,11 @@ usable Python/CLI entry points. A fixture cannot establish live provider maturit
 
 ## Review findings repaired (final integration verification pending)
 
+- The static graph crawl could execute a repository-supplied `git` through PATH
+  and parse a hard link to outside content; both were reproduced with disposable
+  fixtures. The isolated graph boundary now uses trusted system Git, live output
+  bounds, descriptor-anchored reads and end-of-inventory identity checks. Its
+  focused/integration tests do not prove the unimplemented runtime graph overlays.
 - Long calls now reprove admission before the effective authorization expires;
   failed reproof cancels, salvages and records a typed wait without widening grants.
 - Completed interactive sessions reconcile stored/daemon status; each new plan

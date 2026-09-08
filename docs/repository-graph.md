@@ -17,7 +17,8 @@ snapshot; byte/file ceilings, parser failures, and unresolved dynamic imports ma
 the result `OBSERVATION_INCOMPLETE`. On Python 3.9/3.10, packaging requires an
 installed `tomli` outside the crawled repository; otherwise the omission is visible.
 
-This subsystem gives the human and orchestrator two immediate answers:
+The intended subsystem answers two questions; the current static implementation
+addresses the second. The first still requires the specified readiness overlays:
 
 1. What capabilities are actually usable in each box right now?
 2. If this file, package, service, or deployment changes, what could be affected?
@@ -25,7 +26,44 @@ This subsystem gives the human and orchestrator two immediate answers:
 The implementation is Python-native and terminal-native. It does not require a web
 application, and the durable graph model is independent of the eventual TUI library.
 
+### Read-only crawl boundary
+
+The graph-boundary checkpoint resolves Git only from `/usr/bin:/bin`, uses a
+private temporary home/current directory, discards inherited Git configuration and
+repository-provided PATH binaries, and retains callback-disabling arguments.
+There is no arbitrary project-command execution. Missing system Git is an explicit
+error rather than a fallback to a repository executable. Custom runtime discovery
+is separate from this trusted inventory implementation; this is a POSIX local
+boundary, not a Windows portability claim.
+
+Each Git query has a 30-second timeout and a combined 32 MiB stdout/stderr ceiling
+enforced while reading, rather than after unbounded capture. The shared subprocess
+reader retains its 1 MiB default for provider preflights. Git's
+[`GIT_ALLOW_PROTOCOL` and `GIT_NO_LAZY_FETCH`](https://git-scm.com/docs/git)
+settings explicitly prohibit protocol use and on-demand object fetching. A missing
+local object is not an invitation to fetch data during a graph crawl.
+
+Repository contents are read relative to one open root descriptor. Intermediate
+symlinks, hard-linked files and special files cannot become parser input. A file
+replaced by a FIFO is opened nonblocking and refused before consuming data.
+Accepted file identities are checked again at the end; a change to an already
+read member refuses the inventory. Skipped unsafe/unreadable entries produce an
+incomplete observation. Existing files, Git refs and user configuration are not
+rewritten to make a crawl pass.
+
+The explicit initial root resolves the caller's selected path (including macOS
+temporary-directory aliases). This is not an atomic filesystem snapshot, a
+hostile-kernel boundary, a same-owner adversarial filesystem sandbox, or proof of
+runtime readiness. The installed Git/parser implementations and explicit custom
+scanner plugins remain trusted code. Limits constrain captured data/process I/O,
+not total CPU or whole-host memory/disk consumption.
+
 ## 1. Terminal shape
+
+The shapes and readiness overlays below are the target design. For the currently
+implemented navigation commands, metadata-only tiles and the exact meaning of
+connection glyphs, use [pane orchestration](pane-orchestration.md) and the README;
+an observed workspace is not equivalent to a task-ready runtime.
 
 The main view reserves the upper-right for a compact dependency rail:
 
