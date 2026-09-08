@@ -16,13 +16,22 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from camol.model_host import LlamaCppModelHost, ModelHostPlan, ModelHostUnload, _CHILDREN, _http_json
+from camol.model_host import LlamaCppModelHost, ModelHostUnload, ModelHostPlan, ModelHostReadbackError, _CHILDREN, _http_json
 from camol.models import DownloadFile, DownloadPlan, ModelError, ModelStore
 
 
 FIXTURE = r'''
-import http.server, json, os, signal, sys, time
+import json, os, time
+stages = {}
+def stage(name):
+    stages[name] = time.time()
+    fd = os.open('fixture-stage.json', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        json.dump({'pid': os.getpid(), 'last_phase': name, 'stages': stages}, handle)
+stage('python_started')
+import http.server, signal, sys
 from pathlib import Path
+stage('imports_ready')
 args = sys.argv[1:]
 def arg(name): return args[args.index(name) + 1]
 mode = Path(arg('--model')).read_bytes()[4:].decode()
@@ -45,7 +54,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers()
         try: self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError): pass
-http.server.HTTPServer(('127.0.0.1', int(arg('--port'))), Handler).serve_forever()
+original_getfqdn = http.server.socket.getfqdn
+def observed_getfqdn(*args, **kwargs):
+    stage('before_getfqdn')
+    result = original_getfqdn(*args, **kwargs)
+    stage('after_getfqdn')
+    return result
+http.server.socket.getfqdn = observed_getfqdn
+class FixtureServer(http.server.HTTPServer):
+    def server_bind(self):
+        stage('before_bind')
+        super().server_bind()
+        stage('bound')
+    def server_activate(self):
+        super().server_activate()
+        stage('listening')
+stage('before_server_init')
+server = FixtureServer(('127.0.0.1', int(arg('--port'))), Handler)
+stage('server_ready')
+server.serve_forever()
 '''
 
 
@@ -121,6 +148,28 @@ class ModelHostTests(unittest.TestCase):
         self.host.prepare(plan)
         self.host.approve(plan.digest(), "owner")
 
+    def fixture_stage(self, plan):
+        # Only fixed diagnostic fields from our tiny fixture, never its argv,
+        # environment, credentials or arbitrary output. Bound the read even on
+        # a failed/cold startup where the stage file may not exist yet.
+        path = self.host._directory(plan.digest()) / "fixture-stage.json"
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(4097)
+            if len(raw) > 4096:
+                return {"available": False}
+            value = json.loads(raw)
+            phases = {"python_started", "imports_ready", "before_server_init", "before_bind",
+                      "before_getfqdn", "after_getfqdn", "bound", "listening", "server_ready"}
+            if not isinstance(value, dict) or value.get("last_phase") not in phases or type(value.get("pid")) is not int:
+                return {"available": False}
+            stages = value.get("stages", {})
+            if not isinstance(stages, dict) or set(stages) - phases or any(type(item) not in (int, float) for item in stages.values()):
+                return {"available": False}
+            return {"available": True, "pid": value["pid"], "last_phase": value["last_phase"], "stages": stages}
+        except (OSError, ValueError):
+            return {"available": False}
+
     def wait_terminal(self, plan, timeout=10):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -153,7 +202,7 @@ class ModelHostTests(unittest.TestCase):
         with patch.dict(os.environ, {"HF_TOKEN": "synthetic-secret", "LLAMA_ARG_MODEL_URL": "https://external.invalid/model",
                                      "HTTP_PROXY": "http://external.invalid:42", "LLAMA_API_KEY": "foreign-key"}):
             loaded = self.host.load(plan.digest(), "owner", operation_id="load-one")
-        self.assertEqual(loaded["status"], "loaded", loaded)
+        self.assertEqual(loaded["status"], "loaded", dict(loaded, fixture_stage=self.fixture_stage(plan)))
         self.assertEqual(loaded["loaded"], "observed")
         self.assertEqual(loaded["inference_ready"], "unverified")
         self.assertIsNone(loaded["readback"]["provider_weight_digest"])
@@ -210,8 +259,23 @@ class ModelHostTests(unittest.TestCase):
         result = self.host.load(plan.digest(), "owner", operation_id="mismatch")
         self.assertEqual(result["status"], "cancelled", result)
         self.assertEqual(result["loaded"], "no")
+        self.assertGreater(result["operation"]["detail"]["readback_attempts"], 0)
+        self.assertEqual(set(result["operation"]["detail"]["last_readback_error"]), {"phase", "kind"})
         self.assertFalse(any(event["type"] == "MODEL_HOST_LOADED" for event in self.host.events(plan.digest())))
         self.assertEqual(self.host.load(plan.digest(), "owner", operation_id="mismatch")["status"], "cancelled")
+
+    def test_readback_diagnostics_capture_only_fixed_phase_and_error_kind(self):
+        plan = self.plan()
+        with patch("camol.model_host._assert_listener", side_effect=ModelError("PRIVATE_RAW_ERROR_912f")):
+            with self.assertRaises(ModelHostReadbackError) as caught:
+                self.host._readback(plan, {"detail": {"alias": "fixture", "child_pid": 12345}})
+        self.assertEqual(caught.exception.phase, "listener")
+        self.assertEqual(caught.exception.kind, "invalid_readback")
+        self.assertNotIn("PRIVATE_RAW_ERROR", str(caught.exception))
+        diagnostic = ModelHostReadbackError("health", TimeoutError("private timeout"))
+        self.assertEqual(diagnostic.phase, "health")
+        self.assertEqual(diagnostic.kind, "timeout")
+        self.assertNotIn("private timeout", str(diagnostic))
 
     def test_load_cancellation_awaits_owned_child_and_ttl_expiry(self):
         plan = self.plan("slow")

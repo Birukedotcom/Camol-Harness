@@ -31,6 +31,17 @@ _STATES = _ACTIVE | {"unloaded", "failed", "cancelled", "expired", "unknown"}
 _CHILDREN = []
 
 
+class ModelHostReadbackError(ModelError):
+    """Content-free readiness diagnostic; safe to retain in the private ledger."""
+    def __init__(self, phase, cause):
+        if phase not in {"listener", "credential", "health", "models", "properties", "identity"}:
+            phase = "unknown"
+        self.phase = phase
+        self.kind = ("timeout" if isinstance(cause, (TimeoutError, subprocess.TimeoutExpired)) else
+                     "os_error" if isinstance(cause, OSError) else "invalid_readback")
+        super().__init__("model-host " + self.phase + " readback failed (" + self.kind + ")")
+
+
 @atexit.register
 def _detach_helpers():
     for child in _CHILDREN:
@@ -497,28 +508,69 @@ class LlamaCppModelHost:
             time.sleep(0.05)
         return dict(self.status(digest), status="unknown", loaded="unverified", reconciliation_required=True)
 
-    def _readback(self, plan, operation):
-        directory = self._directory(plan.digest())
+    def _credential(self, plan_digest):
+        """Internal private credential reference; never include it in API results."""
+        self._check()
+        directory = self._directory(plan_digest)
         key_path = directory / "api.key"
-        _private(key_path)
-        key = key_path.read_text("ascii")
-        if len(key) != 64:
+        expected = _private(key_path)
+        directory_fd = os.open(str(directory), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            actual = os.fstat(directory_fd)
+            parent = directory.lstat()
+            if (actual.st_dev, actual.st_ino) != (parent.st_dev, parent.st_ino):
+                raise ModelError("model-host credential directory changed")
+            descriptor = os.open("api.key", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+            with os.fdopen(descriptor, "rb") as handle:
+                info = os.fstat(handle.fileno())
+                if (info.st_dev, info.st_ino, info.st_size) != (expected.st_dev, expected.st_ino, 64):
+                    raise ModelError("model-host credential identity changed")
+                raw = handle.read(65)
+        finally:
+            os.close(directory_fd)
+        try:
+            key = raw.decode("ascii", "strict")
+        except UnicodeError:
+            raise ModelError("invalid private model-host API credential") from None
+        if len(key) != 64 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in key):
             raise ModelError("invalid private model-host API credential")
-        alias = operation["detail"].get("alias")
-        _assert_listener(operation["detail"].get("child_pid"), plan.port)
-        health = _http_json(plan.port, "/health")
-        models = _http_json(plan.port, "/v1/models", key)
-        props = _http_json(plan.port, "/props", key)
-        if (health.get("status") != "ok" or not isinstance(models.get("data"), list) or len(models["data"]) != 1
-                or not isinstance(models["data"][0], dict) or models["data"][0].get("id") != alias
-                or props.get("model_path") != operation["detail"].get("model_path")
-                or props.get("is_sleeping") is not False or type(props.get("total_slots")) is not int or props["total_slots"] != 1):
-            raise ModelError("model runtime readback differs from the owned load")
-        return {"observed_at": time.time(), "health": "ok", "model_alias": alias, "model_path_matches": True,
-                "runtime_reported_loaded": True, "provider_weight_digest": None, "inference_executed": False}
+        return key
+
+    def _readback(self, plan, operation, *, deadline=None, cancel_event=None):
+        phase = "listener"
+        try:
+            alias = operation["detail"].get("alias")
+            _assert_listener(operation["detail"].get("child_pid"), plan.port, deadline=deadline, cancel_event=cancel_event)
+            phase = "credential"
+            key = self._credential(plan.digest())
+            def authorize_peer():
+                _assert_listener(operation["detail"].get("child_pid"), plan.port, deadline=deadline, cancel_event=cancel_event)
+            phase = "health"
+            health = _http_json(plan.port, "/health", deadline=deadline, cancel_event=cancel_event)
+            phase = "models"
+            models = _http_json(plan.port, "/v1/models", key, deadline=deadline, cancel_event=cancel_event, authorize=authorize_peer)
+            phase = "properties"
+            props = _http_json(plan.port, "/props", key, deadline=deadline, cancel_event=cancel_event, authorize=authorize_peer)
+            phase = "identity"
+            if (health.get("status") != "ok" or not isinstance(models.get("data"), list) or len(models["data"]) != 1
+                    or not isinstance(models["data"][0], dict) or models["data"][0].get("id") != alias
+                    or props.get("model_path") != operation["detail"].get("model_path")
+                    or props.get("is_sleeping") is not False or type(props.get("total_slots")) is not int or props["total_slots"] != 1):
+                raise ModelError("model runtime readback differs from the owned load")
+            return {"observed_at": time.time(), "health": "ok", "model_alias": alias, "model_path_matches": True,
+                    "runtime_reported_loaded": True, "provider_weight_digest": None, "inference_executed": False}
+        except (ModelError, OSError, ValueError, http.client.HTTPException, subprocess.SubprocessError) as error:
+            raise ModelHostReadbackError(phase, error) from None
 
 
-def _assert_listener(pid, port):
+def _check_io_deadline(deadline, cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise ModelError("model-host inspection cancelled")
+    if deadline is not None and time.monotonic() >= deadline:
+        raise ModelError("model-host inspection deadline exceeded")
+
+
+def _assert_listener(pid, port, *, deadline=None, cancel_event=None):
     """Prove the expected child owns the loopback listener before sending a key.
 
 This is an OS observation, not endpoint TLS/hardware attestation. A changed or
@@ -526,6 +578,7 @@ unobservable listener fails closed. Never probes arbitrary ports/processes.
 """
     if type(pid) is not int or pid <= 1:
         raise ModelError("model host child identity is unavailable")
+    _check_io_deadline(deadline, cancel_event)
     if sys.platform.startswith("linux"):
         expected = "0100007F:{:04X}".format(port)
         with open("/proc/net/tcp", "r", encoding="ascii") as handle:
@@ -535,20 +588,23 @@ unobservable listener fails closed. Never probes arbitrary ports/processes.
             for path in (Path("/proc") / str(pid) / "fd").iterdir():
                 try:
                     if os.readlink(path) in {"socket:[" + inode + "]" for inode in inodes}:
+                        _check_io_deadline(deadline, cancel_event)
                         return
                 except FileNotFoundError:
                     pass
     elif sys.platform == "darwin":
         result = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-p", str(pid), "-iTCP@127.0.0.1:" + str(port),
                                  "-sTCP:LISTEN", "-F", "pn"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, env={"PATH": "/usr/bin:/bin"}, timeout=2, check=False)
+                                stderr=subprocess.DEVNULL, env={"PATH": "/usr/bin:/bin"},
+                                timeout=2 if deadline is None else min(2, max(0.001, deadline - time.monotonic())), check=False)
+        _check_io_deadline(deadline, cancel_event)
         rows = result.stdout.decode("ascii", "replace").splitlines()
         if result.returncode == 0 and "p" + str(pid) in rows and "n127.0.0.1:" + str(port) in rows:
             return
     raise ModelError("approved model process does not own the expected loopback listener")
 
 
-def _http_json(port, path, key=None):
+def _http_json(port, path, key=None, *, deadline=None, cancel_event=None, authorize=None):
     # Direct numeric loopback socket: no DNS, proxy, redirects, cookies, or
     # ambient user/provider credentials. Only read-only lifecycle endpoints.
     if path not in {"/health", "/v1/models", "/props"}:
@@ -558,19 +614,27 @@ def _http_json(port, path, key=None):
     # A socket timeout alone is not an operation deadline: a slow local peer
     # could drip headers/bytes forever and prevent cancellation/TTL handling.
     # Read a small fixed-length HTTP/1 response with an absolute deadline.
-    deadline = time.monotonic() + 1
-    with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
+    deadline = min(time.monotonic() + 1, deadline) if deadline is not None else time.monotonic() + 1
+    _check_io_deadline(deadline, cancel_event)
+    with socket.create_connection(("127.0.0.1", port), timeout=max(0.001, deadline - time.monotonic())) as connection:
+        if key is not None and authorize is not None:
+            authorize()
+        _check_io_deadline(deadline, cancel_event)
         request = "GET {} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n".format(path, port)
         if key:
             request += "Authorization: Bearer " + key + "\r\n"
         connection.sendall((request + "\r\n").encode("ascii"))
         data, length, header_end = bytearray(), None, None
         while length is None or len(data) < header_end + length:
+            _check_io_deadline(deadline, cancel_event)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ModelError("model-host readback deadline exceeded")
-            connection.settimeout(remaining)
-            chunk = connection.recv(min(16384, 256 * 1024 + 16384 - len(data) + 1))
+            connection.settimeout(min(remaining, 0.05))
+            try:
+                chunk = connection.recv(min(16384, 256 * 1024 + 16384 - len(data) + 1))
+            except socket.timeout:
+                continue
             if not chunk:
                 raise ModelError("model-host readback ended before its declared length")
             data.extend(chunk)

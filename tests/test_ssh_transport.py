@@ -106,7 +106,8 @@ capture.write_text(json.dumps({'argv':sys.argv[1:],'environment':dict(os.environ
 mode=%r
 if mode=='mutate_known_hosts': Path(%r).write_text('CHANGED ORIGINAL')
 if mode=='stderr': sys.stderr.buffer.write(b'secret-banner'*300000);sys.stderr.buffer.flush()
-if mode in {'bad_identity','trailing','duplicate','oversized','no_stdin','orphan_pipes'}:
+if mode=='delayed_hello': time.sleep(30)
+if mode in {'bad_identity','trailing','duplicate','oversized','no_stdin','orphan_pipes','delayed_hello'}:
  identity=bridge_identity()
  if mode=='bad_identity': identity['camol_version']='not-approved'
  sys.stdout.buffer.write(encode_frame({'schema':'camol.ssh_hello','schema_version':1,'nonce':'n'*64,'identity':identity}));sys.stdout.buffer.flush()
@@ -272,9 +273,58 @@ else: asyncio.run(_stdio(Path(%r)))
         self.assertNotIn("secret-banner", json.dumps(result))
         self.mode = "no_stdin"
         self.install_fake()
-        with self.assertRaises(SSHTransportError):
-            await self.client(timeout=0.3).request("drain", params={"large": "x" * 55000})
-        self.assertEqual(self.client().receipts()[0]["status"], "unknown")
+        # Python startup and the installed-byte handshake are not the blocked
+        # stdin phase. A 0.3s whole-request timeout can correctly reject before
+        # dispatch under CI load; it cannot prove post-dispatch uncertainty.
+        client = self.client(timeout=30)
+        pending = asyncio.create_task(client.request("drain", params={"large": "x" * 55000}))
+        async def wait_for_dispatch():
+            while True:
+                receipts = client.receipts()
+                if receipts and receipts[0]["status"] == "dispatched":
+                    return
+                if pending.done():
+                    await pending  # Surface a real handshake/transport failure.
+                    self.fail("nonreading fixture unexpectedly completed before dispatch")
+                await asyncio.sleep(0.01)
+        try:
+            await asyncio.wait_for(wait_for_dispatch(), timeout=10)
+            started = time.monotonic()
+            # Cancel explicitly: wait_for's own timeout translates custom
+            # CancelledError subclasses differently across supported Pythons.
+            # The outer deadline independently bounds the cleanup itself.
+            cancel = asyncio.get_running_loop().call_later(0.3, pending.cancel)
+            try:
+                with self.assertRaises(asyncio.CancelledError) as caught:
+                    await asyncio.wait_for(pending, timeout=3)
+            finally:
+                cancel.cancel()
+            self.assertEqual(cancellation_receipt(caught.exception)["outcome"], "unknown")
+            self.assertLess(time.monotonic() - started, 3)
+            receipt = client.receipts()[0]
+            self.assertEqual(receipt["status"], "unknown")
+            self.assertIn("dispatched", [item["status"] for item in receipt["history"]])
+            with self.assertRaises(SSHTransportError) as retry:
+                await self.client().request("drain")
+            self.assertEqual(retry.exception.code, "OUTCOME_UNKNOWN")
+            self.assertEqual([item["command"] for item in self.requests], ["status"])
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    async def test_timeout_before_delayed_hello_is_rejected_without_dispatch(self):
+        self.mode = "delayed_hello"
+        self.install_fake()
+        client = self.client(timeout=0.3)
+        with self.assertRaises(SSHTransportError) as caught:
+            await client.request("drain")
+        self.assertEqual(caught.exception.outcome, "not_dispatched")
+        receipt = client.receipts()[0]
+        self.assertEqual(receipt["status"], "rejected")
+        self.assertNotIn("dispatched", [item["status"] for item in receipt["history"]])
+        self.assertFalse(self.requests)
+        self.assertFalse(self.supervisor.draining)
 
     async def test_duplicate_oversized_and_trailing_frames_fail_closed(self):
         for mode in ("duplicate", "oversized", "trailing"):
