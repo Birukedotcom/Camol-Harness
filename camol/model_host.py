@@ -236,8 +236,12 @@ class LlamaCppModelHost:
             raise ModelError("model host root identity changed")
         _private(self.database)
         for suffix in ("-journal", "-wal", "-shm"):
-            if (self.root / ("host.sqlite3" + suffix)).exists() or (self.root / ("host.sqlite3" + suffix)).is_symlink():
+            try:
                 _private(self.root / ("host.sqlite3" + suffix))
+            except FileNotFoundError:
+                # SQLite creates/removes sidecars during concurrent commits.
+                # Only absence is permissible; existing unsafe files still fail.
+                pass
 
     def _event(self, digest, kind, data):
         self.connection.execute("INSERT INTO events(plan_digest,type,observed_at,data) VALUES(?,?,?,?)",

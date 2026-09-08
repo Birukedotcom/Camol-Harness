@@ -58,6 +58,9 @@ implementation gate. The new turn-scoped Python peer-tool interface supports
 explicit embedding adapters with replayable reads; native transport is not enabled.
 Admitted peer calls also have content-free start/finish telemetry, replay-bound
 results, explicit unknown outcomes and per-task/operation timing profiles.
+An explicit per-turn Unix endpoint and bounded MCP stdio relay now exercise
+cross-process peer communication. Native CLI registration and frozen sandbox
+access remain pending; the transport is not silently enabled for existing plans.
 The `/delegate` view exposes declared compatibility without readiness claims;
 new-work review reuses the exact stopped-owner revision approval and separate
 launch. Automatic proposal generation and live reassignment remain open.

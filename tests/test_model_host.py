@@ -176,6 +176,31 @@ class ModelHostTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail("fixture did not terminate: " + str(result))
 
+    def test_concurrent_sidecar_removal_is_allowed_but_unsafe_existing_files_are_not(self):
+        sidecar = self.host.database.with_name("host.sqlite3-journal")
+        sidecar.touch(mode=0o600)
+        original = Path.lstat
+
+        def removed_before_inspection(path):
+            if path == sidecar:
+                sidecar.unlink(missing_ok=True)
+                raise FileNotFoundError(str(path))
+            return original(path)
+
+        with patch.object(Path, "lstat", removed_before_inspection):
+            self.host._check()
+        sidecar.symlink_to(self.base / "absent")
+        with self.assertRaises(ModelError):
+            self.host._check()
+        sidecar.unlink()
+        sidecar.touch(mode=0o644)
+        with self.assertRaises(ModelError):
+            self.host._check()
+        sidecar.unlink()
+        with patch("camol.model_host._private", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                self.host._check()
+
     def test_prepare_approve_are_passive_and_contracts_are_strict(self):
         plan = self.plan()
         with patch("camol.model_host.subprocess.Popen", side_effect=AssertionError("must not execute")), patch(

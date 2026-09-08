@@ -128,17 +128,67 @@ additional events can exceed a reader's default 20,000-event inspection allowanc
 bounded reader overrides or exports are required rather than silently truncating
 the run to a healthy-looking partial history.
 
+## Explicit local transport and MCP relay
+
+`PeerEndpoint(tools, parent)` is an optional owner-side Python API. It creates a
+disposable Unix socket for one already-owned `PeerTools` turn. The parent must
+be an existing canonical owner-private directory (0700); the socket is 0600.
+The complete socket path is limited to 100 encoded bytes for macOS portability.
+There is no TCP listener, global registration, model call or owner-control API.
+The owner must keep the endpoint on its own event loop and close it before
+releasing the turn. Closing the endpoint does not close the supplied tool object.
+
+An explicit embedding can start `python -m camol.peer_mcp` as a stdio child,
+supplying `CAMOL_PEER_ENDPOINT` and `CAMOL_PEER_TOKEN` only to that child. These
+are short-lived worker capabilities, not account credentials. Do not put the
+token in command arguments, global configuration or a transcript. The relay
+removes the token environment entry on startup. This is not automatic native
+provider registration and is not an instruction to modify a user's CLI config.
+
+The dependency-free relay implements MCP 2025-06-18 initialization, ping,
+tools/list and tools/call over bounded newline-delimited JSON-RPC. Its tools are
+`list_boxes`, `observe_box`, `inbox` and `send_message`. Each requires a stable
+logical `request_id`, independent of the RPC envelope's unique request ID.
+Initialization authenticates the existing turn without adding a tool attempt or
+claiming provider/model readiness. There are no sampling, resource, shell,
+approval or task-allocation tools. Tool failures are `isError` results; malformed
+protocol requests receive protocol errors. This follows the primary MCP
+[stdio transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports),
+[lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)
+and [tool protocol](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
+
+The internal socket protocol is distinct from MCP. It accepts one request per
+connection, at most 64 KiB per request and 128 KiB per response, eight active
+connections and 256 total connections per endpoint. Reads have a five-second
+timeout. The relay session is additionally limited to 512 protocol messages.
+These limits do not replace frozen provider/context/resource budgets.
+
+Lost replies are explicitly unknown: the operation may have committed. There
+are no automatic retries. Retaining the exact logical ID/content allows an
+explicit retry to retrieve the existing result without refreshing observations
+or duplicating sends. Tool outcomes use the durable peer-call ledger; connection
+counts from `snapshot()` are content-free **ephemeral owner-memory counters**,
+not a replayable security log. A new endpoint resets those transport counters,
+but cannot reset the tool ledger's per-turn/per-run allowances.
+
+The socket's capability and Unix permissions are not a security boundary against
+an unrestricted hostile process with the same OS user. An actual provider bridge
+must freeze and enforce sandbox access to the exact transport and trusted relay
+runtime. Cleanup refuses to remove a replaced socket or directory. Revoking or
+closing the underlying worker turn makes later reads, messages and handshakes
+fail even if the relay process remains alive.
+
 ## Remaining native integration
 
-Native CLI and remote workers still need a scoped tool transport. It must bind the
+Native CLI registration and remote workers still need integration. It must bind the
 same run/task/box/lease/turn and preserve the observer-before-send requirement,
 bounded data, redaction, idempotency and revoked-turn behavior. It must not hand a
 worker the owner control token, silently allow network on a network-denied plan,
 or place trusted responses in worker-writable evidence directories. Refreshing
 receipts behind an agent's stale request is not an acceptable substitute.
 
-The current direct-Python fixture proves the adapter interface and local build,
-not a hosted model autonomously calling these tools. The owner now has a
+The direct-Python build and real stdio/socket fixtures prove their respective
+interfaces, not a hosted model autonomously calling these tools. The owner has a
 `/delegate` compatibility view and stopped-run revision-review entry point; this
 is not an agent-facing approval tool or automatic proposal generator.
 Native/provider tool registration, remote transport, broader read-only peer views,

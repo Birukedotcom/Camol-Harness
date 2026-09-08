@@ -549,3 +549,50 @@ The older peer-tools Python 3.9 full run subsequently finished **906 tests in
 It is a failed gate, not a passing compatibility claim. Telemetry's full Python
 3.9 suite is running in the fresh environment; delegation has the successful
 focused fresh-environment and installed checks recorded above.
+
+## Local peer transport and MCP relay checkpoint
+
+Subsequently completed predecessor gates: telemetry `5277220` passed **913 tests
+on Python 3.12 in 680.149 seconds** and **913 tests on fresh Python 3.9 in 721.077
+seconds**. Delegation `eff1624` completed **922 tests in 713.590 seconds with one
+error** on Python 3.12. That error was a real `FileNotFoundError` race inspecting
+`host.sqlite3-journal`: SQLite removed the temporary sidecar between the existence
+check and `lstat`. It is not a passing gate or an environment waiver.
+
+The isolated `codex/v0-peer-transport` successor removes that check-then-stat race:
+sidecar absence is allowed, while existing symlinks, unsafe permissions and other
+inspection errors remain rejected. A deterministic removal fixture and unsafe
+sidecar checks cover the fix; the main database/root remain mandatory.
+
+This successor also adds the explicitly owner-issued per-turn Unix socket and
+bounded MCP stdio relay documented in [peer tools](peer-tools.md). No existing
+provider profile, grant, sandbox policy or default adapter is widened. Real child
+processes exercise initialization, list/observe/send, exact retries, revocation,
+wrong-token rejection and clean EOF shutdown. An independent **MCP Python SDK
+1.30.0** client negotiated the protocol and invoked a real tool through stdio and
+the local socket. That SDK is test-only, not a Camol runtime dependency.
+
+Early transport tests exposed a shutdown deadlock: waiting for the Python 3.12
+server to close before cancelling accepted clients delayed shutdown until their
+read timeout. Endpoint closure now cancels/closes owned clients before awaiting
+server closure. Tests also exercise replaced socket cleanup refusal, malformed
+frames, duplicate keys, response identity/type/size tampering, connection limits,
+and actual reply loss after a durable operation. The latter preserves the original
+result and records connection delivery as unknown, never a second message.
+
+The initial transport/MCP/model-host group passed **27 tests on Python 3.12 in
+34.625 seconds**. With the optional SDK test added, Python 3.9 ran **28 tests in
+35.303 seconds, OK with one explicit SDK-only skip**. The expanded final
+transport/MCP group passed **16 tests on Python 3.12 in 33.216 seconds**, including
+the independent SDK. The same final **16-test** group ran on Python 3.9 in
+**29.957 seconds, OK with one SDK-only skip**. A fresh source distribution rebuilt
+into a wheel, installed with TUI/graph extras, passed **30 installed-package
+transport/MCP/model-host tests in 35.638 seconds**, including the independent SDK.
+Parent and child imports selected the installed package. Full successor suites
+have been started separately; focused and installed passes do not substitute for
+their results.
+
+No hosted-model call, account login, downloaded model weights, real remote worker
+or cloud deployment was used. Native Claude/Codex registration and exact frozen
+sandbox/runtime grants remain separate integration gates. There is no automatic
+native peer-tool support or complete-V0 claim at this checkpoint.
