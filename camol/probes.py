@@ -455,7 +455,10 @@ class ProbeContext:
     def guarded(cls, *, runner: CommandRunner = run_command, **values: Any) -> "ProbeContext":
         workspace = Path(values["workspace"])
         state_dir = Path(values["state_dir"])
-        guarded = GuardedRunner(runner, [workspace, state_dir], runbook_commands(values["runbook"], workspace))
+        roots = [workspace, state_dir]
+        if values.get("source_workspace") is not None:
+            roots.append(Path(values["source_workspace"]))
+        guarded = GuardedRunner(runner, roots, runbook_commands(values["runbook"], workspace))
         return cls(runner=guarded, **values)
 
     def observed_at(self) -> str:
@@ -472,6 +475,8 @@ class ProbeContext:
         if resolved is None:
             return None
         if _nested(Path(resolved), self.workspace) or _nested(Path(resolved), self.state_dir):
+            return None
+        if self.source_workspace is not None and _nested(Path(resolved), self.source_workspace):
             return None
         return resolved
 

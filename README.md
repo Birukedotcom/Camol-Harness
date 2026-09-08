@@ -174,6 +174,10 @@ See [source handoff scope](docs/source-handoff.md).
 `camol source-handoff doctor` checks the received V2 task copy and selected worker
 against an expected evaluator digest without preparing or launching work.
 See [target-local diagnostic limits](docs/handoff-readiness.md).
+`camol target-prepare plan|apply|inspect` explicitly reviews and creates an isolated
+target-local worktree and retains candidate readiness evidence. It does not launch
+a worker or admit that candidate into the controller. See
+[preparation effects and recovery](docs/target-preparation.md).
 
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference

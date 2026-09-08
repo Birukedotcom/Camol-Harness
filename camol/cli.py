@@ -1065,6 +1065,28 @@ def command_interactive(args: argparse.Namespace) -> int:
     return run_line_ui(workspace, state_root=state_root, show_boot=not args.no_boot)
 
 
+def command_target_prepare(args: argparse.Namespace) -> int:
+    from datetime import datetime, timezone
+    from . import target_preparation
+    from .recovery import load_recovery_key
+    if args.preparation_action == "plan":
+        result = target_preparation.propose(source_proposal=load_contract(args.source_proposal, max_bytes=65536),
+            source_export_digest=args.source_export_digest, runbook=load_runbook(Path(args.runbook)),
+            agent_id=args.agent_id, evaluator_digest=args.evaluator_digest,
+            state_dir=str(Path(args.state_dir).resolve()), request_id=args.request_id, by=args.by,
+            issued_at=datetime.now(timezone.utc).isoformat(), expires_at=args.expires_at)
+    elif args.preparation_action == "inspect":
+        result = target_preparation.inspect(Path(args.state_dir))
+    else:
+        result = asyncio.run(target_preparation.prepare(load_contract(args.proposal, max_bytes=target_preparation.MAX_BYTES),
+            by=args.by, review_digest=args.review_digest, archive=Path(args.archive),
+            key=load_recovery_key(path=Path(args.key_file))))
+    _write_json(result)
+    if args.preparation_action == "apply" and result["status"] != "prepared":
+        return 2
+    return 0
+
+
 def command_source_handoff(args: argparse.Namespace) -> int:
     from .source_handoff import propose, receive_source
     from .recovery import load_recovery_key
@@ -1641,6 +1663,21 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("--by")
     revise.add_argument("--digest", help="exact revision proposal digest being approved")
     revise.set_defaults(handler=command_revise)
+    preparation = subparsers.add_parser("target-prepare", help="approve isolated workspace preparation on a target; never launch a worker")
+    preparation_actions = preparation.add_subparsers(dest="preparation_action", required=True)
+    for name in ("plan", "apply", "inspect"):
+        operation = preparation_actions.add_parser(name)
+        if name == "plan":
+            for flag in ("source-proposal", "source-export-digest", "runbook", "agent-id", "evaluator-digest",
+                         "state-dir", "request-id", "by", "expires-at"):
+                operation.add_argument("--" + flag, required=True)
+        elif name == "apply":
+            for flag in ("proposal", "review-digest", "by", "archive", "key-file"):
+                operation.add_argument("--" + flag, required=True)
+        else:
+            operation.add_argument("--state-dir", required=True)
+        operation.set_defaults(handler=command_target_prepare)
+
     handoff = subparsers.add_parser("source-handoff", help="review encrypted source copy to an adopted target; never execution authority")
     handoff_actions = handoff.add_subparsers(dest="handoff_action", required=True)
     diagnose = handoff_actions.add_parser("doctor", help="read-only task/worker probes on an authenticated received copy; never admission or launch")

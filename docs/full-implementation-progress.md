@@ -46,6 +46,15 @@ per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
+Target-local preparation is now implemented on `codex/v0-target-preparation`:
+exact source/task/worker/evaluator review, isolated worktree creation through a
+tracked child, durable intent and retained result inspection. An unknown result
+never automatically repeats. This remains candidate preparation, not distributed
+admission or execution. See [scope and recovery](target-preparation.md).
+The focused group passed 81 tests on each of Python 3.9 and 3.12; see the linked
+preparation verification section for exact coverage and packaging. Prior passing
+whole-suite results do not cover the new preparation code.
+
 The `codex/v0-process-intents` review reproduced duplicate process effects after a
 lost result. A durable turn allocation and cross-process packet lock now prevent
 silent redispatch, with explicit pre-launch denial proof, cached-result recovery

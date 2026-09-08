@@ -34,7 +34,7 @@ def _git(source, arguments, *, data=None, environment=None):
     env = sanitized_environment()
     if environment:
         env.update(environment)
-    binary = shutil.which("git")
+    binary = shutil.which("git", path=os.defpath)
     if not binary:
         raise GitViewError("private Git inspection requires Git on PATH")
     try:

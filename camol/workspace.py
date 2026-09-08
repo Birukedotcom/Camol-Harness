@@ -205,7 +205,9 @@ class WorkspaceManager:
         self, *args: str, check: bool = True, timeout: int = 120,
         input_bytes: Optional[bytes] = None,
     ) -> subprocess.CompletedProcess:
-        git = shutil.which("git")
+        # Preparation is control-plane plumbing, not a worker command. Never
+        # select a repository/state-supplied executable through ambient PATH.
+        git = shutil.which("git", path=os.defpath)
         if not git:
             raise WorkspaceError("git is not installed")
         try:
