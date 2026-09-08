@@ -73,6 +73,10 @@ No live provider, model download, SSH host or cloud deployment was exercised.
 
 ## Shared worker-budget repair (isolated development checkpoint)
 
+Frozen checkpoint `96ffb046a6470e2d7b2132cebca8c19b3f6783cb` passed the full
+Python 3.12 suite: **821 tests in 863.985 seconds**. This result includes shared
+worker admission but does not cover the later switcher/input-order changes.
+
 The repair adds atomic cross-process admission over existing immutable provider
 journals, with known/unknown settlement, revision-ancestor charges, strict run/task
 policies and no lock held during provider execution. A real two-process fake-Claude
@@ -91,6 +95,29 @@ These focused results are not a substitute for the frozen successor's full suite
 and installed-package checks. Temporary holds currently require explicit resume;
 automatic wake and unified live reservation inspection/reconciliation remain
 documented product gaps. Provider-side hard billing guarantees remain unavailable.
+
+## Searchable pane and terminal-input wave
+
+The current-run `/switch`/Alt+B picker adds metadata filtering, orchestrator/
+attention/worker grouping, 50-row pages and exact session/run/plan/pool selection.
+The keyboard tests cover 77 boxes, narrow resize, no matches, draft preservation,
+Ctrl+C, a worker named `orchestrator`, and stale plan/pool rejection. No picker
+operation grants execution authority or probes a provider.
+
+The real PTY fixture sends `/switch` and Enter as one byte burst, selects a worker,
+checks durable view selection without approval or worker state creation, then
+detaches with Ctrl+C and exit zero. It reproduced a real race: app-priority Enter
+submitted `/s` before the queued `witch` reached TextArea. Submission/newline now
+run in the composer's ordered key queue. The test was not fixed by adding typing
+delays. Background UI callbacks also enter the app message pump so modal composition
+has its active-app context; a threaded `/login` regression covers the same repair.
+Normal replies/denials can no longer remain hidden behind the selected worker.
+
+The development projection/controller/TUI/real-PTY/detached-product group passed
+81 tests on Python 3.12 (62.093 seconds) and Python 3.9 (69.599 seconds). Subsequent
+focused checks cover the final title/page labels and multiline/shortcut guards.
+The frozen successor still needs its own full-suite and installed-package gates.
+Pins, custom groups, split/grid layouts and durable scoped messaging remain open.
 
 ## Pane overview checkpoint: 8234efb
 

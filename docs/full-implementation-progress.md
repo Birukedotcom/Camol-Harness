@@ -50,8 +50,10 @@ The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`
 and standalone command now expose boxes, task dependencies and attention. The
-searchable switcher, tiled layouts and durable scoped message bridge remain explicit
-implementation gates; adding a visual pane never creates execution authority.
+current-run searchable switcher is now implemented with grouped metadata, paginated
+keyboard selection and stale-plan rejection. Tiled layouts, custom groups/pins and
+the durable scoped message bridge remain implementation gates; adding a visual
+pane never creates execution authority.
 
 Each row needs implementation, negative-path tests, replay/recovery evidence, and
 usable Python/CLI entry points. A fixture cannot establish live provider maturity.
@@ -67,7 +69,7 @@ usable Python/CLI entry points. A fixture cannot establish live provider maturit
 | Invariants, obligations, thresholds, final acceptance | Implemented V5; integration ongoing | Explicit evaluator mappings, candidate+integration gates, exact owner acceptance; 5 E2E gate tests passed |
 | Plan amendment / migration | Conservative mode implemented | Exact owner-approved linked successor, atomic source seal, all tasks reverified, inherited costs, self-contained lineage export; public API E2E passed |
 | Real provider execution | Claude/Codex/local adapter code implemented; live gates pending | Explicit capability tiers, frozen profiles and crash-safe invocation intents; no live paid/inference validation |
-| Box inspection and build workflow | In progress | Read-only context, transcript, tool, diff, evaluation and evidence views |
+| Box inspection and build workflow | In progress | Overview and exact scoped switcher; read-only detail views. Durable offline box reads, custom groups/pins, split/grid layouts and scoped messaging remain open |
 | Capacity / heterogeneous N boxes | Implemented; integration ongoing | Shared broker, fresh observed/owner-declared pools, suspect reservations, real two-run single-slot fairness/cancellation and broker-cursor wake; V6 |
 | Watchers and correctable evidence | Local scheduled source implemented | Durable approved polling, normalized JSONL source, daemon restart, interleaving/expiry/cursor/cancellation tests; live cloud source adapters pending |
 | Repository dependency graph | Implemented; adversarial tests ongoing | Safe static Python/packaging/npm/Docker/runbook scans, evidence-linked impact/path/cycle queries; JSON/DOT/GraphML |
@@ -149,6 +151,10 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   preserve reviewed V5/V6 authority. The new `/grill --draft` path proposes V5 from
   human intent with fixed worker/scope/limits and exact review/approval. Semantic
   oracle adequacy and unrestricted autonomous plan construction are not established.
+- Current pane metadata can be read from a stopped run's ledger, but box details
+  still use the supervisor or this client's stale cache. Durable offline box
+  inspection, task-qualified dependency evidence/selection, custom pins/groups,
+  split/grid layouts and scoped durable box communication still need their gates.
 - V5/V6 imported plans support kernel gates; interactive Codex/OSS launch-policy
   acknowledgement is implemented. A real fake-Codex subprocess test covers terminal
   import through detached build/evaluation/integration and final human acceptance.

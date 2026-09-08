@@ -11,7 +11,7 @@ from textual.widgets import Input, OptionList
 
 from camol.app import CommandResponse, InteractiveController
 from camol.connections import _record
-from camol.tui import CamolApp, LoginProviderScreen, PromptArea, SlashCommandScreen, _OwnedClientWork
+from camol.tui import CamolApp, LoginProviderScreen, PromptArea, SlashCommandScreen, BoxSwitcherScreen, _OwnedClientWork
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
@@ -75,6 +75,112 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(app.screen_stack), 1)
             self.assertEqual(app.screen.id, "_default")
             self.assertIsNotNone(app.query_one("#prompt", PromptArea))
+
+    async def test_searchable_box_picker_keyboard_selection_and_draft_preservation(self):
+        from tests.test_pane_switcher import PaneSwitcherTests
+        fixture = PaneSwitcherTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        app = CamolApp(fixture.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(85, 28)) as pilot:
+            prompt = app.query_one("#prompt", PromptArea)
+            prompt.load_text("an unsent planning draft")
+            await pilot.press("alt+b")
+            await self.wait_for_ui(pilot, lambda: isinstance(app.screen, BoxSwitcherScreen), "box picker")
+            before = len(fixture.controller.store.load()["messages"])
+            await pilot.press("ctrl+enter")
+            await pilot.pause(.05)
+            self.assertEqual(len(fixture.controller.store.load()["messages"]), before)
+            await pilot.press("escape")
+            await self.wait_for_ui(pilot, lambda: len(app.screen_stack) == 1, "picker cancelled")
+            self.assertEqual(prompt.text, "an unsent planning draft")
+            await pilot.press("alt+b")
+            await self.wait_for_ui(pilot, lambda: isinstance(app.screen, BoxSwitcherScreen), "box picker reopened")
+            target = app.screen.snapshot["rows"][1]
+            field = app.screen.query_one("#box-picker-input", Input)
+            field.value = target["label"]
+            await pilot.press("space")
+            self.assertIsInstance(app.screen, BoxSwitcherScreen)
+            self.assertTrue(field.value.endswith(" "))
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: app.selected == target["box_id"], "selected exact box")
+            self.assertEqual(prompt.text, "an unsent planning draft")
+            self.assertIsNone(fixture.controller.session["approved_digest"])
+            await pilot.press("alt+b")
+            await self.wait_for_ui(pilot, lambda: isinstance(app.screen, BoxSwitcherScreen), "return picker")
+            app.screen.query_one("#box-picker-input", Input).value = "ORCHESTRATOR"
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: app.selected == "orchestrator", "orchestrator selected")
+
+    async def test_box_picker_paginates_large_fleet_and_survives_narrow_resize(self):
+        from camol.overview import planned_state
+        from camol.pane_switcher import switch_snapshot
+        from tests.test_pane_switcher import PaneSwitcherTests
+        fixture = PaneSwitcherTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        state = planned_state(fixture.document)
+        prototype = next(iter(state["agents"].values()))
+        state["agents"] = {"worker-{:03d}".format(i): dict(prototype) for i in range(77)}
+        snapshot = switch_snapshot(fixture.controller.session, state, "plan_only")
+        snapshot["query"] = ""
+        app = CamolApp(fixture.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(85, 28)) as pilot:
+            app.selected = "worker-076"
+            app.in_box = True
+            app._apply_response(CommandResponse(switcher=snapshot))
+            await pilot.pause()
+            self.assertEqual(app.screen.page_offset, 50)
+            await pilot.press("pageup")
+            self.assertEqual(app.screen.query_one("#box-picker-options", OptionList).option_count, 50)
+            await pilot.press("pagedown")
+            self.assertEqual(app.screen.page_offset, 50)
+            self.assertEqual(app.screen.query_one("#box-picker-options", OptionList).option_count, 28)
+            await pilot.resize_terminal(45, 18)
+            field = app.screen.query_one("#box-picker-input", Input)
+            field.value = "worker-076 dormant"
+            await pilot.pause()
+            self.assertEqual(app.screen.query_one("#box-picker-options", OptionList).option_count, 1)
+            field.value = "no matching box"
+            await pilot.press("enter")
+            self.assertIsInstance(app.screen, BoxSwitcherScreen)
+            await pilot.press("ctrl+c")
+        self.assertFalse(app.is_running)
+
+    async def test_threaded_login_picker_and_command_denial_are_visible_from_box(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(90, 28)) as pilot:
+            app._render_box("worker", "events", "read-only fixture")
+            app.query_one("#prompt", PromptArea).load_text("/box missing")
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: app.selected == "orchestrator", "denial visible in orchestrator")
+            rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+            self.assertIn("unknown box", rendered)
+            app.query_one("#prompt", PromptArea).load_text("/login")
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: isinstance(app.screen, LoginProviderScreen), "threaded native login chooser")
+            await pilot.press("escape")
+            await self.wait_for_ui(pilot, lambda: len(app.screen_stack) == 1, "login chooser cancelled")
+
+    async def test_worker_named_orchestrator_is_not_the_orchestrator_pane(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(90, 28)) as pilot:
+            app._render_box("orchestrator", "events", "worker with a colliding display name")
+            app._render_dependency_rail()
+            self.assertTrue(app.in_box)
+            self.assertIn("BOX orchestrator", str(app.query_one("#context").render()))
+            app.boxes = [dict(box_id="orchestrator")]
+            app.action_cycle(-1)
+            self.assertFalse(app.in_box)
+            self.assertIn("ORCHESTRATOR —", str(app.query_one("#context").render()))
+
+    async def test_composer_orders_multiline_typing_before_send_shortcuts(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(90, 28)) as pilot:
+            await pilot.press("a", "ctrl+j", "b", "ctrl+enter")
+            await self.wait_for_ui(pilot, lambda: bool(app.history), "ordered multiline submit")
+            self.assertEqual(app.history[-1], "a\nb")
+            self.assertEqual(app.query_one("#prompt", PromptArea).text, "")
 
     async def test_overview_command_runs_in_composer_without_starting_work(self):
         import json
@@ -177,6 +283,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(app, "run_worker", return_value=cancelled):
                 await app._refresh_fleet()
             app.selected = "fixture-box"
+            app.in_box = True
             with patch.object(app, "run_worker", side_effect=[Mock(wait=AsyncMock(return_value=[])), cancelled]):
                 await app._refresh_fleet()
 

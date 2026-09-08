@@ -57,6 +57,61 @@ def _reap_owned_client(process):
 
 
 class InteractiveCliTests(unittest.TestCase):
+    def test_real_terminal_box_search_selection_and_ctrl_c(self):
+        from tests.test_pane_switcher import PaneSwitcherTests
+        fixture = PaneSwitcherTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        target = fixture.document["agents"][0]["id"]
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 110, 0, 0))
+        environment = dict(os.environ, TERM="xterm-256color")
+        process = subprocess.Popen([sys.executable, "-c", PTY_ENTRY, "--no-boot",
+            "--workspace", str(fixture.workspace), "--state-home", str(fixture.root / "state")],
+            cwd=str(ROOT), env=environment, stdin=slave, stdout=slave, stderr=slave,
+            close_fds=True, preexec_fn=lambda: (os.setsid(), fcntl.ioctl(slave, termios.TIOCSCTTY, 0)))
+        os.close(slave)
+        captured = bytearray()
+        def read_until(marker=None, exiting=False):
+            stage = bytearray()
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([master], [], [], .05)
+                if readable:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    captured.extend(chunk)
+                    stage.extend(chunk)
+                    del captured[:-1048576]
+                    del stage[:-1048576]
+                if marker is not None and marker in stage:
+                    return
+                if exiting and process.poll() is not None:
+                    return
+            if marker is not None:
+                self.fail("terminal did not render expected picker stage: " + _pty_diagnostic(captured, _terminal_state(master)))
+        try:
+            read_until(b"CAMOL PRODUCT V0")
+            os.write(master, b"/switch\r")
+            read_until(b"BOX SWITCHER")
+            os.write(master, target.encode() + b"\r")
+            read_until(("BOX " + target + " / events").encode())
+            self.assertEqual(fixture.controller.store.load()["selected_box"], target)
+            self.assertIsNone(fixture.controller.store.load()["approved_digest"])
+            os.write(master, b"\x03")
+            read_until(exiting=True)
+            self.assertEqual(process.wait(timeout=3), 0, _pty_diagnostic(captured, _terminal_state(master)))
+            self.assertNotIn(b"Traceback", captured)
+            self.assertNotIn(b"NoActiveAppError", captured)
+            self.assertFalse(Path(fixture.controller.session["state_dir"]).exists())
+        finally:
+            _reap_owned_client(process)
+            os.close(master)
+
     def test_noncooperative_owned_client_cleanup_escalates_and_reaps(self):
         process = Mock(poll=Mock(return_value=None), wait=Mock(side_effect=[subprocess.TimeoutExpired("fixture", 5), -9]))
         _reap_owned_client(process)

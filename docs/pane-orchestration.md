@@ -37,7 +37,7 @@ Connected transport, account observation and task readiness are separate indicat
 | `/boxes`, `/box ID VIEW` | Stable box selection and existing context/tools/diff/evals/evidence/transcript views | Implemented |
 | `/box next`, `/box previous` | Traverse worker views from the terminal | Implemented |
 | `/usage run`, `/debug inbox`, `/gate TASK` | Accounting, failed-evaluator inbox and gate detail | Implemented |
-| `/switch` | Searchable grouped box/task picker, arrows/Enter, preserved focus | Planned |
+| `/switch [WORDS]`, `Alt+B` | Search current-run box/task/status/adapter metadata, grouped by orchestrator/attention/workers; arrows/Enter, preserved draft | Implemented |
 | `/layout focus\|split\|grid`, `/pin BOX`, `/group BOX NAME` | Client-only tiling, pinned monitoring and organization | Planned |
 | `camol box list\|resolve\|read` | Machine-readable scoped bridge using explicit run/box IDs | Planned; overview JSON is available now |
 | `camol box message` | Durable, idempotent, scoped agent/human inbox with acknowledgments | Planned |
@@ -50,11 +50,27 @@ plan. Default pages show up to 50 rows per table, with explicit offsets for N bo
 Text abbreviates long labels; JSON retains complete redacted identities. No raw
 worker output is previewed by this metadata-only implementation.
 
+The switcher uses the same exact ledger/plan-only source as the overview, rather
+than probing accounts or treating a disconnected supervisor as a fresh dormant
+pool. Its TUI renders 50 options per page; PageUp/PageDown traverse larger pools.
+Multiple search words are literal, case-insensitive filters, and spaces remain
+text. Escape preserves the current view and unsent composer draft. Returning from
+a selection preserves the draft too; normal replies and denials become visible
+in the orchestrator rather than disappearing behind the worker view.
+
+Each selection binds the project session, run, frozen plan and sorted box IDs.
+Reordering rows cannot redirect it, and an amended plan or removed box rejects
+the old picker. A worker literally named `orchestrator` remains a distinct pane.
+The scope is navigation identity, not an execution grant or lease read receipt;
+worker progress can change while the picker is open. Close/reopen to refresh its
+metadata snapshot. Line mode prints the first 50 matches and supports `/box ID`
+for selection; it does not pretend to offer a graphical picker.
+
 ## Next UI implementation
 
 Keep the orchestrator composer available and retain the bottom box navigator.
-Add a switcher grouped by project/run and target, with optional user groups and
-pins. Preserve selection by immutable identity during refresh, never by row number.
+Extend the current-run switcher with project/target grouping, optional user groups
+and pins. Preserve selection by immutable identity during refresh, never by row number.
 The native terminal overview should offer focus, split and paginated grid layouts.
 Each tile identifies its box/task, current lifecycle, last event cursor, gate/wait,
 and bounded usage. Selecting a tile opens the detailed read-only view. Escape
@@ -87,7 +103,7 @@ stable identity during reorder/removal; label collisions; keyboard-only navigati
 narrow terminals; redaction and terminal-control injection; reconnect without
 duplicate messages; stale generation/cursor denial; restart-safe inboxes; client
 closure without worker termination; and exact plan approval for new delegated work.
-Current overview tests cover the first metadata/projection slice only. Tiled panes,
+Overview and switcher tests cover metadata/projection and keyboard navigation. Tiled panes,
 durable bridge messaging and external tmux attachment are not claimed implemented.
 
 The overview/controller/TUI group passes 60 tests on Python 3.9 (15.337 seconds)

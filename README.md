@@ -26,8 +26,10 @@ and completion.
 > validation; fixture tests do not prove model availability, cloud deployment or
 > production security. See the [acceptance ledger](docs/full-implementation-progress.md)
 > and [exact checkpoint checks](docs/next-wave-verification.md) for implemented
-> slices, limitations and remaining work. Linux CI passes; macOS portability and
-> the larger-run performance investigation still require their named gates.
+> slices, limitations and remaining work. Later local checks include 808 tests
+> at the revision/overview checkpoint; the newest hosted matrix has been blocked
+> from starting by GitHub account billing/spending limits. Platform and packaging
+> evidence is checkpoint-specific, not inherited by every development commit.
 
 <table>
   <tr>
@@ -166,9 +168,10 @@ because a login succeeds.
                                # boxes=3 turns=6 tokens=48000 cost_cents=100 turn_timeout_seconds=1800
 /plan                          # inspect invariants, DAG, evaluator argv, and digests
 /approve yes                   # approval freezes only the exact visible digest
-/run --accept-spend --worker-cents 100 --preflight-cents 10
+/run --preflight-cents 10       # review the manifest, then copy its exact approval command
 /status
 /boxes
+/switch
 /box 1
 /events
 /quit                          # detach; does not stop the supervisor
@@ -222,23 +225,31 @@ proves that its exact execution path is ready.
 [0 ORCH] [BOXES 2/8] [!2] ▸[1 ■ API] [2 ■ ADVERSARY] [3 □ DEPLOY]
 ```
 
-Glyphs are deliberately contextual. In the top rail, `■` means an account/runtime is
-connected or a dependency is installed—it is **not** task readiness. In the bottom
+Glyphs are deliberately contextual. The top rail labels cached account/runtime
+observations and local binary presence—it is **not** task readiness. In the bottom
 fleet, `■` means an isolated box workspace exists, `□` means dormant/unprepared, and
 `!` needs attention. The kernel reports task readiness separately. Selection is a
 separate cursor. The bottom switcher traverses
 the orchestrator and a window over an arbitrary N-box fleet; box numbers are visible
 shortcuts, not permanent roles or a fixed worker count.
 
-Provider connections are scanned in the background at startup. `↻` means the
-installed CLI is still being inspected; it changes to `■` only after the provider's
-own status command confirms authentication. Camol preserves the non-secret local
+`Alt+B` or `/switch` opens the searchable current-run picker: type box/task/status/
+adapter words, use arrows and Enter, and page through large pools with PageUp/
+PageDown. Escape preserves the unsent composer draft. `/overview` shows task
+dependencies and attention alongside the boxes. Both views use recorded snapshots,
+not live connection/readiness proof; selection never starts work. Pins, custom
+groups, split/grid tiling and scoped box messaging remain implementation gates.
+
+Provider startup displays cached observations without running account probes.
+`/connections refresh` requests a bounded inspection; `↻` marks that explicit
+refresh in progress. Cached authentication is labeled as an observation, not live
+task readiness. Camol preserves the non-secret local
 identity variables those CLIs require while filtering unrelated environment values,
 and it refreshes the rail automatically after `/login`. The V0 picker intentionally
 contains only Claude Code and Codex CLI. Choosing either entry always hands the
-terminal to that provider's native browser-login flow—even if discovery is already
-green—so reconnecting or switching accounts predictably exposes the provider-owned
-URL and prompt. A newly verified login lights the provider glyph, records the result
+terminal to that provider's native browser-login flow—even if a previous observation
+reported authentication—so reconnecting or switching accounts exposes the provider-owned
+URL and prompt. A newly verified login updates the provider observation, records the result
 in the orchestrator transcript, and selects `claude:fable` or `codex` when no plan is
 frozen or running. Cancelling the provider flow never promotes an older green record
 into a new login confirmation.

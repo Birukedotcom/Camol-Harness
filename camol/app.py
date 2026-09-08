@@ -58,6 +58,7 @@ class CommandResponse:
     box_id: Optional[str] = None
     box_view: Optional[str] = None
     focus_orchestrator: bool = False
+    switcher: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,7 @@ SLASH_COMMANDS = (
     SlashCommand("/status", "Inspect session and supervisor", run_from_palette=True),
     SlashCommand("/boxes", "List the N-box worker pool", run_from_palette=True),
     SlashCommand("/overview", "See boxes, dependencies and attention together", run_from_palette=True),
+    SlashCommand("/switch", "Search and switch read-only box panes", takes_value=True, run_from_palette=True),
     SlashCommand("/box", "Open one read-only box view", takes_value=True),
     SlashCommand("/events", "Read new durable run events", run_from_palette=True),
     SlashCommand("/history", "Show retained conversation history", run_from_palette=True),
@@ -140,6 +142,7 @@ HELP = """Commands
                             acknowledge the manifest; hosted profiles require spend consent
   /status                  current local session and supervisor state
   /boxes                   list the arbitrary-N worker pool
+  /switch [WORDS]          searchable box picker; Alt+B in the TUI
   /overview [--attention] [--json] [--offset N] [--limit N]
                             inspect boxes and task dependencies without starting work
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
@@ -622,6 +625,8 @@ class InteractiveController:
             return self._history(arguments)
         if command == "/overview":
             return self._overview(arguments)
+        if command == "/switch":
+            return self._switch(arguments)
         if command == "/models":
             return self._models(arguments)
         if command == "/watch":
@@ -1230,8 +1235,7 @@ class InteractiveController:
         return replace(self._respond(render_review(review)), focus_orchestrator=True)
 
     def _overview(self, arguments: Sequence[str]) -> CommandResponse:
-        from .overview import fleet_overview, planned_state, render_overview
-        from .orchestrator import Orchestrator
+        from .overview import fleet_overview, render_overview
         options = dict(attention=False, offset=0, limit=50)
         as_json, remaining, seen = False, list(arguments), set()
         while remaining:
@@ -1250,6 +1254,14 @@ class InteractiveController:
                 options[option[2:]] = int(value)
             else:
                 raise InteractiveError("usage: /overview [--attention] [--json] [--offset N] [--limit N]")
+        state, basis = self._pane_state()
+        report = fleet_overview(state, basis=basis, **options)
+        return CommandResponse(messages=(json.dumps(report, sort_keys=True, indent=2) if as_json else render_overview(report),))
+
+    def _pane_state(self):
+        """One exact ledger cut, or explicitly unstarted plan; no live probes."""
+        from .orchestrator import Orchestrator
+        from .overview import planned_state
         database = SupervisorPaths.under(Path(self.session["state_dir"])).database
         if database.exists() or database.is_symlink():
             if not self.session["run_id"]:
@@ -1260,7 +1272,10 @@ class InteractiveController:
                 state = Orchestrator(store).state(self.session["run_id"])
                 if state["run_id"] != self.session["run_id"]:
                     raise InteractiveError("selected run is absent from its ledger")
-                report = fleet_overview(state, **options)
+                plan = self.session.get("plan")
+                if plan and plan.get("runbook") and state["plan_digest"] != runbook_digest(plan["runbook"]):
+                    raise InteractiveError("pane ledger differs from the selected plan")
+                return state, "ledger_snapshot"
             except sqlite3.Error as error:
                 raise InteractiveError("overview ledger is unreadable; snapshot unavailable") from error
             finally:
@@ -1270,8 +1285,41 @@ class InteractiveController:
             plan = self.session.get("plan")
             if not plan or not plan.get("runbook"):
                 raise InteractiveError("no executable plan yet; use /grill or /import first")
-            report = fleet_overview(planned_state(plan["runbook"]), basis="plan_only", **options)
-        return CommandResponse(messages=(json.dumps(report, sort_keys=True, indent=2) if as_json else render_overview(report),))
+            state = planned_state(plan["runbook"])
+            if state["run_id"] != self.session["run_id"]:
+                raise InteractiveError("pane plan differs from the selected run")
+            return state, "plan_only"
+
+    def _switch(self, arguments):
+        from .pane_switcher import switch_snapshot, filter_rows, row_label
+        state, basis = self._pane_state()
+        snapshot = switch_snapshot(self.session, state, basis)
+        if arguments and arguments[0] == "--select":
+            if len(arguments) != 4 or arguments[2] != "--scope":
+                raise InteractiveError("usage: /switch --select KEY --scope DIGEST")
+            if arguments[3] != snapshot["scope"]:
+                raise InteractiveError("box picker scope changed; reopen /switch before selecting")
+            row = next((row for row in snapshot["rows"] if row["key"] == arguments[1]), None)
+            if row is None:
+                raise InteractiveError("selected box no longer exists")
+            target = row["box_id"]
+            self.session = self.store.update(self.session, selected_box=target)
+            if target is None:
+                return CommandResponse(messages=("Orchestrator selected; worker execution is unchanged.",), focus_orchestrator=True)
+            return CommandResponse(messages=(self.inspect_box(target, "events"),), box_id=target, box_view="events")
+        query = " ".join(arguments)
+        if any(word.startswith("--") for word in arguments):
+            raise InteractiveError("usage: /switch [SEARCH WORDS]")
+        matched = filter_rows(snapshot["rows"], query)
+        snapshot["query"] = query
+        lines = ["BOX SWITCHER | run={} | {} | cursor={}".format(snapshot["run_id"], basis, snapshot["event_cursor"]),
+                 "Read-only navigation, not live connectivity or readiness. {} matches.".format(len(matched))]
+        for row in matched[:50]:
+            lines.append(row_label(row))
+        if len(matched) > 50:
+            lines.append("Showing first 50; refine search or use the paginated TUI picker.")
+        lines.append("TUI: arrows/Enter select; Escape returns to composer. Line mode: /box EXACT_ID.")
+        return CommandResponse(messages=("\n".join(lines),), switcher=snapshot)
 
     def _history(self, arguments: Sequence[str]) -> CommandResponse:
         if len(arguments) > 1:

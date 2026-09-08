@@ -17,11 +17,13 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Input, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 from textual.worker import WorkerCancelled
+from rich.text import Text
 
 from .app import SLASH_COMMANDS, CommandResponse, InteractiveController, SlashCommand
 from .boot import compose_boot
 from .connections import ConnectionError, observation_label
 from .probes import Redactor
+from .pane_switcher import filter_rows, row_label
 
 
 class _OwnedClientWork:
@@ -93,13 +95,118 @@ class BootScreen(Screen):
         self.dismiss()
 
 
+class BoxSwitcherScreen(ModalScreen):
+    """A bounded page of a fixed metadata snapshot; no terminal input routing."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+        Binding("up", "cursor(-1)", "Previous", show=False, priority=True),
+        Binding("down", "cursor(1)", "Next", show=False, priority=True),
+        Binding("pageup", "page(-1)", "Previous page", show=False, priority=True),
+        Binding("pagedown", "page(1)", "Next page", show=False, priority=True),
+    ]
+    CSS = """
+    BoxSwitcherScreen { align: center middle; background: rgba(0, 4, 1, 0.82); }
+    #box-picker { width: 90%; max-width: 110; height: 85%; border: round #2fbd62; background: #07100a; padding: 0 1; }
+    #box-picker-title { height: 1; color: #f4fff7; text-style: bold; }
+    #box-picker-help { height: auto; max-height: 3; color: #83a58d; }
+    #box-picker-input { height: 3; color: #ffffff; background: #050b07; border: tall #17462a; }
+    #box-picker-options { height: 1fr; border: none; background: #07100a; color: #dce7df; scrollbar-size-vertical: 1; }
+    #box-picker-options > .option-list--option-highlighted { color: #ffffff; background: #123a20; }
+    #box-picker-page { height: 1; color: #83a58d; }
+    """
+    PAGE_SIZE = 50
+
+    def __init__(self, snapshot, selected_key="orchestrator"):
+        super().__init__()
+        self.snapshot = snapshot
+        self.search_query = snapshot["query"]
+        self.rows = filter_rows(snapshot["rows"], snapshot["query"])
+        self.selected_key = selected_key
+        index = next((i for i, row in enumerate(self.rows) if row["key"] == self.selected_key), 0)
+        self.page_offset = index // self.PAGE_SIZE * self.PAGE_SIZE
+
+    def _options(self):
+        return [Option(Text(row_label(row)), id=row["key"]) for row in self.rows[self.page_offset:self.page_offset + self.PAGE_SIZE]]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box-picker"):
+            yield Static("BOX SWITCHER / {} / {}".format(Redactor().text(self.snapshot["run_id"]), self.snapshot["basis"]),
+                         id="box-picker-title", markup=False)
+            yield Static("Search box, task, status or adapter · ↑/↓ Enter · PgUp/PgDn · Esc\nSnapshot only. Selecting a pane does not start work or change authority.", id="box-picker-help")
+            yield Input(value=self.snapshot["query"], placeholder="Search boxes…", max_length=256,
+                        select_on_focus=False, id="box-picker-input")
+            yield OptionList(*self._options(), id="box-picker-options")
+            yield Static("", id="box-picker-page")
+
+    def on_mount(self):
+        self._render_page()
+        field = self.query_one("#box-picker-input", Input)
+        field.cursor_position = len(field.value)
+        field.focus()
+
+    def _render_page(self):
+        options = self.query_one("#box-picker-options", OptionList)
+        options.set_options(self._options())
+        page = self.rows[self.page_offset:self.page_offset + self.PAGE_SIZE]
+        options.highlighted = next((i for i, row in enumerate(page) if row["key"] == self.selected_key), 0) if page else None
+        self.query_one("#box-picker-page", Static).update("{}–{} / {} matches | {} boxes | cursor {}".format(
+            self.page_offset + 1 if page else 0, self.page_offset + len(page), len(self.rows),
+            len(self.snapshot["rows"]) - 1, self.snapshot["event_cursor"]))
+
+    def on_input_changed(self, event: Input.Changed):
+        if event.input.id != "box-picker-input":
+            return
+        if event.value == self.search_query:
+            return
+        self.search_query = event.value
+        self.rows = filter_rows(self.snapshot["rows"], event.value)
+        self.page_offset = 0
+        self._render_page()
+
+    def action_cursor(self, direction):
+        options = self.query_one("#box-picker-options", OptionList)
+        (options.action_cursor_up if direction < 0 else options.action_cursor_down)()
+
+    def action_page(self, direction):
+        if self.rows:
+            self.page_offset = max(0, min((len(self.rows) - 1) // self.PAGE_SIZE * self.PAGE_SIZE,
+                                     self.page_offset + direction * self.PAGE_SIZE))
+            self._render_page()
+
+    def on_input_submitted(self, event: Input.Submitted):
+        if event.input.id == "box-picker-input":
+            index = self.query_one("#box-picker-options", OptionList).highlighted
+            if index is not None:
+                self.dismiss((self.rows[self.page_offset + index]["key"], self.snapshot["scope"]))
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
+        self.dismiss((event.option.id, self.snapshot["scope"]))
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
 class PromptArea(TextArea):
     """Composer with chat-style Enter-to-send behavior."""
 
     BINDINGS = [
-        Binding("enter", "send", "Send", priority=True),
-        Binding("shift+enter,ctrl+j", "newline", "New line", priority=True),
+        Binding("enter", "send", "Send"),
+        Binding("ctrl+enter,alt+enter", "send", "Send", show=False),
+        Binding("shift+enter,ctrl+j", "newline", "New line"),
     ]
+
+    def on_key(self, event):
+        # Priority bindings run in the app before previously forwarded typing
+        # reaches TextArea. Handle submission in this widget's ordered queue.
+        # Prevent the base TextArea handler from inserting Enter as a newline.
+        if event.key in {"enter", "ctrl+enter", "alt+enter", "shift+enter", "ctrl+j"}:
+            event.stop()
+            event.prevent_default()
+            if event.key in {"shift+enter", "ctrl+j"}:
+                self.action_newline()
+            else:
+                self.action_send()
 
     def action_send(self) -> None:
         self.app.action_submit()
@@ -364,9 +471,8 @@ class CamolApp(App):
     }
     """
     BINDINGS = [
-        Binding("ctrl+enter", "submit", "Send", show=False, priority=True),
-        Binding("alt+enter", "submit", "Send", show=False, priority=True),
         Binding("alt+0", "orchestrator", "Orchestrator", show=False),
+        Binding("alt+b", "switcher", "Boxes", show=True),
         Binding("alt+1", "box(1)", "Box 1", show=False),
         Binding("alt+2", "box(2)", "Box 2", show=False),
         Binding("alt+3", "box(3)", "Box 3", show=False),
@@ -401,6 +507,7 @@ class CamolApp(App):
         self.history = []
         self.history_index = 0
         self.selected = "orchestrator"
+        self.in_box = False
         self.selected_view = "events"
         self._box_rendered = None
         self._visible_box_start = 0
@@ -409,6 +516,7 @@ class CamolApp(App):
         self._stream_suppressed = False
         self._connection_probe_lock = threading.Lock()
         self._slash_palette_open = False
+        self._box_picker_open = False
         self._slash_palette_timer = None
         self._client_work = _OwnedClientWork()
         self._client_loop = None
@@ -480,7 +588,7 @@ class CamolApp(App):
         self._render_orchestrator_context(records)
 
     def _render_orchestrator_context(self, records: Mapping[str, Mapping[str, str]]) -> None:
-        if self.selected != "orchestrator":
+        if self.in_box:
             return
         model = self.controller.session["model"]
         provider = model.partition(":")[0]
@@ -568,7 +676,7 @@ class CamolApp(App):
             return
         self.boxes = boxes
         items = ["ORCH[Alt+0]", "BOXES {}".format(len(boxes))]
-        selected_index = next((index for index, box in enumerate(boxes) if box["box_id"] == self.selected), 0)
+        selected_index = next((index for index, box in enumerate(boxes) if self.in_box and box["box_id"] == self.selected), 0)
         page_size = min(9, max(1, (self.size.width - 20) // 24))
         start = (selected_index // page_size) * page_size
         self._visible_box_start = start
@@ -576,13 +684,13 @@ class CamolApp(App):
         for index, box in enumerate(visible_boxes, 1):
             mark = "!" if box["status"] in {"blocked", "waiting"} else "■" if box.get("connected") == "yes" else "□"
             shortcut = "Alt+{}".format(index)
-            selected = ">" if self.selected == box["box_id"] else ""
+            selected = ">" if self.in_box and self.selected == box["box_id"] else ""
             items.append("{}{} {}:{}({})".format(selected, mark, index, box["box_id"], shortcut))
         if len(boxes) > len(visible_boxes):
             items.append("[{}–{}/{}; cycle [ ] or /box ID]".format(start + 1, start + len(visible_boxes), len(boxes)))
         fleet.update("  ".join(items))
         self._render_dependency_rail()
-        if self.selected != "orchestrator":
+        if self.in_box:
             target, subview = self.selected, self.selected_view
             try:
                 rendered = await self.run_worker(
@@ -591,7 +699,7 @@ class CamolApp(App):
                 ).wait()
             except WorkerCancelled:
                 return
-            if self.selected == target and self.selected_view == subview:
+            if self.in_box and self.selected == target and self.selected_view == subview:
                 if not self.query("#box-transcript"):
                     return
                 self._render_box(target, subview, rendered)
@@ -707,7 +815,11 @@ class CamolApp(App):
                 callback(*args)
         if self._client_loop is not None and not self._client_work.closed:
             try:
-                self._client_loop.call_soon_threadsafe(render)
+                # Enter the app's message pump, not the worker thread's copied
+                # context. Modal composition needs Textual's active-app context.
+                # This remains nonblocking: detached persistence never waits
+                # for a UI callback during shutdown.
+                self._client_loop.call_soon_threadsafe(self.call_later, render)
             except RuntimeError:
                 pass
 
@@ -724,6 +836,16 @@ class CamolApp(App):
             self._render_box(response.box_id, response.box_view or "events", "\n".join(response.messages))
             self.query_one("#prompt", PromptArea).focus()
             return
+        if response.switcher is not None:
+            if not self._box_picker_open:
+                self._box_picker_open = True
+                selected_key = "box:" + self.selected if self.in_box else "orchestrator"
+                self.push_screen(BoxSwitcherScreen(response.switcher, selected_key), self._box_picker_selected)
+            return
+        if response.messages and self.in_box:
+            # The composer addresses the orchestrator even while inspecting a
+            # worker. Never hide replies, denials or approval prompts behind it.
+            self.action_orchestrator()
         for message in response.messages:
             log.write("camol > " + message)
         if response.login_choices:
@@ -779,10 +901,23 @@ class CamolApp(App):
 
     def action_orchestrator(self) -> None:
         self.selected = "orchestrator"
+        self.in_box = False
         self.query_one("#transcript", RichLog).display = True
         self.query_one("#box-transcript", RichLog).display = False
         self._render_dependency_rail()
         self.query_one("#prompt", PromptArea).focus()
+
+    def action_switcher(self):
+        if not self._box_picker_open and len(self.screen_stack) == 1:
+            self._submit("/switch")
+
+    def _box_picker_selected(self, selection):
+        self._box_picker_open = False
+        self.query_one("#prompt", PromptArea).focus()
+        if selection is not None:
+            import shlex
+            key, scope = selection
+            self._submit("/switch --select {} --scope {}".format(shlex.quote(key), shlex.quote(scope)))
 
     def action_box(self, index: int) -> None:
         boxes = self.boxes
@@ -795,6 +930,7 @@ class CamolApp(App):
 
     def _render_box(self, target: str, subview: str, rendered: str) -> None:
         self.selected = target
+        self.in_box = True
         self.selected_view = subview
         self.query_one("#context", Static).update("BOX {} / {} — read-only evidence view".format(target, subview))
         self.query_one("#transcript", RichLog).display = False
@@ -807,10 +943,10 @@ class CamolApp(App):
 
     def action_cycle(self, direction: int) -> None:
         boxes = self.boxes
-        choices = ["orchestrator"] + [item["box_id"] for item in boxes]
-        current = choices.index(self.selected) if self.selected in choices else 0
+        choices = [None] + [item["box_id"] for item in boxes]
+        current = choices.index(self.selected) if self.in_box and self.selected in choices else 0
         selected = choices[(current + direction) % len(choices)]
-        if selected == "orchestrator":
+        if selected is None:
             self.action_orchestrator()
         else:
             self._submit("/box " + selected)
