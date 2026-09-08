@@ -227,12 +227,17 @@ class AdmissionController:
             inspection_reads = (str(git_view), str(scratch))
             scratch_writes = (str(scratch),)
             readonly = (str(git_view),) if trust_tier != "developer_trusted" else ()
+        peer_reads, peer_environment = (), ()
+        if profile is not None and profile.peer_policy is not None:
+            from .native_peers import admission_paths, ENV_NAMES
+            peer_reads = admission_paths(self.state_dir, self.runbook["run"]["id"], task["id"], agent["id"])
+            peer_environment = ENV_NAMES
         return SandboxPolicy(
             policy_id="sandbox-{}-{}-{}".format(_safe(self.runbook["run"]["id"]), _safe(task["id"]), _safe(agent["id"])),
             workspace=str(handle.path),
-            read_paths=(str(handle.path), str(packet_dir)) + system_read_paths(executable) + credential_reads + inspection_reads,
+            read_paths=(str(handle.path), str(packet_dir)) + system_read_paths(executable) + credential_reads + inspection_reads + peer_reads,
             write_paths=(str(handle.path),) + ((str(worker_output),) if profile is None else ()) + scratch_writes,
-            environment_names=("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL") + (ENVIRONMENT_NAMES if git_view is not None else ()),
+            environment_names=("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL") + (ENVIRONMENT_NAMES if git_view is not None else ()) + peer_environment,
             network_destinations=network,
             credential_refs=credential_refs,
             trust_tier=trust_tier,

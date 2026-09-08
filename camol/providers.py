@@ -95,6 +95,7 @@ class ModelProfile:
     execution_policy: Optional[Dict[str, str]] = None
     local_provider: Optional[str] = None
     local_endpoint: Optional[str] = None
+    peer_policy: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         for name in ("profile_id", "provider", "adapter_kind"):
@@ -133,6 +134,12 @@ class ModelProfile:
             validate_codex_policy(self)
         elif self.adapter_kind in {"codex_cli", "codex_oss"} or self.local_provider is not None or self.local_endpoint is not None:
             raise ProviderError("Codex workers require a schema2 explicit execution_policy")
+        if self.peer_policy is not None:
+            from .native_peers import validate_peer_policy
+            validate_peer_policy(self.peer_policy)
+            if self.adapter_kind not in {"codex_cli", "codex_oss"} or self.execution_policy is None:
+                raise ProviderError("native peer policy is currently supported only by explicit Codex execution profiles")
+            object.__setattr__(self, "peer_policy", json.loads(json.dumps(self.peer_policy)))
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -161,6 +168,10 @@ class ModelProfile:
         if self.execution_policy is not None:
             result.update(schema_version=2, execution_policy=dict(self.execution_policy),
                           local_provider=self.local_provider, local_endpoint=self.local_endpoint)
+        if self.peer_policy is not None:
+            from .native_peers import validate_peer_policy
+            validate_peer_policy(self.peer_policy)
+            result.update(schema_version=3, peer_policy=json.loads(json.dumps(self.peer_policy)))
         return result
 
     def digest(self) -> str:
@@ -171,17 +182,21 @@ class ModelProfile:
         if not isinstance(payload, dict):
             raise ProviderError("model profile must be an object")
         version = payload.get("schema_version")
-        if type(version) is not int or version not in {1, 2}:
-            raise ProviderError("model profile schema_version must be 1 or 2")
+        if type(version) is not int or version not in {1, 2, 3}:
+            raise ProviderError("model profile schema_version must be 1, 2 or 3")
         require_schema_header(payload, cls.SCHEMA, version, "model profile")
-        fields = set(cls.FIELDS) | ({"execution_policy", "local_provider", "local_endpoint"} if version == 2 else set())
+        fields = set(cls.FIELDS) | ({"execution_policy", "local_provider", "local_endpoint"} if version >= 2 else set())
+        if version == 3:
+            fields.add("peer_policy")
         reject_unknown_fields(payload, fields, "model profile")
         missing = sorted(fields - set(payload))
         if missing:
             raise ProviderError("model profile is missing fields: {}".format(", ".join(missing)))
         values = {key: payload[key] for key in fields if key not in {"schema", "schema_version"}}
-        if version == 2 and payload["execution_policy"] is None:
+        if version >= 2 and payload["execution_policy"] is None:
             raise ProviderError("schema2 execution_policy cannot be null")
+        if version == 3 and payload["peer_policy"] is None:
+            raise ProviderError("schema3 peer_policy cannot be null")
         for name in (
             "allowed_resolved_models", "allowed_tools", "network_destinations",
             "credential_refs", "credential_read_paths",

@@ -59,8 +59,10 @@ explicit embedding adapters with replayable reads; native transport is not enabl
 Admitted peer calls also have content-free start/finish telemetry, replay-bound
 results, explicit unknown outcomes and per-task/operation timing profiles.
 An explicit per-turn Unix endpoint and bounded MCP stdio relay now exercise
-cross-process peer communication. Native CLI registration and frozen sandbox
-access remain pending; the transport is not silently enabled for existing plans.
+cross-process peer communication. Schema3 Codex profiles now opt into exact
+admitted runtime/socket/environment access and per-turn registration/cleanup;
+real fake-CLI builds pass, but native live acceptance and Claude registration
+remain pending. Existing profiles keep peer tools disabled.
 The `/delegate` view exposes declared compatibility without readiness claims;
 new-work review reuses the exact stopped-owner revision approval and separate
 launch. Automatic proposal generation and live reassignment remain open.

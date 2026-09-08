@@ -835,6 +835,8 @@ class AdapterBinaryProbe(Probe):
             if adapter["kind"] in {"codex_cli", "codex_oss"}:
                 help_result = context.runner((resolved, "exec", "--help"), None, 20)
                 required_flags = ("--ignore-user-config", "--ignore-rules", "--ephemeral", "--output-schema", "--json", "--sandbox")
+                if profile.peer_policy is not None:
+                    required_flags += ("--strict-config",)
                 if help_result.exit_code or any(flag not in help_result.stdout for flag in required_flags):
                     return self.red(context, "Codex CLI lacks required worker isolation/output flags", reason="POLICY_DENIED", wake="upgrade Codex to a compatible runtime", missing=list(required_flags), facts=facts)
                 facts["execution_policy"] = profile.execution_policy

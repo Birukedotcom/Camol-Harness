@@ -1122,7 +1122,11 @@ class HarnessRunner:
         self._provider_turns[key] = adapter
         peer_tools = None
         try:
-            if getattr(adapter, "supports_peer_tools", False) is True:
+            wants_peers = getattr(adapter, "supports_peer_tools", False) is True
+            native_policy = getattr(adapter, "wants_peer_tools", None)
+            if native_policy is not None:
+                wants_peers = native_policy(agent)
+            if wants_peers:
                 from .peer_tools import PeerTools
                 try:
                     peer_tools = PeerTools(self.orchestrator, run_id, assignment, turn_number,

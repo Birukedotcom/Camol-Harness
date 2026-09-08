@@ -242,7 +242,7 @@ not live connection/readiness proof; selection never starts work. `/pin BOX on|o
 persists exact-box shortcuts and `/group BOX NAME` adds searchable display groups.
 They are scoped to the current run/plan, not execution grants; a revision does not
 inherit pins for reused box names. Split/grid tiling and scoped box messaging are
-available as described below; native agent peer-tool transport remains pending.
+available as described below; native agent peer-tool acceptance remains pending.
 
 `camol box list`, `camol box resolve BOX_ID` and `camol box read BOX_ID` expose
 retained box identity/evidence without a supervisor or TUI. All require an explicit
@@ -256,7 +256,7 @@ are lease-scoped and idempotent; prepared-packet delivery and explicit worker
 consumption are separate records. See [the mailbox workflow and limits](docs/box-mailbox.md).
 Use `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX]` and `/outbox`
 in the TUI or line client. Uncertain sends retain their exact request for explicit
-`/message retry ID`; automatic model-tool peer discovery remains pending.
+`/message retry ID`; model-directed peer coordination still needs native acceptance.
 
 `/layout split` and `/layout grid` keep the orchestrator beside paginated box
 status tiles. Alt+Left/Right pages; Tab/Enter or click opens a detail; Escape
@@ -264,8 +264,11 @@ returns to the composer. `/layout focus` restores the single view. Tiles show
 recorded state/usage, not live readiness, and never send terminal input to workers.
 
 Python embedding adapters may opt into [turn-scoped peer tools](docs/peer-tools.md)
-for replayable peer observations and read-before-send. This does not yet register
-tools inside native Claude/Codex CLI processes or provide a remote worker bridge.
+for replayable peer observations and read-before-send. Opt-in schema3 Codex worker
+profiles now register scoped peer tools with frozen admission and per-turn cleanup;
+existing profiles keep them disabled. Fake-CLI/sandbox builds are tested, but
+actual native model/tool acceptance, Claude registration and remote peers remain
+separate gates. See the profile fragment and limitations in the linked guide.
 Peer-tool attempts, failures, retries and unknown completions are visible in
 `camol profile --db PATH --run-id RUN`, without storing message prose in the
 attempt logger or equating missing timing with zero cost.

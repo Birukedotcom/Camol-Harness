@@ -42,8 +42,8 @@ Connected transport, account observation and task readiness are separate indicat
 | `/layout focus\|split\|grid` | Composer plus paginated box monitoring; detail selection is scope-checked | Implemented; metadata tiles, not mirrored PTYs |
 | `camol box list\|resolve\|read` | Scoped observation using explicit run/box IDs, including stopped runs | Implemented; no message delivery or execution grant |
 | `camol box observe\|message\|inbox` | Lease-scoped owner CLI and embedding mailbox, idempotent sends and worker consumption receipts | Implemented; automatic peer-tool/remote integration pending |
-| `adapter.peer_tools` / `Harness.peer_tools()` | Current-turn list/observe/own-inbox and read-before-send with replayable observations | Implemented for explicit Python embedding adapters; native tool transport pending |
-| `PeerEndpoint` / `python -m camol.peer_mcp` | Explicit owner-issued local socket and bounded stdio peer tools | Implemented for embedding; native CLI registration/sandbox policy remain pending |
+| `adapter.peer_tools` / `Harness.peer_tools()` | Current-turn list/observe/own-inbox and read-before-send with replayable observations | Implemented for explicit Python embeddings and opt-in Codex profiles; native live acceptance pending |
+| `PeerEndpoint` / `python -m camol.peer_mcp` | Explicit owner-issued local socket and bounded stdio peer tools | Implemented; schema3 Codex profile binds admission and lifecycle; Claude registration pending |
 | `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX [OFFSET]]`, `/outbox [REQUEST_ID]` | Interactive sends/replies, inbox pane and immutable pending-request inspection | Implemented; explicit `/message retry ID` preserves its original scope |
 | `/delegate [TASK] [--json] [--offset N] [--limit N]` | Inspect declared capability matches and recorded assignments | Implemented; not readiness or a scheduling decision |
 | `/delegate --from RUNBOOK --reason TEXT [--effects POLICY.json]` | Review new/redistributed work through the existing stopped-owner revision workflow | Implemented; exact `/revise apply DIGEST` and separate `/run` remain required |
@@ -187,9 +187,10 @@ contracts, grants, budgets, leases, evaluations, plan approval or worker executi
 
 ## Agent-to-agent bridge
 
-The [turn-scoped peer API](peer-tools.md) now supports explicit Python embedding
-adapters. Its recorded observations bind the caller's current turn; native CLI
-tool registration/transport and remote workers remain open integration gates.
+The [turn-scoped peer API](peer-tools.md) supports explicit Python embedding
+adapters and opt-in schema3 Codex worker profiles through a local MCP relay.
+Its recorded observations bind the caller's current turn. Live native acceptance,
+Claude registration and remote workers remain open integration gates.
 
 Observation and mutation are separate commands. A read receipt should bind the
 exact subject/generation and observed cursor, not merely a temporary file indicating
@@ -204,8 +205,8 @@ The [lease-scoped mailbox](box-mailbox.md) implements the owner CLI, embedding
 service, versioned worker sends and packet consumption protocol. Its documentation
 distinguishes prepared-packet delivery from consumption and current-generation
 preconditions from proof of actual reading. TUI messaging uses a private immutable
-outbox for uncertain outcomes. Automatic fresh peer-observation tools remain an
-integration gate.
+outbox for uncertain outcomes. Opt-in worker tools can request fresh observations;
+automatic model-directed peer coordination still needs live acceptance.
 
 An optional tmux adapter may expose explicitly registered views later. It must
 bind its socket/server/session/pane identity, use bounded reads, and require
@@ -222,10 +223,10 @@ narrow terminals; redaction and terminal-control injection; reconnect without
 duplicate messages; stale generation/cursor denial; restart-safe inboxes; client
 closure without worker termination; and exact plan approval for new delegated work.
 Overview and switcher tests cover metadata/projection and keyboard navigation.
-Tiled metadata monitoring and explicit Python peer tools are implemented as
-described above. Native/remote peer-tool transport and external tmux attachment
-are not claimed implemented. The durable mailbox core has its own local
-execution/CLI tests.
+Tiled metadata monitoring, explicit Python peer tools and opt-in Codex local MCP
+transport are implemented as described above. Native model-directed tool use,
+Claude registration, remote peer transport and external tmux attachment are not
+claimed verified. The durable mailbox core has its own local execution/CLI tests.
 
 ## Delegation review
 

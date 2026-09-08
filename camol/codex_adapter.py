@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -71,6 +72,18 @@ def parse_stream(raw):
 
 
 class CodexCLIAdapter(ProcessAgentAdapter):
+    def wants_peer_tools(self, agent):
+        return model_profile_for_adapter(self.workspace, agent["adapter"]).peer_policy is not None
+
+    @asynccontextmanager
+    async def _peer_invocation(self, profile, assignment, turn_number):
+        if profile.peer_policy is None:
+            yield None
+        else:
+            from .native_peers import NativePeerInvocation
+            async with NativePeerInvocation(self, profile, assignment, turn_number) as peer:
+                yield peer
+
     async def execute_turn(self, agent, assignment, packet, turn_number, *, cost_budget_cents=None):
         if self.sandbox_backend is None or self.sandbox_policy is None:
             raise AdapterError("Codex workers require an explicit outer sandbox policy")
@@ -148,34 +161,43 @@ class CodexCLIAdapter(ProcessAgentAdapter):
             packet_sha256=packet_hash, profile_digest=profile.digest(), assignment=assignment,
             run_id=self.run_id, turn_number=turn_number, workspace=self.workspace)
         await self._authorize_launch(assignment, turn_number)
-        if local:
-            journal.reserve([usage_evidence()])
-        else:
-            from .provider_budget import reserve_hosted
-            def reservation_evidence(allocated):
-                nonlocal ceiling
-                ceiling = allocated
-                return [usage_evidence()]
-            ceiling = reserve_hosted(journal, state_dir=self.state_dir, profile=profile,
-                plan_digest=packet.get("run", {}).get("plan_digest"), requested_cents=ceiling,
-                evidence_factory=reservation_evidence, baselines=getattr(self, "budget_baselines", ()))
-            self.hosted_invocation_id = invocation_id
-        self.sandbox_backend.max_capture_bytes = max(self.sandbox_backend.max_capture_bytes, 16 << 20)
-        try:
-            process = await self.sandbox_backend.run(argv, cwd=box, policy=self.sandbox_policy,
-                timeout_seconds=agent["adapter"]["timeout_seconds"],
-                environment=self.execution_environment,
-                stdin_bytes=ClaudeCLIAdapter._prompt(packet, packet_hash),
-                invocation_record=packet_dir / (stem + ".invocation.json"))
-        except asyncio.CancelledError as error:
-            error.observed_evidence = [usage_evidence(outcome="cancelled")]
-            journal.record_outcome(error.observed_evidence)
-            raise
-        except (SandboxError, OSError) as error:
-            evidence = [usage_evidence()]
-            journal.record_outcome(evidence)
-            raise AdapterError(str(error), observed_evidence=evidence) from error
+        async with self._peer_invocation(profile, assignment, turn_number) as peer:
+            environment = self.execution_environment
+            if peer is not None:
+                argv[-1:-1] = ["--strict-config"] + peer.argv
+                environment = dict(environment or {}, **peer.environment)
+            if local:
+                journal.reserve([usage_evidence()])
+            else:
+                from .provider_budget import reserve_hosted
+                def reservation_evidence(allocated):
+                    nonlocal ceiling
+                    ceiling = allocated
+                    return [usage_evidence()]
+                ceiling = reserve_hosted(journal, state_dir=self.state_dir, profile=profile,
+                    plan_digest=packet.get("run", {}).get("plan_digest"), requested_cents=ceiling,
+                    evidence_factory=reservation_evidence, baselines=getattr(self, "budget_baselines", ()))
+                self.hosted_invocation_id = invocation_id
+            self.sandbox_backend.max_capture_bytes = max(self.sandbox_backend.max_capture_bytes, 16 << 20)
+            try:
+                process = await self.sandbox_backend.run(argv, cwd=box, policy=self.sandbox_policy,
+                    timeout_seconds=agent["adapter"]["timeout_seconds"],
+                    environment=environment,
+                    stdin_bytes=ClaudeCLIAdapter._prompt(packet, packet_hash),
+                    invocation_record=packet_dir / (stem + ".invocation.json"))
+            except asyncio.CancelledError as error:
+                error.observed_evidence = [usage_evidence(outcome="cancelled")]
+                journal.record_outcome(error.observed_evidence)
+                raise
+            except (SandboxError, OSError) as error:
+                evidence = [usage_evidence()]
+                journal.record_outcome(evidence)
+                raise AdapterError(str(error), observed_evidence=evidence) from error
         observed = []
+        if peer is not None:
+            observed.append(dict(kind="command", epistemic_status="OBSERVED", producer="adapter", artifact_refs=[],
+                data=dict(runtime="camol-peer-endpoint", cleanup="incomplete" if peer.cleanup_incomplete else "complete",
+                    directory=str(peer.parent), provider_tool_use_proven=False)))
         for channel, raw, digest, size, truncated in (("provider-stream", process.stdout, process.stdout_sha256, process.stdout_bytes, process.stdout_truncated), ("provider-stderr", process.stderr, process.stderr_sha256, process.stderr_bytes, process.stderr_truncated)):
             reference = self._store_content(raw, assignment, channel=channel, media_type="application/x-ndjson" if channel == "provider-stream" else "text/plain", redact=True,
                 source_sha256=digest, source_bytes=size, truncated=truncated, invocation_id=invocation_id)
@@ -206,8 +228,10 @@ class CodexCLIAdapter(ProcessAgentAdapter):
             observed.append(usage_evidence(usage, "error"))
             journal.record_outcome(self.redactor.value(observed))
             raise AdapterError(str(error), observed_evidence=observed) from error
-        observed.append(usage_evidence(usage, "success"))
+        observed.append(usage_evidence(usage, "error" if peer is not None and peer.cleanup_incomplete else "success"))
         journal.record_outcome(self.redactor.value(observed))
+        if peer is not None and peer.cleanup_incomplete:
+            raise AdapterError("native peer cleanup requires owner inspection; observed provider usage retained", observed_evidence=observed)
         result = self.redactor.value(dict(result, _camol_observed_evidence=observed, _camol_usage_invocation_id=invocation_id))
         temporary = result_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(result, sort_keys=True) + "\n")

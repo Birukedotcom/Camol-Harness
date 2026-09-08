@@ -178,9 +178,70 @@ runtime. Cleanup refuses to remove a replaced socket or directory. Revoking or
 closing the underlying worker turn makes later reads, messages and handshakes
 fail even if the relay process remains alive.
 
+## Opt-in Codex worker integration
+
+Model-profile schema3 extends the existing explicit Codex schema2 profile with:
+
+```json
+"peer_policy": {
+  "schema": "camol.peer_policy",
+  "schema_version": 1,
+  "transport": "local_mcp_stdio",
+  "operations": ["list", "observe", "inbox", "send"]
+}
+```
+
+This is a profile fragment, not a complete runbook. All schema2 fields remain
+required, including its honest execution-policy limitations. The new profile
+must be embedded/frozen in a human-reviewed V5/V6 runbook (or approved successor)
+before launch. Schema1/schema2 profiles keep their identities and no-peer
+behavior. Schema3 rejects null, extra, unsupported or partially specified peer
+policies and does not yet support Claude. The transport version fixes the bounded
+four-operation contract above; it does not authorize arbitrary MCP servers.
+
+Admission includes the exact private short-path directory, trusted Camol/Python
+read roots and the two capability environment names in the sandbox-policy digest.
+No directory, account change or model request is needed merely to parse a profile.
+The runner supplies the exact owned `PeerTools` object; a new provider invocation
+creates its socket before reserving provider spend. Each invocation closes the
+endpoint on return, error or cancellation. Retained successful provider results
+return without creating an endpoint or spending again. Ordinary completion removes
+the empty private transport directory; replaced/foreign content is preserved.
+
+The native command uses an absolute owner-selected interpreter with isolated
+imports and loads the exact `camol/__init__.py`, not a package discovered through
+worker PATH/cwd. Python 3.9's ordinary package discovery needed enclosing-directory
+read access; explicit package loading avoids granting that parent. Worker write
+grants may not overlap the socket or trusted runtime roots in either direction.
+
+The per-invocation Codex configuration requires the server to initialize, lists
+only the four peer tools, forwards capability variables by name, and explicitly
+excludes both from the agent-shell environment. It does not edit account-wide
+config. Schema3 requires the CLI's `--strict-config` flag so unsupported settings
+cannot silently become a permissive fallback. The read-only adapter probe denies
+a CLI missing that flag before a worker invocation or spend reservation.
+These configuration choices follow [official OpenAI documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+and the [shell-environment configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+New capabilities are registered with the run's redactors before they can reach a
+provider. Tests deliberately echo the token to stderr and check retained evidence,
+SQLite/artifact files and argv for leaks. Redactors retain these values in owner
+memory for subsequent diff/artifact collection; they are not serialized secrets.
+Endpoint-cleanup failures revoke the token and refuse successful task completion,
+but first retain available provider usage/transcripts. A simultaneous provider
+error/cancellation keeps its original attached evidence. Cleanup status is an
+observed endpoint fact, not proof that a model used its tools.
+
+Real fake-CLI builds exercise the full runner/admission/provider/relay path in
+developer-trusted and macOS-sandboxed modes. The installed Codex CLI separately
+accepts the generated configuration via read-only `mcp get`. That parser check
+does **not** establish actual native tool initialization, model-directed calls,
+shell-environment behavior, account entitlement or live model maturity. Those
+remain required native acceptance gates; no paid model call was made.
+
 ## Remaining native integration
 
-Native CLI registration and remote workers still need integration. It must bind the
+Claude registration and remote workers still need integration. It must bind the
 same run/task/box/lease/turn and preserve the observer-before-send requirement,
 bounded data, redaction, idempotency and revoked-turn behavior. It must not hand a
 worker the owner control token, silently allow network on a network-denied plan,
@@ -191,10 +252,10 @@ The direct-Python build and real stdio/socket fixtures prove their respective
 interfaces, not a hosted model autonomously calling these tools. The owner has a
 `/delegate` compatibility view and stopped-run revision-review entry point; this
 is not an agent-facing approval tool or automatic proposal generator.
-Native/provider tool registration, remote transport, broader read-only peer views,
+Claude registration, remote transport, broader read-only peer views,
 natural-language delegation and live provider acceptance remain separate gates.
 
-### Next native boundary: explicit profile and admission
+### Network and remaining native acceptance boundaries
 
 The real macOS Seatbelt fixture in `tests/test_peer_sandbox.py` shows that the
 current denied-network policy blocks Unix peer communication. The exact socket
@@ -204,27 +265,11 @@ No sandbox rule was changed for this experiment. It does not justify adding `*`
 network access to a denied profile: a network-denied peer integration would need
 a separately specified, tested narrow Unix-socket policy.
 
-For Codex, the [official MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
-provides stdio command/arguments, forwarded environment names, a tool allowlist
-and required-server initialization. The current Camol adapter explicitly sets
-`mcp_servers={}`. Replacing that exclusion is an authority change, not cosmetic
-CLI plumbing. The remaining implementation sequence is:
-
-1. Add a versioned, frozen opt-in peer policy to the model profile. Existing
-   schema1/schema2 profiles retain their current digests and no-peer behavior.
-   Reject unsupported adapter/profile combinations before a paid launch.
-2. Admission binds an owner-private short-path transport directory, trusted relay
-   runtime read roots and the exact permitted environment names. Worker source,
-   cwd and PATH must not select or replace the relay. No token enters the plan,
-   invocation argv, artifacts, global CLI configuration or peer message bodies.
-3. Runner ownership creates/closes one endpoint around one actual provider turn.
-   Recovered provider results need no new live endpoint. Failed startup, timeout,
-   cancellation and revocation close it, preserving ambiguous billed/tool outcomes.
-4. Build a per-invocation native server configuration with only the four peer
-   tools, explicit initialization failure and bounded startup/tool timeouts.
-   Verify token forwarding to the relay separately from the agent's shell
-   environment. Require real sandboxed fake-CLI and native protocol acceptance;
-   independent SDK compatibility alone does not establish Codex/Claude behavior.
+The profile, admission, lifecycle and command configuration are implemented above.
+Actual native acceptance must still verify token forwarding to the relay separately
+from the agent's shell environment, required-server startup failure, and tool calls
+under native provider execution. Independent SDK/fake-CLI compatibility alone does
+not establish these Codex/Claude behaviors.
 
 Claude registration must separately account for its current safe-mode and tool
 allowlist behavior. Neither provider's account-wide configuration will be modified

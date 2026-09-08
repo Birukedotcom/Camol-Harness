@@ -615,3 +615,41 @@ MCP SDK, and **939 tests on Python 3.9 in 795.326 seconds, OK with one SDK-only
 skip**. The sandbox follow-up adds only the separately verified test and docs;
 its product code is identical to that full-suite checkpoint. These results do
 not cover the newer uncommitted native-provider integration.
+
+## Opt-in native Codex peer checkpoint
+
+The isolated `codex/v0-native-peers` successor adds schema3 profiles that freeze
+the exact four-operation local peer policy. Legacy profiles remain unchanged.
+Admission binds the trusted relay/runtime, private socket read path and capability
+environment names; the runner owns and revokes each turn's endpoint. The generated
+configuration is per invocation, not an account-wide edit. Claude registration
+and real model-directed peer coordination remain open.
+
+Adversarial checks exposed a Python 3.9 package-discovery failure under the real
+macOS sandbox. Loading the exact trusted package file fixed it without granting
+the enclosing repository/state directory. Write grants overlapping any trusted
+runtime path are rejected in either direction. Retained transport contents block
+launch without deletion or reuse. Cleanup failure after a successful provider
+reply now retains observed usage before refusing task completion; cancellation
+preserves its original evidence. Cached successful results reopen no endpoint
+and reserve no new spend. Deliberately echoed capability values are absent from
+retained event, database, artifact and argv data in the fixtures.
+
+The final focused native/probe/Codex/provider/peer/admission group passed **74 tests
+on Python 3.12 in 62.079 seconds** and **74 tests on Python 3.9 in 63.812 seconds,
+OK with one optional installed-Codex-parser skip**. Python 3.12 included the
+explicitly selected installed Codex's read-only `mcp get` parser check. This is
+configuration acceptance, not server initialization or actual model tool use.
+Both full suites are separate gates and were still running when this record was
+written. The later installed-package test uses the imported runtime's paths for
+write-overlap assertions, not a source-checkout path pretending to be installed.
+
+Earlier failed checks were not waived: the initial Python 3.9 native sandbox
+fixture exposed the real import failure above. A later missing-`--strict-config`
+fixture incorrectly expected the generic waiting code to equal its underlying
+probe denial. Its corrected assertion requires zero attempts/spend and the
+retained `POLICY_DENIED` probe result; production admission was not relaxed.
+
+No hosted inference, account/config edit, model download, real remote worker or
+cloud deployment was performed. Exact native startup failure, shell-environment
+exclusion and model-directed multi-box messaging still require live acceptance.
