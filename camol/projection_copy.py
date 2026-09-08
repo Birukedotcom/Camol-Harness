@@ -10,7 +10,7 @@ subclasses retain the existing copy semantics.
 from copy import deepcopy
 
 
-_SCALAR_TYPE_IDS = frozenset(id(kind) for kind in (str, int, float, bool, type(None)))
+_NONE_TYPE = type(None)
 
 
 class _NonProjectionValue(Exception):
@@ -19,7 +19,7 @@ class _NonProjectionValue(Exception):
 
 def _copy_json_graph(value, memo):
     kind = type(value)
-    if id(kind) in _SCALAR_TYPE_IDS:
+    if kind is str or kind is int or kind is float or kind is bool or kind is _NONE_TYPE:
         return value
     if kind is not dict and kind is not list:
         raise _NonProjectionValue
@@ -30,13 +30,26 @@ def _copy_json_graph(value, memo):
         result = {}
         memo[identity] = result
         for key, item in value.items():
-            if id(type(key)) not in _SCALAR_TYPE_IDS:
+            key_kind = type(key)
+            if (key_kind is not str and key_kind is not int and key_kind is not float
+                    and key_kind is not bool and key_kind is not _NONE_TYPE):
                 raise _NonProjectionValue
-            result[key] = item if id(type(item)) in _SCALAR_TYPE_IDS else _copy_json_graph(item, memo)
+            item_kind = type(item)
+            if (item_kind is str or item_kind is int or item_kind is float
+                    or item_kind is bool or item_kind is _NONE_TYPE):
+                result[key] = item
+            else:
+                result[key] = _copy_json_graph(item, memo)
     else:
         result = []
         memo[identity] = result
-        result.extend(item if id(type(item)) in _SCALAR_TYPE_IDS else _copy_json_graph(item, memo) for item in value)
+        for item in value:
+            item_kind = type(item)
+            if (item_kind is str or item_kind is int or item_kind is float
+                    or item_kind is bool or item_kind is _NONE_TYPE):
+                result.append(item)
+            else:
+                result.append(_copy_json_graph(item, memo))
     return result
 
 

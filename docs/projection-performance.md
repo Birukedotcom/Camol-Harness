@@ -60,3 +60,35 @@ The implementation still copies each projection in full. Growing evidence
 therefore still increases the cost of snapshots and replay; this is a bounded
 constant-factor improvement, not a claim of constant-time history or arbitrary
 N-box scalability.
+
+## Checkpoint results
+
+The saved read-only snapshot contained 941 events and a 4,250,226-byte projected
+state. Five detached-copy samples per implementation, measured in one process
+per Python version, produced these medians:
+
+| Python | Standard copy | Projection copy | Standard replay | Projection replay |
+| --- | ---: | ---: | ---: | ---: |
+| 3.12.13 | 24.43 ms | 8.23 ms | 10.894 s | 4.175 s |
+| 3.9.6 | 40.90 ms | 14.83 ms | 17.426 s | 7.127 s |
+
+Both versions returned equal projections and canonical digests, with detached
+nested caller mutations. Copy medians improved about 2.97x and 2.76x respectively;
+replay improved about 2.61x and 2.45x. These are snapshot measurements, not an
+end-to-end harness or provider-usage speedup claim.
+
+The original unprofiled 12-box/25-task soak then passed with its 120-second task
+deadline unchanged. Total trial time, including export and replay, was 119.021
+seconds: 962 events, 77 artifacts, every task completed, unchanged source, and
+exact export replay. The margin is narrow and this was one local run; other
+hardware and larger histories need their own capacity and timing measurements.
+Event count differs from the slower profiled run because elapsed-time lease
+refreshes are themselves recorded; no refresh policy or guard was removed.
+
+For transparency, an intermediate type-ID-set implementation still timed out:
+24 tasks had succeeded and the final task was verifying. The final direct
+identity-chain scalar checks removed that measured overhead without accepting
+custom types into the fast path. The final nine copy-semantic regressions pass
+on Python 3.9 and 3.12. A 99-test state/runtime/recovery group also passed while
+the earlier fast-path implementation was under test; the complete integration
+checkpoint still requires its normal full-suite run after this narrow change.
