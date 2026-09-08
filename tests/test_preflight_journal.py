@@ -229,6 +229,45 @@ create_claude_capability(load_model_profile(Path(WORKSPACE), 'profile.yaml'), ta
         with self.assertRaisesRegex(ProviderError, "unresolved preflight usage"):
             self.call(lambda argv, **kwargs: Help() if "--help" in argv else self.fail("dispatched"), "after-crash")
 
+    def test_real_cli_cancellation_is_bounded_and_retains_unknown_spending(self):
+        marker = self.root / "entered-request"
+        executable = self.bin / "fake-claude"
+        executable.write_text("#!" + sys.executable + "\nimport sys,time\nfrom pathlib import Path\n"
+                              "if '--help' in sys.argv:\n    print(" + repr(Help.stdout.decode()) + ")\n"
+                              "else:\n    Path(" + repr(str(marker)) + ").write_text('entered')\n    time.sleep(30)\n")
+        cancelled, stop = threading.Event(), threading.Event()
+        cancellation_times = []
+        def cancel_after_dispatch():
+            deadline = time.monotonic() + 5
+            while not stop.wait(.01) and time.monotonic() < deadline:
+                if marker.exists():
+                    cancellation_times.append(time.monotonic())
+                    cancelled.set()
+                    return
+            cancelled.set()
+        watcher = threading.Thread(target=cancel_after_dispatch)
+        watcher.start()
+        try:
+            with self.assertRaises(ProviderError):
+                self.call(subprocess.run, cancel_event=cancelled)
+        finally:
+            stop.set()
+            watcher.join(1)
+        self.assertTrue(marker.exists())
+        self.assertTrue(cancellation_times)
+        self.assertLess(time.monotonic() - cancellation_times[0], 3)
+        row = self.inventory()[0]
+        self.assertEqual(row["outcome"]["status"], "unknown")
+        self.assertEqual(row["outcome"]["reason"], "interrupted")
+        self.assertIsNone(row["outcome"]["usage"]["cost_usd_micros"])
+
+    def test_cancellation_before_start_does_not_inspect_create_or_dispatch(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        with self.assertRaisesRegex(ProviderError, "cancelled before"):
+            self.call(lambda *args, **kwargs: self.fail("inspected or dispatched"), cancel_event=cancelled)
+        self.assertFalse(self.state.exists())
+
     def test_untrusted_paths_and_missing_no_tools_flags_never_dispatch(self):
         with self.assertRaisesRegex(ProviderError, "no-tools"):
             self.call(lambda argv, **kwargs: Completed())

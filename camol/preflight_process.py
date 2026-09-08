@@ -7,9 +7,17 @@ import subprocess
 import time
 
 
-def bounded_preflight_run(argv, *, cwd, env, input=None, timeout=120, stdout=None, stderr=None, check=False):
+class PreflightProcessCancelled(OSError):
+    def __init__(self, *, dispatched):
+        super().__init__("preflight process cancelled")
+        self.dispatched = dispatched
+
+
+def bounded_preflight_run(argv, *, cwd, env, input=None, timeout=120, stdout=None, stderr=None, check=False, cancel_event=None):
     if input is not None and (not isinstance(input, bytes) or len(input) > 4096):
         raise ValueError("preflight input exceeds the fixed request ceiling")
+    if cancel_event is not None and cancel_event.is_set():
+        raise PreflightProcessCancelled(dispatched=False)
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE if input else subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -26,6 +34,8 @@ def bounded_preflight_run(argv, *, cwd, env, input=None, timeout=120, stdout=Non
                 os.set_blocking(process.stdin.fileno(), False)
                 selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
             while selector.get_map() or process.poll() is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise PreflightProcessCancelled(dispatched=True)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(argv, timeout)
