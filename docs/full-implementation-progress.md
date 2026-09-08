@@ -88,6 +88,13 @@ expiry/revocation checks, restart material validation and V2 gateway-bound captu
 are implemented; no listener/poll task runs by default. See [gateway scope](worker-gateway.md).
 Remote target execution, provisioning and trusted result reduction remain open.
 
+The `codex/v0-target-adoption` follow-up adds run-scoped, owner-reviewed target
+identity adoption/retirement, exact provider and transport-profile bindings, replay
+and paginated inspection through Python, offline CLI and live local supervisor
+control. [Target adoption boundaries](target-adoption.md) distinguish this registry
+from authenticated host discovery, worker readiness, launch and fleet-wide salvage;
+those distributed-execution gates remain open.
+
 The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`

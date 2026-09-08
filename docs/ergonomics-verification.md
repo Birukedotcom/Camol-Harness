@@ -1810,3 +1810,45 @@ is bounded to 2,400 seconds. No second whole suite was started concurrently.
 The exact running process must be observed to completion; a polling timeout is
 not permission to restart it or claim a result. A minimum-Python whole gate and
 the outstanding distributed execution/live acceptance work remain required.
+
+## Target adoption identity checkpoint — 2026-09-08
+
+Isolated `codex/v0-target-adoption` begins at gateway documentation commit
+`b89e88a`. The predecessor gateway whole suite is still running in its own frozen
+checkout; it has not been restarted or treated as a passing gate for this new code.
+
+The [target registry](target-adoption.md) implements the identity/review portion of
+SPEC 19.5, with exact owner/run/plan/provider/transport bindings, immutable adoption
+generations, retirement, bounded inspection, event replay and archive retention.
+The public Python API, offline CLI and live supervisor control share that registry.
+This is not authenticated machine discovery, executable worker registration,
+readiness, cloud provisioning or deletion authority. Target-side execution and
+fleet-wide salvage remain unfinished.
+
+The review tested duplicate provider resources under renamed displays, reused
+generations, owner and plan forgery, exact expiry, failed appends, a real competing
+adoption between read and append, lost retirement responses, unbounded/malformed
+inputs, protected credentials, newly introduced redaction and terminal runs.
+An expired but unreconciled running lease still prevents registry retirement.
+Historical receipt lookup cannot revive a retired generation. A real supervisor
+test uses child CLI processes for propose/adopt/inspect/retire, then verifies
+wrong-database, wrong-plan, malformed-page and mismatched-actor denials.
+
+Initial live target tests passed **9 tests in 2.708 seconds**. Expanded target/API/
+supervisor/gateway/import/artifact/archive groups passed **81 tests in 36.724
+seconds on Python 3.12** and **81 in 36.780 seconds on modern Python 3.9**.
+Review then found that offline inspection ignored an explicitly supplied plan
+digest; it now rejects a mismatch. The final expanded groups passed **81 tests in
+37.275 seconds on Python 3.12** and **81 in 37.016 seconds on modern Python 3.9**.
+Logs: `/tmp/camol-target-adoption-final-py312.log` and `-py39.log`.
+
+The V1 example validates, `git diff --check` passes, and main remains unchanged.
+The sdist was built into a wheel and installed without dependencies into
+`/tmp/camol-target-adoption-package.apg0H4e9/venv`. Isolated imports outside the
+checkout confirmed site-packages ownership and byte-for-byte equality of all six
+changed product modules before loading test fixtures; Textual, MCP and cryptography
+were absent. The same **81 tests passed in 37.967 seconds**, logged in
+`/tmp/camol-target-adoption-installed.log`. The installed console entry point also
+shows the target command/inspection help successfully. No whole-suite result is
+claimed for target adoption, and no real model/provider call or cloud mutation was
+made by these tests.

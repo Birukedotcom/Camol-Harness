@@ -10,6 +10,9 @@ delivery and unverified report visibility. An optional, owner-reviewed
 [supervisor gateway](worker-gateway.md) now owns the listener and automatically
 captures bounded report pages. Machine adoption, target-side launch and trusted
 result promotion remain open; receiving a report does not authorize execution.
+An [owner-reviewed target registry](target-adoption.md) now records distinct provider,
+harness, generation and transport-profile identities. Registry adoption is not yet
+authenticated machine adoption or execution-backed readiness.
 
 Camol's replaceable orchestration agent may propose as many boxes as a plan can
 justify within its approved resource envelope. The deterministic harness admits and

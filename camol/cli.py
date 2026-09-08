@@ -180,6 +180,53 @@ def command_overview(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_target(args: argparse.Namespace) -> int:
+    from .targets import TargetError, snapshot
+    try:
+        if args.live:
+            if not args.plan_digest:
+                raise TargetError("live target control requires the exact --plan-digest")
+            params = {}
+            if args.db:
+                params["expected_database"] = str(Path(args.db).resolve())
+            if args.action == "inspect":
+                params.update(offset=args.offset, limit=args.limit)
+            else:
+                params.update(approved_by=args.by, expected_workspace=str(Path(args.workspace).resolve()))
+                if args.action == "propose":
+                    params.update(descriptor=load_contract(args.descriptor, max_bytes=8192), expires_at=args.expires_at)
+                elif args.action == "adopt":
+                    params.update(proposal=load_contract(args.proposal, max_bytes=16384), approval_digest=args.approval_digest)
+                else:
+                    params.update(generation=args.generation, adoption_digest=args.adoption_digest, reason=args.reason)
+            response = asyncio.run(send_control_v2(Path(args.state_dir), "target-" + args.action,
+                requested_by=getattr(args, "by", "operator"), params=params,
+                expected_run_id=args.run_id, expected_plan_digest=args.plan_digest))
+            _write_json(response["result"])
+            return 0
+        inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+        if args.action == "inspect":
+            state, _, _ = inspector._cut(args.run_id)
+            if args.plan_digest is not None and args.plan_digest != state["plan_digest"]:
+                raise TargetError("target inspection plan differs from the selected ledger")
+            result = snapshot(state, offset=args.offset, limit=args.limit)
+        else:
+            with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+                if harness.run_id != args.run_id or harness.orchestrator.state(args.run_id)["plan_digest"] != args.plan_digest:
+                    raise TargetError("target control requires the exact current run and plan")
+                if args.action == "propose":
+                    result = harness.targets.propose(load_contract(args.descriptor, max_bytes=8192), by=args.by, expires_at=args.expires_at)
+                elif args.action == "adopt":
+                    result = harness.targets.adopt(load_contract(args.proposal, max_bytes=16384), by=args.by, approval_digest=args.approval_digest)
+                else:
+                    result = harness.targets.retire(args.generation, by=args.by, adoption_digest=args.adoption_digest, reason=args.reason)
+        _write_json(result)
+        return 0
+    except TargetError as error:
+        print("camol: {}".format(error), file=sys.stderr)
+        return 2
+
+
 def command_worker_enrollment(args: argparse.Namespace) -> int:
     from .worker_delivery import DeliveryError
     try:
@@ -1087,6 +1134,33 @@ def build_parser() -> argparse.ArgumentParser:
                 operation.add_argument("--after", type=int, default=0)
                 operation.add_argument("--limit", type=int, default=100)
         operation.set_defaults(handler=command_worker_enrollment)
+
+    targets = subparsers.add_parser("target", help="review adopted target identities; never connect, execute, provision or delete")
+    target_actions = targets.add_subparsers(dest="action", required=True)
+    for name in ("inspect", "propose", "adopt", "retire"):
+        operation = target_actions.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--db")
+        operation.add_argument("--run-id", required=True)
+        operation.add_argument("--live", action="store_true", help="use the existing supervisor without taking ownership")
+        operation.add_argument("--plan-digest", required=name != "inspect")
+        if name == "inspect":
+            operation.add_argument("--offset", type=int, default=0)
+            operation.add_argument("--limit", type=int, default=50)
+        else:
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--by", required=True)
+            if name == "propose":
+                operation.add_argument("--descriptor", required=True)
+                operation.add_argument("--expires-at", required=True)
+            elif name == "adopt":
+                operation.add_argument("--proposal", required=True)
+                operation.add_argument("--approval-digest", required=True)
+            else:
+                operation.add_argument("--generation", required=True)
+                operation.add_argument("--adoption-digest", required=True)
+                operation.add_argument("--reason", required=True)
+        operation.set_defaults(handler=command_target)
 
     gateway = subparsers.add_parser("worker-gateway", help="owner-control the supervisor's optional TLS evidence listener and capture pump")
     gateway_actions = gateway.add_subparsers(dest="action", required=True)

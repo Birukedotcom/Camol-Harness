@@ -28,6 +28,7 @@ from .vcs_observations import EVENTS as VCS_OBSERVATION_EVENTS, apply as apply_v
 from .worker_enrollment import EVENTS as WORKER_ENROLLMENT_EVENTS, apply as apply_worker_enrollment
 from .worker_import import EVENT as WORKER_IMPORT_EVENT, apply as apply_worker_import
 from .worker_gateway import EVENTS as WORKER_GATEWAY_EVENTS, apply as apply_worker_gateway
+from .targets import EVENTS as TARGET_EVENTS, apply as apply_target
 
 
 def empty_state() -> Dict[str, Any]:
@@ -73,7 +74,9 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     if state["status"] == "superseded":
         raise ValueError("superseded run is sealed; continue its linked successor")
 
-    if event_type in WORKER_GATEWAY_EVENTS:
+    if event_type in TARGET_EVENTS:
+        apply_target(next_state, event)
+    elif event_type in WORKER_GATEWAY_EVENTS:
         apply_worker_gateway(next_state, event)
     elif event_type == WORKER_IMPORT_EVENT:
         apply_worker_import(next_state, event)

@@ -133,6 +133,9 @@ history; `records` reads them offline. See [capture and retry boundaries](docs/w
 An optional [worker gateway](docs/worker-gateway.md) lets the existing supervisor
 own TLS reception and bounded capture. It is off by default and requires exact
 owner-reviewed run/plan/listener policy; it does not launch remote workers.
+`camol target propose|adopt|inspect|retire` and `Harness.targets` maintain
+[owner-reviewed target identities](docs/target-adoption.md), including live local
+supervisor control. Adoption is not a readiness, execution or deletion grant.
 `camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` inspects local
 content-free RPC counts, durations and byte measurements without connecting.
 These measurements include monitor reads, not provider billing. See

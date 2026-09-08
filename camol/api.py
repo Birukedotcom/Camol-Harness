@@ -177,6 +177,11 @@ class Harness:
         return self.orchestrator.observe_vcs(run_id, **kwargs)
 
     @property
+    def targets(self):
+        from .targets import TargetRegistry
+        return TargetRegistry(self.orchestrator, self._require_run())
+
+    @property
     def worker_streams(self):
         from .worker_enrollment import WorkerEnrollment
         return WorkerEnrollment(self.orchestrator, self._require_run(), self.paths.state_dir)

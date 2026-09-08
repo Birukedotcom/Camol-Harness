@@ -34,6 +34,7 @@ from .runbook import runbook_digest
 from .mailbox import MailboxError
 from .worker_delivery import DeliveryError
 from .worker_gateway import WorkerGateway
+from .targets import TargetError
 
 
 class SupervisorError(RuntimeError):
@@ -595,6 +596,32 @@ class Supervisor:
         if version in {2, 3} and command == "plan":
             reject_unknown_fields(params, (), "control plan params")
             return {"ok": True, "result": self._plan()}
+        if version in {2, 3} and command.startswith("target-"):
+            from .targets import TargetRegistry
+            params = dict(params)
+            for name, expected in (("expected_workspace", str(self.workspace)), ("expected_database", str(self.paths.database))):
+                if name in params and params.pop(name) != expected:
+                    raise SupervisorError("target control expected workspace or database differs from this supervisor")
+            contracts = {
+                "target-inspect": {"offset", "limit"},
+                "target-propose": {"descriptor", "expires_at", "approved_by"},
+                "target-adopt": {"proposal", "approval_digest", "approved_by"},
+                "target-retire": {"generation", "adoption_digest", "reason", "approved_by"},
+            }
+            if command not in contracts or set(params) != contracts[command]:
+                raise SupervisorError("invalid target command or fields")
+            if "approved_by" in params and params["approved_by"] != request.get("requested_by"):
+                raise SupervisorError("target approval identity differs from the control actor")
+            registry = TargetRegistry(self.orchestrator, self.run_id)
+            if command == "target-inspect":
+                result = registry.inspect(offset=params["offset"], limit=params["limit"])
+            elif command == "target-propose":
+                result = registry.propose(params["descriptor"], by=params["approved_by"], expires_at=params["expires_at"])
+            elif command == "target-adopt":
+                result = registry.adopt(params["proposal"], by=params["approved_by"], approval_digest=params["approval_digest"])
+            else:
+                result = registry.retire(params["generation"], by=params["approved_by"], adoption_digest=params["adoption_digest"], reason=params["reason"])
+            return {"ok": True, "result": result}
         if version in {2, 3} and command.startswith("worker-"):
             params = dict(params)
             for name, expected in (("expected_workspace", str(self.workspace)), ("expected_database", str(self.paths.database))):
@@ -771,7 +798,7 @@ class Supervisor:
             if not isinstance(request, dict):
                 raise SupervisorError("control request must be an object")
             response = await self._dispatch(request)
-        except (json.JSONDecodeError, SupervisorError, StateTransitionError, SchemaError, WatcherError, OSError, MailboxError, DeliveryError, ConcurrentAppendError) as error:
+        except (json.JSONDecodeError, SupervisorError, StateTransitionError, SchemaError, WatcherError, OSError, MailboxError, DeliveryError, TargetError, ConcurrentAppendError) as error:
             response = {"ok": False, "error": str(error)}
         writer.write((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
         await writer.drain()
