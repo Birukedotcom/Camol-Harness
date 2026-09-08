@@ -1,4 +1,5 @@
 import asyncio
+import fcntl
 import json
 import os
 import shutil
@@ -6,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +15,8 @@ from camol.app import InteractiveController
 from camol.planning import compile_runbook
 from camol.schema import canonical_digest
 from camol.supervisor import SupervisorPaths, send_control
+from camol.store import ReadOnlyEventStore
+from camol.state import project
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,16 +37,40 @@ class ProductFlowTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.workspace), "commit", "-q", "-m", "fixture"], check=True)
         self.controller = InteractiveController(self.workspace, state_root=self.state_root)
 
-    def tearDown(self):
-        state_dir = Path(self.controller.session["state_dir"])
-        if SupervisorPaths.under(state_dir).socket.exists():
+    def stop_fixture(self, state_dir):
+        paths = SupervisorPaths.under(state_dir)
+        raced = None
+        if paths.socket.exists():
             try:
                 asyncio.run(send_control(state_dir, "stop", requested_by="test-owner"))
-                deadline = time.time() + 5
-                while SupervisorPaths.under(state_dir).socket.exists() and time.time() < deadline:
-                    time.sleep(0.02)
-            except Exception:
-                pass
+            except (ConnectionRefusedError, ConnectionResetError, FileNotFoundError) as error:
+                raced = error
+        if paths.lock.exists():
+            deadline = time.monotonic() + 5
+            stopped = False
+            with paths.lock.open("r") as lock:
+                while time.monotonic() < deadline:
+                    try:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        pass
+                    else:
+                        stopped = not paths.socket.exists() and not paths.pid.exists()
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                        if stopped:
+                            break
+                    time.sleep(.02)
+            self.assertTrue(stopped, "fixture supervisor has not released its exact leader lock/control paths")
+        if raced is not None:
+            # Disappearance between exists() and connect is only tolerated after
+            # both a persisted terminal outcome and actual leader exit are proved.
+            self.assertTrue(paths.lock.is_file(), "a stop-race requires the exact supervisor lock as exit evidence")
+            with closing(ReadOnlyEventStore(paths.database)) as store:
+                state = project(store.read(store.latest_run_id()))
+            self.assertIn(state["status"], {"completed", "blocked"}, str(raced))
+
+    def tearDown(self):
+        self.stop_fixture(Path(self.controller.session["state_dir"]))
         self.temporary.cleanup()
 
     def test_boot_to_grill_approval_detached_run_box_completion_and_reattach(self):
@@ -152,11 +180,7 @@ class ProductFlowTests(unittest.TestCase):
             self.assertIn("context-packet", context.messages[0])
             self.assertIn("second fixture", context.messages[0])
         finally:
-            if SupervisorPaths.under(first_state_dir).socket.exists():
-                asyncio.run(send_control(first_state_dir, "stop", requested_by="test-owner"))
-                deadline = time.monotonic() + 5
-                while SupervisorPaths.under(first_state_dir).socket.exists() and time.monotonic() < deadline:
-                    time.sleep(0.02)
+            self.stop_fixture(first_state_dir)
 
 
     def test_imported_codex_policy_to_real_daemon_build_and_human_acceptance(self):
@@ -175,9 +199,9 @@ class ProductFlowTests(unittest.TestCase):
         imported = self.controller.handle("/import " + str(path))
         self.assertIn("IMPORTED PLAN", imported.messages[0])
         self.controller.handle("/approve yes")
-        policy = self.controller._codex_launch_policy(self.controller.session["plan"])
+        policy = self.controller._launch_manifest(self.controller.session["plan"])
         with patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}):
-            started = self.controller.handle("/run --accept-provider-policy " + canonical_digest(policy) + " --accept-spend")
+            started = self.controller.handle("/run --accept-launch " + canonical_digest(policy) + " --accept-spend")
             self.assertIn("detached", started.messages[-1])
             deadline = time.monotonic() + 30
             status = None

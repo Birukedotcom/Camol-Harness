@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
 
-from .connections import ConnectionError, ConnectionRegistry
+from .connections import ConnectionError, ConnectionRegistry, observation_label
+from .launch_manifest import build_manifest, profiles_for_runbook, assert_preflight_clear, LaunchError
 from . import draft_creation
 from .conversation import ConversationCancelled, ConversationError, converse, parse_selection, planning_history, require_tool_free_provider
 from .planning import (
@@ -32,6 +33,7 @@ from .providers import (
     create_claude_capability,
     load_model_profile,
     model_profile_for_adapter,
+    read_capability,
 )
 from .runbook import RunbookError, load_runbook, runbook_digest, validate_runbook
 from .schema import canonical_digest
@@ -69,7 +71,7 @@ SLASH_COMMANDS = (
     SlashCommand("/login", "Connect or reconnect Claude/Codex", run_from_palette=True),
     SlashCommand("/skills", "Show built-in Camol protocols", run_from_palette=True),
     SlashCommand("/help", "Show command reference", run_from_palette=True),
-    SlashCommand("/connections", "Refresh provider connection status", run_from_palette=True),
+    SlashCommand("/connections", "Inspect cached connection observations", run_from_palette=True),
     SlashCommand("/model", "Choose the planning model", takes_value=True),
     SlashCommand("/effort", "Set provider reasoning effort", takes_value=True),
     SlashCommand("/grill", "Turn a goal into a gated plan", takes_value=True),
@@ -81,7 +83,7 @@ SLASH_COMMANDS = (
     SlashCommand("/approve", "Confirm the exact visible plan", takes_value=True),
     SlashCommand("/accept", "Review or accept the exact final outcome", takes_value=True),
     SlashCommand("/gate", "Review or approve a waiting state gate", takes_value=True),
-    SlashCommand("/run", "Start an approved ready run", takes_value=True),
+    SlashCommand("/run", "Review the exact provider launch or resume a run", takes_value=True),
     SlashCommand("/status", "Inspect session and supervisor", run_from_palette=True),
     SlashCommand("/boxes", "List the N-box worker pool", run_from_palette=True),
     SlashCommand("/box", "Open one read-only box view", takes_value=True),
@@ -126,10 +128,9 @@ HELP = """Commands
   /approve yes|DIGEST      approve only that visible plan
   /accept [DIGEST]         review final outcome, then accept its exact digest
   /gate TASK [DIGEST]      review a pending state gate, then approve its digest
-  /run --accept-spend --worker-cents N
-                            acknowledge the frozen worker ceiling, prove readiness, and detach
-  /run --accept-provider-policy DIGEST [--accept-spend]
-                            accept an imported Codex tier's explicit weaker guarantees
+  /run [--preflight-cents N] review exact provider launch; no provider calls
+  /run --accept-launch DIGEST [--accept-spend] [--preflight-cents N]
+                            acknowledge the manifest; hosted profiles require spend consent
   /status                  current local session and supervisor state
   /boxes                   list the arbitrary-N worker pool
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
@@ -137,7 +138,9 @@ HELP = """Commands
   /model SELECTION         manual | claude[:MODEL] | codex[:MODEL] | local:MODEL
   /effort LEVEL            low | medium | high | xhigh | max
   /login [claude|codex]    choose an account with arrows, or name it directly
-  /connections             read-only connection discovery (not task readiness)
+  /connections             cached observations; no probes or task-readiness claim
+  /connections refresh [all|claude|codex|local|openai]
+                            explicit bounded status/catalog refresh; no model call
   /skills                  show built-in planning/debug/evidence protocols
   /history                 show retained conversation history
   /usage [run]             planning usage or the current run's accounting report
@@ -358,10 +361,16 @@ class InteractiveController:
         self.preflight_fn = preflight_fn
         self._command_lock = threading.Lock()
         self._cancel_event = threading.Event()
+        self._closed_event = threading.Event()
+        self.connection_refresh_active = threading.Event()
         self._box_cache = {}
 
     def cancel_active(self) -> None:
         self._cancel_event.set()
+
+    def close_client(self) -> None:
+        self._closed_event.set()
+        self.cancel_active()
 
     def _persist_message(self, role: str, text: str, *, kind: str = "conversation") -> None:
         self.session = self.store.append_message(self.session, role, text, kind=kind)
@@ -388,14 +397,18 @@ class InteractiveController:
         )
 
     def handle(self, raw: str, *, on_chunk: Optional[Callable[[str], None]] = None) -> CommandResponse:
+        if self._closed_event.is_set():
+            return CommandResponse(messages=("Client detached; this controller cannot start another request.",))
         if raw.strip() == "/cancel":
             self.cancel_active()
-            return CommandResponse(messages=("Planning cancellation requested. Authoritative worker execution is unchanged.",))
+            return CommandResponse(messages=("Client request cancellation requested. Authoritative worker execution is unchanged.",))
         if not self._command_lock.acquire(blocking=False):
             return CommandResponse(messages=("A request is still running. Use /cancel, or wait before submitting another command.",))
         try:
             with self.store.transaction():
                 self.session = self.store.load()
+                if self._closed_event.is_set():
+                    return CommandResponse(messages=("Client detached; queued request was not started.",))
                 self._cancel_event.clear()
                 return self._handle(raw, on_chunk=on_chunk)
         except SessionError as error:
@@ -581,7 +594,7 @@ class InteractiveController:
             self.session = self.store.update(self.session, effort=arguments[0])
             return self._respond("effort set to {}".format(arguments[0]))
         if command == "/connections":
-            return self._connections()
+            return self._connections(arguments, on_chunk=on_chunk)
         if command == "/skills":
             if arguments:
                 raise InteractiveError("usage: /skills")
@@ -653,7 +666,7 @@ class InteractiveController:
                 login_provider=arguments[0],
             )
         if command == "/run":
-            return self._run(arguments)
+            return self._run(arguments, on_chunk=on_chunk)
         if command == "/status":
             return self._status()
         if command == "/boxes":
@@ -790,16 +803,12 @@ class InteractiveController:
         workspace = WorkspaceManager(self.workspace, state_dir)
         workspace.assert_source_ready()
         kinds = {agent["adapter"]["kind"] for agent in runbook["agents"]}
-        if kinds in ({"codex_cli"}, {"codex_oss"}):
-            if any("profile_snapshot" not in agent["adapter"] for agent in runbook["agents"]):
-                raise InteractiveError("interactive Codex plans require every adapter's exact embedded profile_snapshot; no file-backed policy is silently frozen")
-            limitation = ("Codex execution requires /run to review and acknowledge the exact weaker provider-policy digest. "
-                          "Runtime/login or local catalog checks do not establish quota, resolved model or inference readiness. "
-                          "No hard USD, inner-model-turn, or destination-egress guarantee is available.")
-        else:
-            limitation = ("Local process adapters use the exact imported executable protocol. No hosted-model proof is claimed."
-                          if kinds == {"process"} else
-                          "Hosted execution requires explicit preflight and frozen spend acknowledgement; mixed adapters are not supported by this terminal launch command.")
+        profiles_for_runbook(runbook)
+        limitation = ("Local process adapters use the exact imported executable protocol. No hosted-model proof is claimed."
+                      if kinds == {"process"} else
+                      "Provider execution requires /run to review the exact launch digest, trust limitations and separate preflight/worker envelopes. "
+                      "Claude profiles require fresh capability receipts. Codex quota/resolved-model/hard USD/inner-turn/egress limits remain unsupported. "
+                      "Process, Claude, Codex and local OSS profiles may be combined; exact kernel readiness still gates every lease.")
         plan = validate_envelope({
             "schema": "camol.product_plan", "schema_version": 2, "proposal": None,
             "run_id": runbook["run"]["id"], "runbook": runbook,
@@ -883,7 +892,7 @@ class InteractiveController:
                 "schema": "camol.product_plan", "schema_version": 3, "proposal": None,
                 "run_id": runbook["run"]["id"], "runbook": runbook, "source": source, "origin": origin,
                 "execution_status": "ready" if kinds == {"process"} else "preflight_required",
-                "execution_limitation": "Seed-assisted model proposal, not verified evidence. Every task/state gate and final acceptance requires human review. Existing provider limitations and exact readiness remain in force; mixed-provider terminal launches are unsupported.",
+                "execution_limitation": "Seed-assisted model proposal, not verified evidence. Every task/state gate and final acceptance requires human review. Provider launch needs its exact manifest acknowledgement; existing provider limitations and exact readiness remain in force.",
             })
             digest = canonical_digest(plan)
             rendered = render_plan(plan, digest)
@@ -1079,14 +1088,30 @@ class InteractiveController:
             )
         )
 
-    def _connections(self) -> CommandResponse:
-        records = self.connections.probe_all()
-        glyph = {"ready": "■", "auth_required": "□", "unavailable": "□", "unknown": "?", "error": "!"}
-        lines = ["CONNECTIONS — account/reachability only; not task readiness"]
+    def _connections(self, arguments=(), *, on_chunk=None) -> CommandResponse:
+        if arguments:
+            if (arguments[0] != "refresh" or len(arguments) > 2
+                    or (len(arguments) == 2 and arguments[1] not in {"all", "claude", "codex", "local", "openai"})):
+                raise InteractiveError("usage: /connections [refresh [all|claude|codex|local|openai]]")
+            self.connection_refresh_active.set()
+            notice = "Explicit connection refresh: bounded CLI version/auth status and/or loopback catalog only; no model or Docker call."
+            self._persist_message("system", notice, kind="notice")
+            if on_chunk:
+                on_chunk(notice + "\n")
+            try:
+                records = self.connections.refresh(arguments[1] if len(arguments) == 2 else "all", cancel_event=self._cancel_event)
+            finally:
+                self.connection_refresh_active.clear()
+        else:
+            records = self.connections.load()
+        lines = ["CONNECTION OBSERVATIONS — cached history, task readiness unverified; no filled readiness glyph without exact fresh kernel evidence."]
         for record in records:
             lines.append("{} {:<16} {:<14} {}".format(
-                glyph[record["status"]], record["connection_id"], record["status"], record["detail"]
+                "!" if record["status"] in {"error", "auth_required"} else "□", record["connection_id"], observation_label(record), record["detail"]
             ))
+        if not records:
+            lines.append("No saved observations. Startup and this inspection do not probe connections.")
+        lines.append("Use /connections refresh [TARGET] to observe again. Presence/authentication/catalog are separate from lease readiness.")
         return self._respond("\n".join(lines))
 
     def confirm_provider_connection(
@@ -1174,7 +1199,139 @@ class InteractiveController:
             Path(self.session["state_dir"]), command, requested_by=getpass.getuser(), params=params or {}
         ))["result"]
 
-    def _run(self, arguments: Sequence[str]) -> CommandResponse:
+    def _launch_manifest(self, plan, preflight_cents=10):
+        from .debug_execution import source_identity
+        self._verify_proposal_source(plan)
+        state_dir = Path(self.session["state_dir"])
+        WorkspaceManager(self.workspace, state_dir).assert_source_ready()
+        return build_manifest(plan, self.session["plan_digest"], source_identity(self.workspace),
+                              state_dir, local_target_id(), preflight_cents=preflight_cents)
+
+    def _run(self, arguments: Sequence[str], *, on_chunk=None) -> CommandResponse:
+        if self.session["approved_digest"] is None or self.session["approved_digest"] != self.session["plan_digest"]:
+            raise InteractiveError("run requires the exact current plan to be approved")
+        plan = validate_envelope(self.session["plan"])
+        if plan["runbook"] is None:
+            raise InteractiveError(plan["execution_limitation"])
+        kinds = {agent["adapter"]["kind"] for agent in plan["runbook"]["agents"]}
+        if kinds == {"process"}:
+            # Preserve the existing unpaid process workflow. It has no provider
+            # request, preflight or hosted spending acknowledgement to coordinate.
+            return self._run_process(arguments)
+        state_dir = Path(self.session["state_dir"])
+        if SupervisorPaths.under(state_dir).socket.exists():
+            try:
+                remote_plan, remote_status = self._control("plan"), self._control("status")
+            except (SupervisorError, OSError):
+                pass
+            else:
+                if remote_plan["plan_digest"] != runbook_digest(plan["runbook"]):
+                    raise InteractiveError("another supervisor owns this session state with a different plan")
+                if plan["schema_version"] in {3, 4} and (remote_plan.get("source_binding") or {}).get("source") != plan["source"]:
+                    raise InteractiveError("supervisor source binding differs from the exact approved proposal; reattach refused")
+                self.session = self.store.update(self.session, status="terminal" if remote_status["run"]["status"] in {"completed", "blocked"} else "running")
+                return self._respond("Reattached to the existing supervisor without a new provider request or preflight.",
+                    "Supervisor reattached pid={}; closing this client will not stop it.".format(remote_status["pid"]))
+        options = {"preflight_cents": 10, "accept_launch": None, "accept_spend": False, "draft_policy": None}
+        remaining, seen = list(arguments), set()
+        names = {"--accept-launch": "accept_launch", "--preflight-cents": "preflight_cents", "--accept-draft-policy": "draft_policy"}
+        while remaining:
+            option = remaining.pop(0)
+            if option in seen:
+                raise InteractiveError("duplicate launch option: " + option)
+            seen.add(option)
+            if option == "--accept-spend":
+                options["accept_spend"] = True
+            elif option in names and remaining:
+                value = remaining.pop(0)
+                if option == "--preflight-cents":
+                    if not value.isascii() or not value.isdecimal() or len(value) > 3:
+                        raise InteractiveError("--preflight-cents must be an integer between 1 and 100")
+                    value = int(value)
+                options[names[option]] = value
+            else:
+                raise InteractiveError("provider launches now require exact launch review; use /run [--preflight-cents N], then /run --accept-launch DIGEST [--accept-spend]")
+        if plan["schema_version"] == 4:
+            state = draft_creation.validate_state(self.session["grill"])
+            if state["risk_reviewed_digest"] != self.session["plan_digest"]:
+                raise InteractiveError("creation candidate needs its exact risk/scope review before launch")
+        manifest = self._launch_manifest(plan, options["preflight_cents"])
+        digest = canonical_digest(manifest)
+        command = "/run --accept-launch " + digest
+        if manifest["hosted_spend_ack_required"]:
+            command += " --accept-spend"
+        command += " --preflight-cents " + str(options["preflight_cents"])
+        draft_digest = manifest["additional_acknowledgements"].get("draft_policy_digest")
+        if draft_digest:
+            command += " --accept-draft-policy " + draft_digest
+        if options["accept_launch"] is None:
+            if options["accept_spend"] or options["draft_policy"] is not None:
+                raise InteractiveError("spend or policy acknowledgement alone cannot start work; first review /run, then accept its exact launch digest")
+            rendered = json.dumps(manifest, indent=2, sort_keys=True)
+            if len(rendered) > 200_000:
+                raise InteractiveError("the exact launch is too large to review in this terminal")
+            return self._respond("LAUNCH REVIEW — no provider probe, model call or worker started.\n" + rendered,
+                                 "launch digest=" + digest + "\nAfter reviewing the separate requested preflight reservation and common worker envelope, type:\n" + command)
+        if options["accept_launch"] != digest:
+            raise InteractiveError("launch policy requires the exact current acknowledgement digest; review /run again")
+        if options["accept_spend"] != manifest["hosted_spend_ack_required"]:
+            raise InteractiveError("hosted launch requires --accept-spend; a local-only launch must not imply hosted billing approval")
+        if options["draft_policy"] != draft_digest:
+            raise InteractiveError("this worker tier cannot enforce hard no-egress/host-write boundaries; --accept-draft-policy must name the exact reviewed product-plan digest")
+        self._persist_message("system", "Launch manifest acknowledged: " + digest, kind="notice")
+        assert_preflight_clear(state_dir)
+        profiles = profiles_for_runbook(plan["runbook"])
+        lines = []
+        for index, request in enumerate(manifest["preflights"], 1):
+            if self._cancel_event.is_set():
+                raise InteractiveError("launch cancelled; completed preflight observations are retained, no automatic retry")
+            assert_preflight_clear(state_dir)
+            profile = profiles[request["profile_digest"]]
+            receipt = read_capability(state_dir, profile)
+            reused = receipt is not None and receipt.valid_for(profile, request["target_id"], datetime.now(timezone.utc))[0]
+            if not reused:
+                if on_chunk:
+                    on_chunk("Preflight {}/{}: profile={} operation={} requested ceiling={} cents. No worker has started.\n".format(
+                        index, len(manifest["preflights"]), profile.profile_id, request["operation_id"], request["max_requested_usd_cents"]))
+                receipt = self.preflight_fn(profile, target_id=request["target_id"], state_dir=state_dir,
+                    cwd=self.workspace, accept_spend=True, spend_ceiling_cents=request["max_requested_usd_cents"],
+                    operation_id=request["operation_id"], cancel_event=self._cancel_event)
+                if not receipt.valid_for(profile, request["target_id"], datetime.now(timezone.utc))[0]:
+                    raise InteractiveError("provider preflight returned a stale or mismatched receipt; no workers launched")
+            detail = ("Fresh capability reused; additional preflight charge=0" if reused else
+                      "Preflight operation observed; cost_usd_micros=" + str(receipt.cost_usd_micros))
+            line = "{} profile={} target={} receipt={}; original operation/usage stays retained.".format(detail, profile.profile_id, request["target_id"], receipt.digest())
+            lines.append(line)
+            self._persist_message("system", line, kind="notice")
+            if on_chunk:
+                on_chunk(line + "\n")
+        # A slow later profile cannot let an earlier expired receipt through.
+        assert_preflight_clear(state_dir)
+        for request in manifest["preflights"]:
+            profile = profiles[request["profile_digest"]]
+            receipt = read_capability(state_dir, profile)
+            if receipt is None or not receipt.valid_for(profile, request["target_id"], datetime.now(timezone.utc))[0]:
+                raise InteractiveError("all Claude profiles need exact fresh persisted capabilities; review stale/failed operations explicitly with camol preflight-status, no automatic renewal")
+        if self._cancel_event.is_set():
+            raise InteractiveError("launch cancelled; no workers launched, preflight accounting retained")
+        if self._launch_manifest(plan, options["preflight_cents"]) != manifest:
+            raise InteractiveError("launch source or target changed during preflight; review the exact launch again")
+        self._assert_launch_not_cancelled()
+        runbook_path = self.store.write_runbook(self.session, plan["runbook"])
+        self._assert_launch_not_cancelled()
+        started = self.spawn_fn(runbook_path, self.workspace, state_dir, approve_by=getpass.getuser(), expected_source=manifest["source"])
+        self.session = self.store.update(self.session, status="running")
+        final = self._respond("Launch accepted: " + digest + ". Exact kernel readiness still gates every lease; Codex/local unknown dimensions remain explicitly unverified.",
+            "Supervisor {} pid={}; closing this client will not stop it.".format("reattached" if not started.get("started", True) else "detached", started["pid"]))
+        return CommandResponse(messages=tuple(lines) + final.messages)
+
+    def _assert_launch_not_cancelled(self):
+        if self._cancel_event.is_set() or self._closed_event.is_set():
+            raise InteractiveError("launch cancelled before supervisor dispatch; no workers launched")
+
+    def _run_process(self, arguments: Sequence[str]) -> CommandResponse:
+        if {agent["adapter"]["kind"] for agent in self.session["plan"]["runbook"]["agents"]} != {"process"}:
+            raise InteractiveError("provider workers require the coordinated exact launch review")
         if self.session["approved_digest"] is None or self.session["approved_digest"] != self.session["plan_digest"]:
             raise InteractiveError("run requires the exact current plan to be approved")
         plan = validate_envelope(self.session["plan"])
@@ -1225,93 +1382,12 @@ class InteractiveController:
         ):
             raise InteractiveError("source checkout changed after import; import and approve the current revision again")
         state_dir.mkdir(parents=True, exist_ok=True)
-        adapter_kinds = {agent["adapter"]["kind"] for agent in plan["runbook"]["agents"]}
-        if adapter_kinds == {"claude_cli"}:
-            remaining = list(arguments)
-            accept_spend = False
-            preflight_cents = 10
-            worker_cents = None
-            while remaining:
-                option = remaining.pop(0)
-                if option == "--accept-spend" and not accept_spend:
-                    accept_spend = True
-                elif option == "--preflight-cents" and remaining:
-                    try:
-                        preflight_cents = int(remaining.pop(0))
-                    except ValueError as error:
-                        raise InteractiveError("--preflight-cents requires a positive integer") from error
-                elif option == "--worker-cents" and remaining:
-                    try:
-                        worker_cents = int(remaining.pop(0))
-                    except ValueError as error:
-                        raise InteractiveError("--worker-cents requires a positive integer") from error
-                else:
-                    raise InteractiveError(
-                        "usage: /run --accept-spend --worker-cents N [--preflight-cents N]"
-                    )
-            if preflight_cents <= 0 or preflight_cents > 100:
-                raise InteractiveError("--preflight-cents must be between 1 and 100")
-            if not accept_spend:
-                raise InteractiveError(
-                    "provider capability is speculative; explicitly acknowledge both preflight and the frozen worker ceiling"
-                )
-            profile = model_profile_for_adapter(self.workspace, plan["runbook"]["agents"][0]["adapter"])
-            if worker_cents != profile.max_run_usd_cents:
-                raise InteractiveError(
-                    "--worker-cents must exactly match the approved {} cent run ceiling".format(
-                        profile.max_run_usd_cents
-                    )
-                )
-            status = self.connections.probe_claude()
-            if status["status"] != "ready":
-                raise InteractiveError("Claude connection is not authenticated; use /login claude")
-            receipt = self.preflight_fn(
-                profile,
-                target_id=local_target_id(),
-                state_dir=state_dir,
-                cwd=self.workspace,
-                accept_spend=True,
-                spend_ceiling_cents=preflight_cents,
-            )
-            readiness_line = "Run accepted after provider preflight: requested={} resolved={} receipt={}.".format(
-                receipt.requested_model, receipt.resolved_model, receipt.digest()
-            )
-        elif adapter_kinds == {"process"}:
-            if arguments:
-                raise InteractiveError("a local process plan uses `/run` without provider-spend flags")
-            readiness_line = "Run accepted for the explicitly approved local process adapter; no hosted-model proof is claimed."
-        elif adapter_kinds in ({"codex_cli"}, {"codex_oss"}):
-            policy = self._codex_launch_policy(plan)
-            digest = canonical_digest(policy)
-            hosted = adapter_kinds == {"codex_cli"}
-            expected = " /run --accept-provider-policy " + digest + (" --accept-spend" if hosted else "")
-            if not arguments:
-                return self._respond(
-                    "PROVIDER POLICY ACKNOWLEDGEMENT — no worker or paid preflight started.\n" + json.dumps(policy, indent=2, sort_keys=True),
-                    "After reviewing these limitations, type:" + expected,
-                )
-            remaining = list(arguments)
-            accepted_digest, accept_spend = None, False
-            while remaining:
-                option = remaining.pop(0)
-                if option == "--accept-provider-policy" and remaining and accepted_digest is None:
-                    accepted_digest = remaining.pop(0)
-                elif option == "--accept-spend" and not accept_spend:
-                    accept_spend = True
-                else:
-                    raise InteractiveError("this provider has no hard spend-capped preflight; use" + expected)
-            if accepted_digest != digest:
-                raise InteractiveError("provider policy requires the exact current acknowledgement digest; review /run")
-            if hosted != accept_spend:
-                raise InteractiveError("hosted Codex requires --accept-spend; local Codex must not imply hosted billing approval")
-            readiness_line = ("Explicit provider limitations acknowledged: " + digest + ". "
-                              "No paid capability probe ran; model identity is requested-only and quota remains unknown. "
-                              "Kernel runtime/login/catalog and exact admission checks still gate all leases. "
-                              + ("Dollar values are reservations, not a hard spend cap; unknown paid usage stops further paid launches."
-                                 if hosted else "Existing catalog presence is not inference, weights-identity, resource-fit, or airgap proof; no model is downloaded or loaded."))
-        else:
-            raise InteractiveError("Product V0 cannot execute a mixed or unsupported adapter plan")
+        if arguments:
+            raise InteractiveError("a local process plan uses `/run` without provider-spend flags")
+        readiness_line = "Run accepted for the explicitly approved local process adapter; no hosted-model proof is claimed."
+        self._assert_launch_not_cancelled()
         runbook_path = self.store.write_runbook(self.session, plan["runbook"])
+        self._assert_launch_not_cancelled()
         launch_options = {"expected_source": plan["source"]} if plan["schema_version"] in {3, 4} else {}
         started = self.spawn_fn(
             runbook_path,
@@ -1328,24 +1404,6 @@ class InteractiveController:
             ),
         )
 
-    def _codex_launch_policy(self, plan: Mapping[str, Any]) -> Dict[str, Any]:
-        if plan.get("source") is None or plan["runbook"]["schema_version"] < 5:
-            raise InteractiveError("Codex launch requires an imported V5+ source-bound runbook")
-        agents = []
-        for agent in sorted(plan["runbook"]["agents"], key=lambda item: item["id"]):
-            if "profile_snapshot" not in agent["adapter"]:
-                raise InteractiveError("Codex launch requires an exact embedded profile_snapshot for every worker")
-            profile = model_profile_for_adapter(self.workspace, agent["adapter"])
-            agents.append({"agent_id": agent["id"], "profile_digest": profile.digest(),
-                           "profile": profile.to_dict()})
-        return {"schema": "camol.interactive_provider_ack", "schema_version": 1,
-                "product_plan_digest": self.session["plan_digest"], "runbook_digest": runbook_digest(plan["runbook"]),
-                "source": dict(plan["source"]), "agents": agents,
-                "limitations": {"resolved_model": "unverified", "quota_available": "unknown",
-                                "hard_usd_cap": "unsupported; configured dollars reserve accounting authority only",
-                                "inner_model_turn_cap": "unsupported", "restricted_egress": "unsupported; ambient network explicitly granted",
-                                "capability_preflight": "none; runtime/login or catalog observation only",
-                                "local_model_load_or_download": "never implicit"}}
 
     def _verify_proposal_source(self, plan: Mapping[str, Any]) -> None:
         if plan.get("schema_version") in {3, 4}:

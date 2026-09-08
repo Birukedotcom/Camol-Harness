@@ -8,9 +8,10 @@ writer and keeps running.
 ## One lifecycle
 
 1. Run bare `camol` from the root of the Git repository you want Camol to work on.
-2. Wait for the top rail's `↻` connection scan to settle, then inspect
-   `/connections` for details. A filled connection glyph proves authentication or
-   reachability only. Run `/login`, choose Claude or Codex with the arrow keys, and
+2. Inspect the cached top rail and `/connections` for observation ages. Startup
+   makes no connection probes. Use `/connections refresh [TARGET]` for an explicit
+   bounded status/catalog check; neither inventory nor authentication is task
+   readiness. Run `/login`, choose Claude or Codex with the arrow keys, and
    press Enter if an account needs authentication.
 3. A successfully verified picker login selects that provider's planning model when
    no plan is frozen or running. `/model` remains the explicit selector; `manual` is
@@ -27,10 +28,11 @@ writer and keeps running.
    product-plan JSON, and (when executable) the kernel runbook digest.
 6. Type `/approve yes` or the exact full product-plan digest. `/approve` by itself
    only prints the confirmation challenge.
-7. Run `/run --accept-spend --worker-cents N [--preflight-cents N]` for the Claude
-   profile. `--worker-cents` must exactly repeat the total ceiling in the approved
-   plan; the separately capped preflight accepts 1–100 cents. This validates a
-   clean immutable source input before the no-tools preflight. Starting
+7. For any provider-containing plan, `/run [--preflight-cents N]` displays the
+   exact launch manifest without a provider call. Copy its `/run --accept-launch
+   DIGEST` command and include `--accept-spend` when any worker is hosted. It
+   discloses one common worker envelope and a separate deduplicated Claude
+   preflight reservation. Only exact acknowledgement can begin preflights. Starting
    the supervisor still does not bypass readiness: each task/box pair needs a fresh
    admission bundle, reservation, grant, and fence.
 8. Inspect `/status`, `/boxes`, `/box ID`, and `/events`. `Alt+0` returns to the
@@ -100,10 +102,10 @@ model-generated candidate. See [seed-assisted proposals](seed-assisted-proposals
 for limits, audit records and cancellation behavior. This is not an unrestricted
 prose-to-executable-plan generator or an in-flight amendment UI.
 
-Homogeneous Codex CLI or Codex OSS V5+ runbooks can be imported when every adapter
+Codex CLI or Codex OSS V5+ runbooks can be imported when every provider adapter
 contains its exact `profile_snapshot`. After plan approval, `/run` displays the
-full per-worker profile and a separate provider-policy acknowledgement digest.
-Use `/run --accept-provider-policy DIGEST --accept-spend` for hosted Codex, or
+full per-worker profile and the exact launch acknowledgement digest.
+Use `/run --accept-launch DIGEST --accept-spend` for hosted Codex, or
 omit `--accept-spend` for local Codex OSS. No paid capability preflight runs in
 this path. Read-only runtime/login/catalog checks still gate kernel admission.
 The owner explicitly accepts requested-only model identity, unknown quota, ambient
@@ -111,7 +113,10 @@ network authority, and unsupported hard USD/inner-turn caps. Configured dollars
 are accounting reservations, not a provider-enforced spending ceiling. An unknown
 paid charge stops further paid launches. Local catalog presence is not inference,
 weights-identity, resource-fit or airgap proof, and never triggers a download/load.
-Mixed-provider launches remain outside this terminal command's supported scope.
+Mixed process/Claude/Codex/OSS launches and multiple Claude profiles are supported
+through the same exact review, with compatible common hosted worker ceilings.
+See [interactive launch](interactive-launch.md) for preflight deduplication,
+retained failed/unknown operations, and separate cost envelopes.
 See [the Codex worker tier](codex-workers.md) for its exact limitations.
 
 Changing `/model` or `/effort` after a proposal clears that proposal and its approval.
@@ -138,8 +143,13 @@ proposal.
 
 ## Connection versus readiness
 
-The dependency rail is an inventory. Git/Docker presence and provider login are not
-lease authority. `/connections` records only:
+The dependency rail is a passive inventory. Git/Docker executable presence is
+`installed`, not connected; Camol does not call Docker to inspect its daemon.
+Cached authentication, key presence, and local catalogs are labeled by observation
+type and age. The rail says `task unverified` and does not use a filled readiness
+glyph because it does not consume exact fresh task-admission evidence.
+Bare `/connections` only reads this cache. `/connections refresh
+[all|claude|codex|local|openai]` explicitly records:
 
 - provider and runtime names and versions;
 - authentication/reachability status;
@@ -149,15 +159,22 @@ lease authority. `/connections` records only:
 - capability labels and observation time.
 
 It does not read, copy, parse, or store provider credential caches. On startup, the
-TUI refreshes this inventory in a disposable background thread; `↻` means probing,
-not ready. `/login` opens a keyboard picker containing Claude Code and Codex CLI in
+TUI performs no provider or HTTP probe; `↻ explicit refresh` only appears while a
+requested refresh is active. `/login` opens a keyboard picker containing Claude Code and Codex CLI in
 V0. Every selection suspends the TUI and gives the terminal directly to
-`claude auth login` or `codex login`, even when an earlier discovery record is green,
+`claude auth login` or `codex login`, even when an earlier discovery record reported authentication,
 so the provider can print/open its own URL and own the browser session. Camol then
-runs the provider's status probe, writes the result to the orchestrator transcript,
-refreshes the filled connection glyph, and shows the active model in the top rail.
-A cancelled or failed native flow cannot reuse an older green record as a new login
+runs only the selected provider's status probe, writes the result to the orchestrator transcript,
+refreshes its observed-authentication label, and shows the active model in the top rail.
+A cancelled or failed native flow/status refresh cannot reuse an older success as a new login
 confirmation. A login never changes the model embedded in a frozen or running plan.
+
+Refreshes do not invoke a model or paid capability preflight. CLI status/version
+commands have individual deadline/output bounds. Local catalog requests use an
+absolute two-second deadline, a 1 MiB body bound, no redirects/proxies/DNS, and
+client-owned transport cleanup on timeout/cancellation. Cached legacy `ready`
+statuses remain compatible but never become task authority. See
+[connection observations](provider-connections.md) for exact limits.
 
 Normal messages are sent to the selected planning-only provider and streamed into
 the orchestrator pane. Camol retains real human/orchestrator dialogue for continuity,

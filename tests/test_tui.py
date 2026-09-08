@@ -1,5 +1,7 @@
 import tempfile
 import asyncio
+import threading
+import time
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
@@ -9,10 +11,17 @@ from textual.widgets import Input, OptionList
 
 from camol.app import CommandResponse, InteractiveController
 from camol.connections import _record
-from camol.tui import CamolApp, LoginProviderScreen, PromptArea, SlashCommandScreen
+from camol.tui import CamolApp, LoginProviderScreen, PromptArea, SlashCommandScreen, _OwnedClientWork
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
+    async def wait_for_ui(self, pilot, predicate, description, timeout=3):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            if time.monotonic() >= deadline:
+                self.fail("UI did not reach " + description)
+            await pilot.pause(.01)
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
@@ -83,7 +92,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     if fixture.controller.session["status"] == "plan_ready":
                         break
                 self.assertEqual(fixture.controller.session["status"], "plan_ready")
-                await pilot.pause(.1)
+                await self.wait_for_ui(pilot, lambda: "MODEL CANDIDATE" in "\n".join(line.text for line in app.query_one("#transcript").lines), "rendered proposal")
                 rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
                 self.assertIn("MODEL CANDIDATE", rendered)
                 self.assertIsNone(fixture.controller.session["approved_digest"])
@@ -192,13 +201,71 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("builder", fleet)
             self.assertIn("builder-2", fleet)
             app.action_box(2)
-            await pilot.pause(0.2)
+            await self.wait_for_ui(pilot, lambda: app.selected == "builder-2", "selected box builder-2")
             self.assertEqual(app.selected, "builder-2")
             self.assertIn("BOX builder-2", str(app.query_one("#context").render()))
             self.assertTrue(app.query_one("#box-transcript").display)
             self.assertFalse(app.query_one("#transcript").display)
             app.action_orchestrator()
             self.assertTrue(app.query_one("#transcript").display)
+
+    async def test_detach_waits_for_actual_controller_persistence_not_cancelled_future(self):
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+        path = self.workspace / "owned-client-finished"
+        def delayed_handle(raw, **kwargs):
+            started.set()
+            self.assertTrue(release.wait(2))
+            path.write_text("completed persistence\n")
+            finished.set()
+            return CommandResponse(messages=("finished",))
+        self.controller.handle = delayed_handle
+        app = CamolApp(self.controller, show_boot=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            app._submit("fixture request")
+            await self.wait_for_ui(pilot, started.is_set, "running controller request")
+            asyncio.get_running_loop().call_later(.05, release.set)
+            app.action_detach()
+        self.assertTrue(finished.is_set(), "run_test returned while controller persistence was still running")
+        self.assertTrue(app._client_work.idle.is_set())
+        self.assertEqual(path.read_text(), "completed persistence\n")
+
+    def test_shutdown_rejects_queued_tickets_and_detached_controller_requests(self):
+        ownership = _OwnedClientWork()
+        queued, running = ownership.reserve(), ownership.reserve()
+        self.assertTrue(ownership.start(running))
+        ownership.close()
+        self.assertFalse(ownership.start(queued))
+        self.assertFalse(ownership.idle.is_set())
+        self.assertIsNone(ownership.reserve())
+        ownership.finish(running)
+        self.assertTrue(ownership.idle.is_set())
+        before = self.controller.store.history([], 20)
+        self.controller.close_client()
+        self.assertIn("detached", self.controller.handle("this must never persist").messages[0])
+        self.assertEqual(self.controller.store.history([], 20), before)
+
+    async def test_two_connection_probes_release_serialization_before_detach_waits(self):
+        release, first_started = threading.Event(), threading.Event()
+        calls = []
+        def probe(provider, **kwargs):
+            calls.append(provider)
+            if len(calls) == 1:
+                first_started.set()
+                self.assertTrue(release.wait(2))
+            return []
+        self.controller.connections.refresh = probe
+        app = CamolApp(self.controller, show_boot=False)
+        with patch.object(app, "call_from_thread", side_effect=AssertionError("probe waits for UI callback")):
+            async with app.run_test(size=(100, 30)) as pilot:
+                app._probe_connections(login_provider="claude", login_returncode=0)
+                await self.wait_for_ui(pilot, first_started.is_set, "first blocked probe")
+                app._probe_connections(login_provider="codex", login_returncode=0)
+                await self.wait_for_ui(pilot, lambda: list(app._client_work.tickets.values()).count("running") == 2, "second serialized probe")
+                asyncio.get_running_loop().call_later(.05, release.set)
+                app.action_detach()
+        self.assertEqual(calls, ["claude", "codex"])
+        self.assertTrue(app._client_work.idle.is_set())
+        self.assertFalse(app._connection_probe_lock.locked())
 
     async def test_stream_waits_for_split_secret_then_redacts_before_display(self):
         app = CamolApp(self.controller, show_boot=False, discover_connections=False)
@@ -210,7 +277,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("abcdefghijklmnopqrstuvwxyz", rendered)
             self.assertIn("[REDACTED]", rendered)
 
-    async def test_connection_inventory_refreshes_in_background_on_startup(self):
+    async def test_startup_and_repeated_rail_render_are_cached_only_and_never_green(self):
         records = [
             _record(
                 "claude-cli",
@@ -221,20 +288,22 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 detail="Authenticated Claude CLI",
             )
         ]
-        original_probe = self.controller.connections.probe_all
-
-        def probe_all():
-            self.controller.connections.save(records)
-            return records
-
-        self.controller.connections.probe_all = Mock(side_effect=probe_all)
+        self.controller.connections.save(records)
+        self.controller.connections.probe_all = Mock(side_effect=AssertionError("startup probe"))
+        self.controller.connections.refresh = Mock(side_effect=AssertionError("startup refresh"))
         app = CamolApp(self.controller, show_boot=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(0.2)
+            with patch("camol.tui.shutil.which", return_value="/installed-only"):
+                app._render_dependency_rail()
             rail = str(app.query_one("#dependency-rail").render())
-            self.assertIn("■ claude", rail)
-            self.controller.connections.probe_all.assert_called_once_with()
-        self.controller.connections.probe_all = original_probe
+            self.assertIn("□ claude auth-observed", rail)
+            self.assertIn("□ docker installed; daemon?", rail)
+            self.assertIn("task unverified", rail)
+            self.assertNotIn("■", rail)
+            self.assertNotIn("↻", rail)
+            self.controller.connections.probe_all.assert_not_called()
+            self.controller.connections.refresh.assert_not_called()
 
     async def test_login_opens_keyboard_picker_and_enter_selects_provider(self):
         app = CamolApp(self.controller, show_boot=False, discover_connections=False)
@@ -331,10 +400,20 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             app._finish_connection_probe("claude", 0)
             await pilot.pause()
             self.assertEqual(self.controller.session["model"], "claude:fable")
-            self.assertIn("connected", str(app.query_one("#context").render()))
+            self.assertIn("auth-observed", str(app.query_one("#context").render()))
             rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
             self.assertIn("Claude connection confirmed", rendered)
             self.assertIn("model set to claude:fable", rendered)
+
+    async def test_failed_login_refresh_does_not_promote_cached_authentication(self):
+        self.controller.connections.save([_record("claude-cli", "anthropic", "cli", status="ready", runtime="claude")])
+        app = CamolApp(self.controller, show_boot=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._finish_connection_probe("claude", 0, False)
+            self.assertEqual(self.controller.session["model"], "manual")
+            rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+            self.assertIn("not a new confirmation", " ".join(rendered.split()))
 
     async def test_picker_reconnects_even_when_discovery_already_reports_connected(self):
         self.controller.connections.save([

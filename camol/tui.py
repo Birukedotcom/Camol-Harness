@@ -1,5 +1,6 @@
 """Textual terminal client for Camol's detachable orchestrator."""
 
+import asyncio
 import shutil
 import subprocess
 import threading
@@ -19,8 +20,48 @@ from textual.worker import WorkerCancelled
 
 from .app import SLASH_COMMANDS, CommandResponse, InteractiveController, SlashCommand
 from .boot import compose_boot
-from .connections import ConnectionError
+from .connections import ConnectionError, observation_label
 from .probes import Redactor
+
+
+class _OwnedClientWork:
+    """Track actual persistence, not a cancelled executor Future's lifetime."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.idle = threading.Event()
+        self.idle.set()
+        self.closed = False
+        self.tickets = {}
+
+    def reserve(self):
+        with self.lock:
+            if self.closed:
+                return None
+            ticket = object()
+            self.tickets[ticket] = "queued"
+            self.idle.clear()
+            return ticket
+
+    def start(self, ticket):
+        with self.lock:
+            if self.closed or ticket not in self.tickets:
+                return False
+            self.tickets[ticket] = "running"
+            return True
+
+    def finish(self, ticket):
+        with self.lock:
+            self.tickets.pop(ticket, None)
+            if not self.tickets:
+                self.idle.set()
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+            self.tickets = {key: value for key, value in self.tickets.items() if value == "running"}
+            if not self.tickets:
+                self.idle.set()
 
 
 class BootScreen(Screen):
@@ -118,7 +159,7 @@ class LoginProviderScreen(ModalScreen):
                     Option(
                         "{}  [{}]".format(
                             self.LABELS.get(provider, provider),
-                            "connected — reconnect" if self.statuses.get(provider) == "ready" else "sign in",
+                            "auth previously observed — reconnect" if self.statuses.get(provider) == "ready" else "sign in",
                         ),
                         id=provider,
                     )
@@ -284,7 +325,7 @@ class CamolApp(App):
     Screen { background: #030604; color: #e7eee9; }
     BootScreen { align: left top; padding: 1 1; }
     #boot-art { width: 100%; height: 100%; color: #68e892; }
-    #dependency-rail { height: 1; background: #07100a; color: #79d996; padding: 0 1; }
+    #dependency-rail { height: auto; max-height: 3; background: #07100a; color: #79d996; padding: 0 1; }
     #context { height: 1; background: #0b1710; color: #f1f7f3; padding: 0 1; }
     #transcript, #box-transcript {
         height: 1fr;
@@ -369,6 +410,8 @@ class CamolApp(App):
         self._connection_probe_lock = threading.Lock()
         self._slash_palette_open = False
         self._slash_palette_timer = None
+        self._client_work = _OwnedClientWork()
+        self._client_loop = None
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -385,13 +428,14 @@ class CamolApp(App):
             yield Footer()
 
     async def on_mount(self) -> None:
+        self._client_loop = asyncio.get_running_loop()
         self._render_existing_messages()
         self._render_dependency_rail()
         await self._refresh_fleet()
         self.query_one("#prompt", PromptArea).focus()
         self.set_interval(1.0, self._refresh_fleet)
-        if self.discover_connections:
-            self._probe_connections()
+        # Startup is cached-only, including when legacy callers pass
+        # discover_connections=True. Refresh requires an explicit command/login.
         if self.show_boot:
             self.push_screen(BootScreen(self.boot_duration))
 
@@ -418,18 +462,17 @@ class CamolApp(App):
         records = {record["connection_id"]: record for record in self.controller.connections.load()}
         def provider(connection_id: str, binary: str) -> str:
             record = records.get(connection_id)
-            if record and record["status"] == "ready":
-                return "■ " + binary
-            if record and record["status"] in {"auth_required", "error"}:
-                return "□ " + binary
-            if not record and self.discover_connections and shutil.which(binary):
-                return "↻ " + binary
-            return ("□ " if shutil.which(binary) else "· ") + binary
+            if record:
+                return ("! " if record["status"] in {"auth_required", "error"} else "□ ") + binary + " " + observation_label(record)
+            return ("□ " + binary + " installed" if shutil.which(binary) else "· " + binary + " absent")
         parts = [
-            "■ git" if shutil.which("git") else "· git",
-            "■ docker" if shutil.which("docker") else "· docker",
+            "task unverified",
+            "□ git installed" if shutil.which("git") else "· git absent",
+            "□ docker installed; daemon?" if shutil.which("docker") else "· docker absent",
             provider("claude-cli", "claude"),
             provider("codex-cli", "codex"),
+            *(["□ local " + observation_label(records["local-openai"])] if "local-openai" in records else []),
+            *(["↻ explicit refresh"] if self.controller.connection_refresh_active.is_set() or self._connection_probe_lock.locked() else []),
             "model=" + self.controller.session["model"],
             "effort=" + self.controller.session["effort"],
         ]
@@ -442,8 +485,9 @@ class CamolApp(App):
         model = self.controller.session["model"]
         provider = model.partition(":")[0]
         connection_id = {"claude": "claude-cli", "codex": "codex-cli"}.get(provider)
-        connected = connection_id is not None and records.get(connection_id, {}).get("status") == "ready"
-        suffix = " · connected" if connected else ""
+        record = records.get(connection_id) if connection_id else None
+        suffix = " · " + observation_label(record) if record else " · connection unverified"
+        suffix += " · task unverified"
         self.query_one("#context", Static).update("ORCHESTRATOR — model={}{}".format(model, suffix))
 
     def _probe_connections(
@@ -452,32 +496,33 @@ class CamolApp(App):
         login_provider: Optional[str] = None,
         login_returncode: Optional[int] = None,
     ) -> None:
-        """Refresh account inventory without delaying boot or blocking input."""
+        """Refresh only an explicitly chosen login provider; never on startup."""
+        if login_provider not in {"claude", "codex"}:
+            return
+        ticket = self._client_work.reserve()
+        if ticket is None:
+            return
         def probe() -> None:
-            # A disposable startup refresh may be skipped if another scan owns the
-            # lock. A post-login refresh is a state transition and must queue behind
-            # that scan rather than leaving the UI stuck at "verifying".
-            if not self._connection_probe_lock.acquire(blocking=login_provider is not None):
+            if not self._client_work.start(ticket):
                 return
+            # Serialize explicit post-login observations rather than leaving a
+            # queued login in an indeterminate "verifying" state.
+            self._connection_probe_lock.acquire()
+            refreshed = False
             try:
                 try:
-                    self.controller.connections.probe_all()
+                    self.controller.connections.refresh(login_provider, cancel_event=self.controller._cancel_event)
+                    refreshed = True
                 except (ConnectionError, OSError, ValueError):
-                    # Per-provider failures are normally recorded by probe_all. A
-                    # registry failure must not make the client itself unavailable.
-                    pass
-                try:
-                    self.call_from_thread(
-                        self._finish_connection_probe,
-                        login_provider,
-                        login_returncode,
-                    )
-                except (ConnectionError, RuntimeError):
-                    # The terminal is disposable. A detach may race this read-only
-                    # inventory refresh and must never wait for it.
+                    # A registry/probe failure must not make the client itself
+                    # unavailable or promote an older authentication observation.
                     pass
             finally:
                 self._connection_probe_lock.release()
+                self._client_work.finish(ticket)
+            # Release both probe serialization and persistence ownership before
+            # scheduling a view update. No probe waits for an unmounting UI pump.
+            self._schedule_ui(self._finish_connection_probe, login_provider, login_returncode, refreshed)
 
         threading.Thread(target=probe, name="camol-connection-probe", daemon=True).start()
 
@@ -485,9 +530,15 @@ class CamolApp(App):
         self,
         login_provider: Optional[str],
         login_returncode: Optional[int],
+        refresh_succeeded: bool = True,
     ) -> None:
+        if self._client_work.closed:
+            return
         self._render_dependency_rail()
         if login_provider is None:
+            return
+        if not refresh_succeeded:
+            self.query_one("#transcript", RichLog).write("camol > Login status refresh failed; cached authentication is not a new confirmation. Use /connections refresh " + login_provider)
             return
         log = self.query_one("#transcript", RichLog)
         response = self.controller.confirm_provider_connection(
@@ -600,17 +651,27 @@ class CamolApp(App):
         prompt.move_cursor((0, len(value)))
         prompt.focus()
 
+    def _submit(self, text: str):
+        ticket = self._client_work.reserve()
+        if ticket is not None:
+            return self._run_command(ticket, text)
+
     @work(thread=True, group="commands", exclusive=False)
-    def _submit(self, text: str) -> None:
+    def _run_command(self, ticket, text: str) -> None:
+        if not self._client_work.start(ticket):
+            return
         stream_state = {"text": "", "suppressed": False}
-        response = self.controller.handle(text, on_chunk=lambda chunk: self._stream_chunk(chunk, stream_state))
         try:
-            self.call_from_thread(self._apply_response, response)
-        except RuntimeError:
-            # Detach can race a cancelled provider's final response.
-            pass
+            response = self.controller.handle(text, on_chunk=lambda chunk: self._stream_chunk(chunk, stream_state))
+        finally:
+            # Release persistence ownership before asking the event loop to
+            # render: unmount must never deadlock against call_from_thread.
+            self._client_work.finish(ticket)
+        self._schedule_ui(self._apply_response, response)
 
     def _stream_chunk(self, chunk: str, stream_state=None) -> None:
+        if self._client_work.closed:
+            return
         state = stream_state if stream_state is not None else {"text": self.stream_text, "suppressed": self._stream_suppressed}
         if state["suppressed"]:
             return
@@ -620,7 +681,7 @@ class CamolApp(App):
             state["text"] = ""
             if stream_state is None:
                 self.stream_text, self._stream_suppressed = "", True
-            self.call_from_thread(self.query_one("#stream", Static).update, "Provider output is lengthy; waiting for the final redacted response…")
+            self._schedule_stream("Provider output is lengthy; waiting for the final redacted response…")
             return
         # Keep the trailing token private until it is complete: credentials can
         # arrive split across arbitrary provider chunks.
@@ -628,12 +689,31 @@ class CamolApp(App):
         visible = Redactor().text(state["text"][:boundary + 1])[-4000:]
         if stream_state is None:
             self.stream_text, self._stream_suppressed = state["text"], state["suppressed"]
-        self.call_from_thread(
-            self.query_one("#stream", Static).update,
-            "orchestrator ~ " + visible,
-        )
+        self._schedule_stream("orchestrator ~ " + visible)
+
+    def _schedule_stream(self, text):
+        # Streaming must never hold controller persistence open while waiting
+        # for an unmounting message pump to service a synchronous UI callback.
+        def render():
+            try:
+                self.query_one("#stream", Static).update(text)
+            except NoMatches:
+                pass
+        self._schedule_ui(render)
+
+    def _schedule_ui(self, callback, *args):
+        def render():
+            if not self._client_work.closed:
+                callback(*args)
+        if self._client_loop is not None and not self._client_work.closed:
+            try:
+                self._client_loop.call_soon_threadsafe(render)
+            except RuntimeError:
+                pass
 
     def _apply_response(self, response: CommandResponse) -> None:
+        if self._client_work.closed:
+            return
         self.query_one("#stream", Static).update("")
         log = self.query_one("#transcript", RichLog)
         if response.clear_transcript:
@@ -743,11 +823,17 @@ class CamolApp(App):
         prompt.focus()
 
     def action_detach(self) -> None:
-        self.controller.cancel_active()
+        self._client_work.close()
+        self.controller.close_client()
         self.exit()
 
-    def on_unmount(self) -> None:
-        self.controller.cancel_active()
+    async def on_unmount(self) -> None:
+        self._client_work.close()
+        self.controller.close_client()
+        # Textual cancellation only cancels the Future, not its Python thread.
+        # Wait for actual controller persistence to settle before callers may
+        # release this session's files; never stop the authoritative supervisor.
+        await asyncio.to_thread(self._client_work.idle.wait)
 
 
 def run_tui(
