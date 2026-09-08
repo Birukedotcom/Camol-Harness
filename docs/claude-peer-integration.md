@@ -92,3 +92,25 @@ request ran. The installed Claude command was used only for help/parser inspecti
 help acceptance does not prove settings application or MCP initialization.
 Native account login, required-startup behavior, real tool use, shell capability
 exposure and managed-policy interactions remain live acceptance gates.
+
+## Next gate: withhold the prompt until startup is proven
+
+The reviewed upstream Python Agent SDK HEAD was
+`efd4d865ef1795daffee3cd24cce45307aed8a51`. Its
+[control implementation](https://github.com/anthropics/claude-agent-sdk-python/blob/efd4d865ef1795daffee3cd24cce45307aed8a51/src/claude_agent_sdk/_internal/query.py)
+separates initialization and `mcp_status` control requests from user messages;
+its [CLI transport](https://github.com/anthropics/claude-agent-sdk-python/blob/efd4d865ef1795daffee3cd24cce45307aed8a51/src/claude_agent_sdk/_internal/transport/subprocess_cli.py)
+uses streaming JSON input. This suggests a staged-input adapter that sends only
+bounded initialization/status controls, requires both exact native server status
+and the owner endpoint's authenticated handshake, then releases the task prompt.
+This is a candidate design, not verified native behavior or implemented gating.
+
+Implement it behind the existing outer sandbox with bounded concurrent stdout
+capture, exact request IDs, no permission-grant callbacks, no agent-proposed
+configuration changes, launch reauthorization immediately before prompt dispatch,
+and cancellation/process-tree cleanup during every phase. Retained phase evidence
+must distinguish no prompt sent from unknown provider billing; startup alone
+cannot manufacture a zero-cost receipt. Verify malformed/foreign/duplicate
+control replies, early exit, initialization timeout, expired lease, detached
+children and recovery without resending an uncertain prompt. A new strict policy
+must not silently reinterpret the schema4 pre-completion contract.

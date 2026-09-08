@@ -728,3 +728,12 @@ proposed flags. No prompt or print mode was supplied to that real executable.
 This proves available option syntax, not settings enforcement, OAuth viability,
 MCP initialization, model use or a pre-inference readiness guarantee. All provider
 execution and capability receipts in the seven new tests are controlled fixtures.
+
+The exact product modules at `07e8463392ae75d45cfdf4cc39525d668634d82b` were built
+into an sdist, rebuilt into a wheel and installed into a fresh Python 3.12
+environment with TUI/graph extras and the test-only MCP SDK. **44 installed-package
+tests passed in 45.965 seconds**, including both providers' peer fixtures, cached
+recovery, three-relay routing, the independent MCP SDK, and cold/warm parser
+shadowing checks. Both parent and child selected the installed package. The full
+Claude-successor Python 3.9 suite is running; the full Python 3.12 native-predecessor
+rerun is a separate process. Neither unfinished gate is reported as passing.
