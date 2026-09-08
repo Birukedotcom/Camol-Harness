@@ -13,6 +13,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import unicodedata
 
 from .archive_io import ArchiveRoot
 from .git_safety import GIT_SAFETY_ARGS
@@ -79,8 +80,10 @@ def _oid(value):
 
 def _path(value):
     ArchiveRoot._parts(value)
-    if any(part.rstrip(" .").casefold() == ".git" or ":" in part for part in value.split("/")):
-        raise RecoveryError("recovery content cannot replace Git control files")
+    for part in value.split("/"):
+        normalized = unicodedata.normalize("NFKC", part).rstrip(" .").casefold()
+        if normalized == ".git" or re.fullmatch(r"\.?git~[0-9]+", normalized) or ":" in part or any(unicodedata.category(char) in {"Cf", "Cc"} for char in part):
+            raise RecoveryError("recovery content cannot use Git control aliases or ambiguous path characters")
     return value
 
 

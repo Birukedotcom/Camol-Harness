@@ -137,7 +137,8 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(self.archive.exists())
 
     def test_receipt_paths_cannot_install_git_controls(self):
-        for relative in (".git/config", ".GiT/hooks/post-checkout", "directory/.git/config"):
+        for relative in (".git/config", ".GiT/hooks/post-checkout", "directory/.git/config",
+                         ".g\u200cit/hooks/post-checkout", ".ｇｉｔ/hooks/other", "GIT~1/hooks/other"):
             items = [dict(item, path=relative) for item in self.salvage.untracked]
             salvage = replace(self.salvage, untracked=tuple(items))
             with self.subTest(path=relative), self.assertRaises(RecoveryError):

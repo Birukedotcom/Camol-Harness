@@ -88,7 +88,10 @@ No checkout filters, hooks, templates, provider command, project script or netwo
 protocol is enabled. Executable tracked files and tracked symbolic links are
 preserved as data; they are not run. Links are never followed when writing another
 member. Untracked paths cannot install `.git` controls or collide with tracked
-content. No remotes or borrowed object-store links are configured.
+content. The path contract conservatively rejects compatibility-normalized Git
+control names, short-name-style aliases, Unicode format/control characters,
+backslashes and alternate-stream colons; unsupported filenames are not renamed.
+No remotes or borrowed object-store links are configured.
 
 `verify` really reconstructs into private temporary storage and removes its own
 scratch copy afterward. `restore` deliberately produces plaintext project files
