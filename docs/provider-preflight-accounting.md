@@ -50,6 +50,10 @@ per-request probe ceiling, not a new combined worker-plus-planning budget.
   oversized requests. Success is a direct CLI result, not proof that background
   helpers or remote compute ceased. Hostile descendants escaping with `setsid`
   are not claimed to be contained by this mechanism.
+  Embedded/native preflight accepts a cancellation event: cancellation before
+  dispatch spends nothing; cancellation after dispatch retains unknown usage
+  and stops the owned client process group. It cannot prove remote computation
+  or billing has stopped.
 - The ledger retains operation IDs, digests, timestamps, finite usage and typed
   reasons. It never retains raw provider output, errors, prompts or credentials.
 - `provider-preflights` and its lock/records must be private owner-only files.

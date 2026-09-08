@@ -411,6 +411,7 @@ def create_claude_capability(
     now: Optional[datetime] = None,
     runner: Any = subprocess.run,
     operation_id: Optional[str] = None,
+    cancel_event: Any = None,
 ) -> ProviderCapabilityReceipt:
     """Run one explicit no-tools request and atomically persist its receipt.
 
@@ -421,9 +422,12 @@ def create_claude_capability(
         raise ProviderError("Claude preflight requires an anthropic claude_cli profile")
     if not accept_spend:
         raise ProviderError("provider preflight requires explicit --accept-spend")
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProviderError("provider preflight cancelled before inspection or dispatch")
     if runner is subprocess.run:
+        from functools import partial
         from .preflight_process import bounded_preflight_run
-        runner = bounded_preflight_run
+        runner = partial(bounded_preflight_run, cancel_event=cancel_event)
     runtime = shutil.which(profile.runtime_binary)
     if not runtime:
         raise ProviderError("provider runtime is not installed on PATH")
@@ -474,6 +478,8 @@ def create_claude_capability(
 
     try:
         with PreflightJournal(state_dir) as journal:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProviderError("provider preflight cancelled before dispatch")
             old = journal.reserve(intent)
             if old is not None:
                 receipt = ProviderCapabilityReceipt.from_dict(old["outcome"]["receipt"])
@@ -531,8 +537,13 @@ def create_claude_capability(
                 receipt = _capability_receipt(profile, target_id, maximum, observed, request_digest,
                                               resolved, input_tokens, output_tokens, cost_micros)
             except BaseException as error:
+                from .preflight_process import PreflightProcessCancelled
                 if isinstance(error, subprocess.TimeoutExpired):
                     reason = "timeout"
+                elif isinstance(error, PreflightProcessCancelled):
+                    reason = "interrupted"
+                    if not error.dispatched:
+                        usage.update(input_tokens=0, output_tokens=0, cost_usd_micros=0)
                 elif isinstance(error, (KeyboardInterrupt, SystemExit)):
                     reason = "interrupted"
                 record(journal, "unknown" if usage["cost_usd_micros"] is None else "failed", reason)
