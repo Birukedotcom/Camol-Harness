@@ -161,17 +161,37 @@ def _verify_tool_free_cli(executable: str, workspace: Path, runner: Any, *, extr
         raise ConversationError("proposal planning runtime cannot be executable code inside the source workspace")
     # --help is local CLI introspection, not an inference request. Do not let
     # project-local customization influence even this capability probe.
+    if runner is subprocess.run:
+        from .preflight_process import bounded_preflight_run
+        runner = bounded_preflight_run
     with tempfile.TemporaryDirectory(prefix="camol-planner-capability-") as directory:
         try:
             completed = runner([str(binary), "--safe-mode", "--help"], stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, cwd=directory, env=_environment(), timeout=10, check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ConversationError("cannot verify the Claude no-tools runtime flags; no planning request sent") from error
-    output = completed.stdout.decode("utf-8", "replace")
-    required = ("--tools", "--safe-mode", "--strict-mcp-config", "--mcp-config", "--setting-sources",
-                "--disable-slash-commands", "--permission-prompts", "--max-turns") + tuple(extra_flags)
-    if completed.returncode or any(flag not in output for flag in required):
-        raise ConversationError("installed Claude runtime lacks verified no-tools controls; no planning request sent")
+        output = completed.stdout.decode("utf-8", "replace")
+        required = ("--tools", "--safe-mode", "--strict-mcp-config", "--mcp-config", "--setting-sources",
+                    "--disable-slash-commands", "--permission-prompts", "--max-turns") + tuple(extra_flags)
+        missing = [flag for flag in required if flag not in output]
+        # Some documented CLI flags are hidden from help. Do not drop the turn
+        # limit or assume support from a version string. A deliberately invalid
+        # value with --help proves the installed parser recognizes the hidden
+        # numeric option without giving it a prompt or selecting print mode.
+        if completed.returncode == 0 and missing == ["--max-turns"]:
+            try:
+                parsed = runner([str(binary), "--safe-mode", "--max-turns", "--help"], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, cwd=directory, env=_environment(), timeout=10, check=False)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise ConversationError("cannot verify the hidden Claude turn-limit control; no planning request sent") from error
+            recognized = {
+                "error: option '--max-turns <turns>' argument '--help' is invalid. must be a number",
+                "error: option '--max-turns <turns>' argument missing",
+            }
+            if parsed.returncode != 0 and not parsed.stdout and parsed.stderr.decode("utf-8", "replace").strip() in recognized:
+                missing = []
+        if completed.returncode or missing:
+            raise ConversationError("installed Claude runtime lacks verified no-tools controls; no planning request sent")
 
 
 def _environment() -> Dict[str, str]:

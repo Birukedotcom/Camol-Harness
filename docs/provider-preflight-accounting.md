@@ -41,6 +41,8 @@ per-request probe ceiling, not a new combined worker-plus-planning budget.
 - Local help inspection must report the supported all-tools-off controls before
   any model request. The probe passes empty tools, empty strict MCP configuration
   and empty setting sources; it uses a disposable neutral cwd, never source cwd.
+  The documented hidden turn limit has an additional non-inference parser check;
+  see [installed control compatibility](provider-control-compatibility.md).
 - Workspace/state executables are rejected. The installed runtime is still
   trusted host software; flag introspection is not a security proof of its code.
 - Native subprocess output is bounded to 1 MiB total, input to 4 KiB, with an

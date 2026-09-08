@@ -250,6 +250,28 @@ create_claude_capability(load_model_profile(Path(WORKSPACE), 'profile.yaml'), ta
         with self.assertRaises((PreflightJournalError, OSError)):
             PreflightJournal(self.state)
 
+    def test_hidden_turn_flag_requires_recognized_local_parser_error(self):
+        class Hidden(Help):
+            stdout = Help.stdout.replace(b"--max-turns", b"")
+        for accepted in (False, True):
+            calls = []
+            def runner(argv, **kwargs):
+                calls.append(argv)
+                if argv[-3:] == ["--safe-mode", "--max-turns", "--help"]:
+                    return subprocess.CompletedProcess(argv, 1, b"", b"error: option '--max-turns <turns>' argument '--help' is invalid. must be a number\n"
+                                                       if accepted else b"error: unknown option '--max-turns'\n")
+                if "--help" in argv:
+                    return Hidden()
+                return Completed()
+            if accepted:
+                self.call(runner, "supported-hidden")
+                self.assertEqual(len([argv for argv in calls if "-p" in argv]), 1)
+            else:
+                with self.assertRaisesRegex(ProviderError, "no-tools"):
+                    self.call(runner, "unsupported-hidden")
+                self.assertFalse(any("-p" in argv for argv in calls))
+                self.assertFalse(self.state.exists())
+
     def test_symlink_fifo_and_unknown_records_are_fail_closed(self):
         with PreflightJournal(self.state):
             pass
