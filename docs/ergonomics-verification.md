@@ -1157,3 +1157,18 @@ the source policy, default/opted-in graph attacks, archive boundary, all capture
 workspace recovery cases, controller state/commands and extended CLI workflows.
 The explicit-policy test confirms that mutation through another alias still
 refuses the snapshot and that later ordinary archive reads stay strict.
+
+Product `c16dfdf02612e23ef6682011773336d3da73bedd` is pushed under the owner's
+identity. Its final sdist-to-wheel build, installed in a fresh disposable Python
+3.12 environment with TUI/graph/recovery extras, passed **107 installed-package
+tests in 42.517 seconds**. Camol was imported from `site-packages` before source
+fixtures, and the four changed modules plus the inherited subprocess helper were
+byte-compared with source. The installed CLI crawled the actual managed checkout
+with the explicit policy, producing **388 nodes and 2,785 edges**, retaining the
+policy warning and incomplete observation rather than claiming runtime readiness.
+
+Full Python 3.12 and 3.9 runs for this exact product have started; their terminal
+results remain separate gates. The earlier graph-boundary full runs also remain
+active. No user installation, source-file link count, account configuration or
+model quota was changed to run these checks. Main remains clean at
+`cca1b4bdfe222db7be37621157fe21aa4bbe4517`.
