@@ -1104,3 +1104,12 @@ preflight cancellation/accounting and actual graph/revision CLI coverage.
 These are focused source results. Installed-package and whole-suite gates for
 this new checkpoint remain separate; running predecessor suites cannot establish
 them. Main and the user installation remain unchanged.
+
+Product `f760eabd931b1a660aada014534b2363df8783da` is committed and pushed
+under the owner's identity. Its fresh sdist-to-wheel installation passed
+**49 installed-package tests in 14.953 seconds** with TUI/graph/recovery extras.
+The installed package was selected before source fixtures and both changed
+product modules matched their source bytes. Python 3.12 and 3.9 full suites for
+this exact product have started with verbose logs and stall diagnostics; they
+remain unverified until terminal results are recorded. The earlier run-recovery
+full suites are separate jobs, not substitutes for this checkpoint's gate.
