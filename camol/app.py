@@ -91,6 +91,8 @@ SLASH_COMMANDS = (
     SlashCommand("/boxes", "List the N-box worker pool", run_from_palette=True),
     SlashCommand("/overview", "See boxes, dependencies and attention together", run_from_palette=True),
     SlashCommand("/switch", "Search and switch read-only box panes", takes_value=True, run_from_palette=True),
+    SlashCommand("/pin", "Pin/unpin an exact box; no arguments lists pins", takes_value=True, run_from_palette=True),
+    SlashCommand("/group", "Organize an exact box under a display-only group", takes_value=True, run_from_palette=True),
     SlashCommand("/box", "Open one read-only box view", takes_value=True),
     SlashCommand("/events", "Read new durable run events", run_from_palette=True),
     SlashCommand("/history", "Show retained conversation history", run_from_palette=True),
@@ -143,6 +145,8 @@ HELP = """Commands
   /status                  current local session and supervisor state
   /boxes                   list the arbitrary-N worker pool
   /switch [WORDS]          searchable box picker; Alt+B in the TUI
+  /pin [BOX [on|off]]      persist exact-box shortcut; default on
+  /group [BOX NAME]        assign a display group; BOX --clear removes it
   /overview [--attention] [--json] [--offset N] [--limit N]
                             inspect boxes and task dependencies without starting work
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
@@ -627,6 +631,8 @@ class InteractiveController:
             return self._overview(arguments)
         if command == "/switch":
             return self._switch(arguments)
+        if command in {"/pin", "/group"}:
+            return self._organize_panes(command, arguments)
         if command == "/models":
             return self._models(arguments)
         if command == "/watch":
@@ -1291,9 +1297,11 @@ class InteractiveController:
             return state, "plan_only"
 
     def _switch(self, arguments):
-        from .pane_switcher import switch_snapshot, filter_rows, row_label
+        from .pane_switcher import switch_snapshot, filter_rows, row_label, pane_scope
+        from .pane_organization import load
         state, basis = self._pane_state()
-        snapshot = switch_snapshot(self.session, state, basis)
+        organization = load(self.store.project_dir / "pane-organization.json", pane_scope(self.session, state))
+        snapshot = switch_snapshot(self.session, state, basis, organization)
         if arguments and arguments[0] == "--select":
             if len(arguments) != 4 or arguments[2] != "--scope":
                 raise InteractiveError("usage: /switch --select KEY --scope DIGEST")
@@ -1320,6 +1328,38 @@ class InteractiveController:
             lines.append("Showing first 50; refine search or use the paginated TUI picker.")
         lines.append("TUI: arrows/Enter select; Escape returns to composer. Line mode: /box EXACT_ID.")
         return CommandResponse(messages=("\n".join(lines),), switcher=snapshot)
+
+    def _organize_panes(self, command, arguments):
+        from .pane_switcher import pane_scope
+        from .pane_organization import load, save, update
+        state, basis = self._pane_state()
+        scope = pane_scope(self.session, state)
+        path = self.store.project_dir / "pane-organization.json"
+        preferences = load(path, scope)
+        if arguments:
+            target = arguments[0]
+            if target not in state["agents"]:
+                raise InteractiveError("pane organization requires an exact box ID, not a number or prefix")
+            if command == "/pin":
+                if len(arguments) > 2 or (len(arguments) == 2 and arguments[1] not in {"on", "off"}):
+                    raise InteractiveError("usage: /pin [BOX [on|off]]")
+                preferences = update(preferences, target, pinned=len(arguments) == 1 or arguments[1] == "on")
+            else:
+                if len(arguments) < 2:
+                    raise InteractiveError("usage: /group [BOX NAME|BOX --clear]")
+                if arguments[1:] == ["--clear"]:
+                    preferences = update(preferences, target, clear_group=True)
+                elif any(part.startswith("--") for part in arguments[1:]):
+                    raise InteractiveError("usage: /group [BOX NAME|BOX --clear]")
+                else:
+                    preferences = update(preferences, target, group=" ".join(arguments[1:]))
+            # handle() holds the shared project transaction across reload/edit/save.
+            save(path, preferences)
+        lines = ["PANE ORGANIZATION | run={} | {} | scope={}".format(state["run_id"], basis, scope),
+                 "Display only: task scope, leases, approvals and budgets are unchanged.",
+                 "Pins (in shortcut order): " + (", ".join(preferences["pins"]) or "none")]
+        lines.extend("{} → {}".format(box, group) for box, group in sorted(preferences["groups"].items()))
+        return self._respond("\n".join(lines))
 
     def _history(self, arguments: Sequence[str]) -> CommandResponse:
         if len(arguments) > 1:
@@ -1594,6 +1634,25 @@ class InteractiveController:
         ]
 
     def box_summaries(self) -> List[Dict[str, str]]:
+        from .pane_switcher import pane_scope
+        from .pane_organization import load, PaneOrganizationError
+        boxes = self._box_summaries()
+        plan = self.session.get("plan")
+        if not boxes or not plan or not plan.get("runbook"):
+            return boxes
+        scope = pane_scope(self.session, dict(plan_digest=runbook_digest(plan["runbook"]), agents={box["box_id"]: {} for box in boxes}))
+        try:
+            preferences = load(self.store.project_dir / "pane-organization.json", scope)
+        except PaneOrganizationError:
+            return [dict(box, pinned=False, custom_group="", organization_error="pane preferences unavailable; /pin reports the error") for box in boxes]
+        order = {box: index for index, box in enumerate(preferences["pins"])}
+        for box in boxes:
+            box.update(pinned=box["box_id"] in order, custom_group=preferences["groups"].get(box["box_id"], ""))
+        if order or preferences["groups"]:
+            boxes.sort(key=lambda box: (order.get(box["box_id"], 1001), not bool(box["custom_group"]), box["custom_group"].casefold(), box["box_id"]))
+        return boxes
+
+    def _box_summaries(self) -> List[Dict[str, str]]:
         try:
             status = self._control("status")
         except (SupervisorError, OSError):
@@ -1628,10 +1687,14 @@ class InteractiveController:
             return self._respond("No boxes exist yet. Complete /grill to derive the N-box pool.")
         attention = {"blocked", "waiting"}
         lines = ["BOXES — ■ recorded workspace, □ no live connection proven, ! attention"]
+        if any(box.get("organization_error") for box in boxes):
+            lines.append("WARNING: pane preferences unavailable; showing unorganized recorded boxes. No preferences were replaced.")
         for index, box in enumerate(boxes, 1):
             mark = "!" if box["status"] in attention | {"unavailable"} else "■" if box.get("connected") == "yes" else "□"
             lines.append("{} {:>2} {:<18} {:<12} {}{}".format(mark, index, box["box_id"], box["status"], box["task_id"],
                 " [" + box["basis"] + "]" if box.get("basis") else ""))
+            if box.get("pinned") or box.get("custom_group"):
+                lines.append("     {}{}".format("★ pinned " if box.get("pinned") else "", box.get("custom_group", "")))
         return self._respond("\n".join(lines))
 
     def _box(self, arguments: Sequence[str]) -> CommandResponse:

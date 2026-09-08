@@ -238,8 +238,11 @@ shortcuts, not permanent roles or a fixed worker count.
 adapter words, use arrows and Enter, and page through large pools with PageUp/
 PageDown. Escape preserves the unsent composer draft. `/overview` shows task
 dependencies and attention alongside the boxes. Both views use recorded snapshots,
-not live connection/readiness proof; selection never starts work. Pins, custom
-groups, split/grid tiling and scoped box messaging remain implementation gates.
+not live connection/readiness proof; selection never starts work. `/pin BOX on|off`
+persists exact-box shortcuts and `/group BOX NAME` adds searchable display groups.
+They are scoped to the current run/plan, not execution grants; a revision does not
+inherit pins for reused box names. Split/grid tiling and scoped box messaging remain
+implementation gates.
 
 `camol box list`, `camol box resolve BOX_ID` and `camol box read BOX_ID` expose
 retained box identity/evidence without a supervisor or TUI. All require an explicit

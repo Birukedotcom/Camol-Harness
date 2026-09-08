@@ -162,3 +162,28 @@ source tree. This does not cover real accounts, models, remote hosts or cloud.
 The full-suite result above belongs to predecessor `4df9a3b`; the offline-reader
 successor still requires its own full-suite run. Durable messaging, pins/groups
 and tiled layouts are not implemented by this observation-only bridge.
+
+## Persistent pane organization (successor development checkpoint)
+
+`/pin` and `/group` now persist owner-private, exact-current-plan display settings
+without changing the session schema or kernel authority. The organization,
+switcher, controller, session, TUI, actual terminal and offline inspection group
+passed **99 tests** on Python 3.12 (**31.798 seconds**) and Python 3.9
+(**33.962 seconds**). Eight new organization tests cover idempotence, ordering,
+two-client updates, restart, scope changes, unknown targets, malformed/linked/FIFO
+records, bounds, lock contention and unchanged execution authority. A new composer
+test submits both commands, checks the bottom pin, searches a literal multiword
+group, selects its exact box and preserves the unsent draft.
+
+The final corruption-path test caught the footer interpreting a bracketed warning
+as Rich markup. It now renders literal text: damaged preferences show an explicit
+warning without closing the client or changing its selected box. Final focused
+checks passed on both runtimes (the ten-test Python 3.9 check took 1.151 seconds).
+
+A fresh wheel rebuilt from the source distribution was installed with TUI/graph
+extras outside the source checkout. **11 installed-package checks passed in 2.626
+seconds**, including all eight organization tests, the composer/corrupt-footer
+test and two actual PTY tests for boot, box search and Ctrl+C. No model, provider
+account or remote host was used. Whole-suite runs at frozen predecessor
+`644a560575d68da3ecf464dc045a462213e1fa79` remain separate pending evidence;
+they do not cover this successor. Tiling and durable messaging remain open.

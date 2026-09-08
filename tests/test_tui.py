@@ -112,6 +112,45 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await self.wait_for_ui(pilot, lambda: app.selected == "orchestrator", "orchestrator selected")
 
+    async def test_pin_and_group_from_composer_reorder_shortcut_and_search(self):
+        import json
+        from tests.test_pane_switcher import PaneSwitcherTests
+        fixture = PaneSwitcherTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        target = fixture.document["agents"][-1]["id"]
+        path = fixture.controller.store.project_dir / "pane-organization.json"
+        app = CamolApp(fixture.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            prompt = app.query_one("#prompt", PromptArea)
+            prompt.load_text("/pin " + target)
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: path.exists() and not fixture.controller._command_lock.locked(), "pin persisted")
+            await app._refresh_fleet()
+            self.assertEqual(app.boxes[0]["box_id"], target)
+            self.assertIn("★", str(app.query_one("#fleet").render()))
+            prompt.load_text('/group ' + target + ' "[red] API build"')
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: not fixture.controller._command_lock.locked()
+                and target in json.loads(path.read_text())["groups"], "group persisted")
+            prompt.load_text("unsent draft")
+            await pilot.press("alt+b")
+            await self.wait_for_ui(pilot, lambda: isinstance(app.screen, BoxSwitcherScreen), "group picker")
+            app.screen.query_one("#box-picker-input", Input).value = "API build"
+            await pilot.pause()
+            options = app.screen.query_one("#box-picker-options", OptionList)
+            self.assertEqual(options.option_count, 1)
+            self.assertIn("[red] API build", str(options.get_option_at_index(0).prompt))
+            await pilot.press("enter")
+            await self.wait_for_ui(pilot, lambda: app.in_box and app.selected == target, "group selection")
+            self.assertEqual(prompt.text, "unsent draft")
+            self.assertIsNone(fixture.controller.session["approved_digest"])
+            fixture.controller.converse_fn.assert_not_called()
+            path.write_bytes(b"invalid preference record")
+            await app._refresh_fleet()
+            self.assertIn("preferences unavailable", str(app.query_one("#fleet").render()))
+            self.assertEqual(app.selected, target)
+
     async def test_box_picker_paginates_large_fleet_and_survives_narrow_resize(self):
         from camol.overview import planned_state
         from camol.pane_switcher import switch_snapshot

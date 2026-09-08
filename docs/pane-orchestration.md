@@ -38,7 +38,8 @@ Connected transport, account observation and task readiness are separate indicat
 | `/box next`, `/box previous` | Traverse worker views from the terminal | Implemented |
 | `/usage run`, `/debug inbox`, `/gate TASK` | Accounting, failed-evaluator inbox and gate detail | Implemented |
 | `/switch [WORDS]`, `Alt+B` | Search current-run box/task/status/adapter metadata, grouped by orchestrator/attention/workers; arrows/Enter, preserved draft | Implemented |
-| `/layout focus\|split\|grid`, `/pin BOX`, `/group BOX NAME` | Client-only tiling, pinned monitoring and organization | Planned |
+| `/pin [BOX [on\|off]]`, `/group [BOX NAME\|BOX --clear]` | Persistent current-plan pins and display groups | Implemented; no authority change |
+| `/layout focus\|split\|grid` | Client-only tiled monitoring | Planned |
 | `camol box list\|resolve\|read` | Scoped observation using explicit run/box IDs, including stopped runs | Implemented; no message delivery or execution grant |
 | `camol box message` | Durable, idempotent, scoped agent/human inbox with acknowledgments | Planned |
 | `/delegate` | Review proposed task allocation; approved plan amendment when scope changes | Planned; kernel leasing remains authoritative |
@@ -109,14 +110,47 @@ UID. It supplies no messaging, input injection, lease grant or automatic resume.
 ## Next UI implementation
 
 Keep the orchestrator composer available and retain the bottom box navigator.
-Extend the current-run switcher with project/target grouping, optional user groups
-and pins. Preserve selection by immutable identity during refresh, never by row number.
+Current-run custom groups and pins are implemented. Project/target grouping and
+folding remain future work. Preserve selection by immutable identity during refresh,
+never by row number.
 The native terminal overview should offer focus, split and paginated grid layouts.
 Each tile identifies its box/task, current lifecycle, last event cursor, gate/wait,
 and bounded usage. Selecting a tile opens the detailed read-only view. Escape
 returns to the composer without changing execution; destructive controls remain
 separate explicit actions. Keyboard routing must not steal ordinary prompt spaces
 or letters. The same projection/API must work without Textual or tmux.
+
+### Persistent display organization
+
+`/pin BOX` and `/pin BOX on` idempotently pin an exact box; `/pin BOX off` removes
+the pin. Pin order is insertion order. `/group BOX API build` assigns the literal
+display label `API build`; quoted multiword names work too. `/group BOX --clear`
+removes the group. With no arguments, `/pin` and `/group` list current preferences.
+These commands never reinterpret a pane number or partial name as an exact box ID.
+
+Pins lead the bottom shortcut list and are marked `★`. The searchable picker keeps
+the orchestrator first, then attention items, then ordinary pinned boxes, then
+remaining workers ordered by group and exact ID. Group labels and pin marks never
+replace lifecycle/readiness indicators. Existing selections retain exact identity
+when preferences reorder rows. Search matches literal group words along with
+box/task/status/adapter metadata; Rich markup in a label is displayed as text.
+
+Preferences live in an owner-private `pane-organization.json` beside the project
+session. Its schema is separate from both the session and the kernel ledger:
+older session schemas are not migrated to add this feature. Updates use the same
+cross-process project transaction as other client commands and atomic replacement.
+Records are capped at 64 KiB, 1,000 pins and 1,000 group assignments; group names
+are 1..64 printable characters. Linked, special, duplicate-key, malformed and
+oversized files are rejected. A damaged record leaves the basic fleet usable with
+an explicit warning, while preference commands and picker opening report denial;
+the record is not silently repaired or overwritten.
+
+Scope binds project session, workspace, state directory, run, frozen product/kernel
+plans and the sorted exact box IDs. A new plan/run does not inherit preferences
+for reused box names. Reading another scope returns an empty view without writing;
+the next explicit preference edit replaces the active preference record. Pins are
+not an archive of old run layouts. Neither organization nor selection changes task
+contracts, grants, budgets, leases, evaluations, plan approval or worker execution.
 
 ## Agent-to-agent bridge
 

@@ -133,7 +133,7 @@ class BoxSwitcherScreen(ModalScreen):
         with Vertical(id="box-picker"):
             yield Static("BOX SWITCHER / {} / {}".format(Redactor().text(self.snapshot["run_id"]), self.snapshot["basis"]),
                          id="box-picker-title", markup=False)
-            yield Static("Search box, task, status or adapter · ↑/↓ Enter · PgUp/PgDn · Esc\nSnapshot only. Selecting a pane does not start work or change authority.", id="box-picker-help")
+            yield Static("Search box, group, task, status or adapter · ↑/↓ Enter · PgUp/PgDn · Esc\n★ pinned · /pin BOX on|off · /group BOX NAME · Display only; no authority change.", id="box-picker-help")
             yield Input(value=self.snapshot["query"], placeholder="Search boxes…", max_length=256,
                         select_on_focus=False, id="box-picker-input")
             yield OptionList(*self._options(), id="box-picker-options")
@@ -532,7 +532,7 @@ class CamolApp(App):
                 "", id="prompt", soft_wrap=True, show_line_numbers=False,
                 placeholder="Message the orchestrator · Enter sends · Shift+Enter adds a line · / opens commands",
             )
-            yield Static("orchestrator [Alt+0]", id="fleet")
+            yield Static("orchestrator [Alt+0]", id="fleet", markup=False)
             yield Footer()
 
     async def on_mount(self) -> None:
@@ -676,6 +676,8 @@ class CamolApp(App):
             return
         self.boxes = boxes
         items = ["ORCH[Alt+0]", "BOXES {}".format(len(boxes))]
+        if any(box.get("organization_error") for box in boxes):
+            items.append("[pane preferences unavailable]")
         selected_index = next((index for index, box in enumerate(boxes) if self.in_box and box["box_id"] == self.selected), 0)
         page_size = min(9, max(1, (self.size.width - 20) // 24))
         start = (selected_index // page_size) * page_size
@@ -685,7 +687,7 @@ class CamolApp(App):
             mark = "!" if box["status"] in {"blocked", "waiting"} else "■" if box.get("connected") == "yes" else "□"
             shortcut = "Alt+{}".format(index)
             selected = ">" if self.in_box and self.selected == box["box_id"] else ""
-            items.append("{}{} {}:{}({})".format(selected, mark, index, box["box_id"], shortcut))
+            items.append("{}{}{} {}:{}({})".format(selected, "★" if box.get("pinned") else "", mark, index, box["box_id"], shortcut))
         if len(boxes) > len(visible_boxes):
             items.append("[{}–{}/{}; cycle [ ] or /box ID]".format(start + 1, start + len(visible_boxes), len(boxes)))
         fleet.update("  ".join(items))
