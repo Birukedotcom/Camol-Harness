@@ -115,9 +115,11 @@ uses HTTPS; injected transport plugins are trusted host code and must honor the
 same contract. Tests use tiny local HTTP fixtures through an explicit fixture
 adapter, never real external model downloads.
 
-`ModelHost.inventory()` is a protocol for a separate hosting adapter boundary,
-not an implemented model loader. Existing loopback
-endpoint/model inventory remains read-only. Download preparation does not invoke
+The separate `ModelHost` boundary now has a narrow owner-approved
+[llama.cpp process lifecycle](local-model-hosting.md), exposed by
+`camol model-host`. It consumes a previously verified single-GGUF download; it is
+not invoked by this downloader. Existing loopback endpoint/model inventory remains
+read-only. Download preparation does not invoke
 Ollama pull, LM Studio load, remote Python code, package installation, extraction,
 GPU allocation, or inference. A host/load adapter must obtain its own exact resource
 and execution authority and produce actual runtime/capability evidence before any

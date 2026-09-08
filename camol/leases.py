@@ -71,6 +71,8 @@ def validate_authorization(state: Dict[str, Any], payload: Dict[str, Any]) -> Ad
     if current.reservation.reservation_id in state["released_reservation_ids"]:
         raise ValueError("a released reservation cannot be refreshed")
     refreshed = AdmissionBundle.from_dict(payload["bundle"])
+    from .source_binding import require_source_admission
+    require_source_admission(state, refreshed)
     if refreshed.digest() != payload["bundle_digest"]:
         raise ValueError("lease authorization bundle digest is invalid")
     validate_refresh_identity(original, refreshed)

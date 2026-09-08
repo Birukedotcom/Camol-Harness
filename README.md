@@ -15,12 +15,18 @@ and completion.
 > This branch adds an embeddable Python API, explicit invariant gates and final
 > human acceptance, immutable plan revisions, a debugger, usage accounting, safe
 > repository graphs, shared multi-run capacity, approved model downloads and durable
-> observation/benchmark protocols. Local runtime
+> observation/benchmark protocols. The next-wave branch additionally implements
+> seed-assisted plan proposals, source-bound daemon launch, explicit local-model
+> hosting and authenticated SSH control attachment. These are narrow implementations,
+> not a claim of unrestricted planning, distributed workers or live-model readiness.
+> Local runtime
 > verification includes a 170-task/eight-box soak with five verification restarts.
 > Claude and Codex/local worker integrations still need account-specific live
 > validation; fixture tests do not prove model availability, cloud deployment or
 > production security. See the [acceptance ledger](docs/full-implementation-progress.md)
-> for implemented slices, limitations and remaining work.
+> and [exact foundation checks](docs/full-pass-verification.md) for implemented
+> slices, limitations and remaining work. The foundation's Linux CI passed; its
+> macOS CI failure has a targeted next-wave fix awaiting a fresh remote result.
 
 <table>
   <tr>
@@ -102,6 +108,22 @@ capacity/placement contracts; connected accounts do not imply known quota.
 artifact inspection. It never implicitly downloads, loads or claims inference
 readiness. `camol watch` supports approved durable polling of a normalized local
 event journal, including daemon restart; cloud source adapters need their own proof.
+
+The next wave adds `camol model-host` for a separately approved, one-shot owned
+llama.cpp process lifecycle. Its private authenticated endpoint is not yet handed
+to the planner/worker adapters; loaded does not mean inference-ready. See
+[local hosting](docs/local-model-hosting.md). [`camol remote`](docs/ssh-control.md) attaches to an already
+installed, explicitly pinned SSH bridge and running supervisor; it does not provision
+a machine or register a distributed worker. Neither feature runs on startup.
+
+`/propose --from REVIEWED_SEED.json GOAL` makes one explicit, no-tools planning
+request to a supported selected provider. It returns questions or a complete
+unapproved V5/V6 candidate preserving the reviewed seed's authority. It requires
+exact-digest human approval, not a bare “yes.” See
+[seed-assisted proposals](docs/seed-assisted-proposals.md) for source binding,
+provider limitations and usage coverage; this mode still requires a reviewed seed.
+The [approved-source handoff contract](docs/approved-source-handoff.md) explains
+the durable binding and its difference from legacy unbound plans.
 
 Python applications use [`Harness`](docs/embedding.md) without a terminal. It owns
 the same execution lock, isolated workspaces and durable kernel as the CLI, with

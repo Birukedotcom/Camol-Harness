@@ -79,6 +79,19 @@ commands go through the authoritative supervisor. The existing six-question gril
 still creates a legacy V4 contract; it does not infer that a passing command proves
 arbitrary human-written prose invariants.
 
+`/propose --from REVIEWED_SEED.json GOAL` makes one explicitly requested planning
+invocation to refine a reviewed V5/V6 seed into an unapproved, source-bound candidate.
+Its no-tools adapter currently supports a capability-checked Claude CLI or a local
+chat endpoint; Codex remains available for normal chat/imported workers, not this
+proposal mode. CLI-internal request count and provider cost may remain unknown.
+It preserves the seed's authority, profiles, ceilings and normative checks, and
+requires human approval at every proposed state gate and final acceptance. New
+authority requires questions and a revised reviewed seed, not silent expansion.
+Inspect `/plan`, then approve the exact full digest; bare `yes` cannot approve a
+model-generated candidate. See [seed-assisted proposals](seed-assisted-proposals.md)
+for limits, audit records and cancellation behavior. This is not an unrestricted
+prose-to-executable-plan generator or an in-flight amendment UI.
+
 Homogeneous Codex CLI or Codex OSS V5+ runbooks can be imported when every adapter
 contains its exact `profile_snapshot`. After plan approval, `/run` displays the
 full per-worker profile and a separate provider-policy acknowledgement digest.

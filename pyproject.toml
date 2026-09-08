@@ -20,6 +20,7 @@ graph = ["tomli>=2,<3; python_version < '3.11'"]
 
 [project.scripts]
 camol = "camol.cli:main"
+camol-ssh-bridge = "camol.ssh_bridge:main"
 
 [tool.setuptools]
 packages = ["camol"]

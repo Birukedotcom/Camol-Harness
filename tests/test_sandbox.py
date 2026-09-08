@@ -129,6 +129,113 @@ assert oracle.read_text() == 'good'
         self.assertNotIn(str(Path.home()), paths)
         self.assertNotIn(str(self.root), paths)
 
+    def test_xcode_selector_adds_only_trusted_selected_runtime_and_link_metadata(self):
+        from camol import sandbox
+        applications = self.root / "Applications"
+        developer = applications / "Xcode_26.app" / "Contents" / "Developer"
+        developer.mkdir(parents=True)
+        selected = applications / "Xcode.app"
+        selected.symlink_to(developer.parents[1], target_is_directory=True)
+        selector = self.root / "private" / "var" / "select" / "developer_dir"
+        selector.parent.mkdir(parents=True)
+        selector.symlink_to(selected / "Contents" / "Developer", target_is_directory=True)
+        real_lstat = Path.lstat
+
+        def root_owned(path):
+            value = list(real_lstat(path))
+            value[4] = 0  # deterministic CI-like root ownership; no OS mutations
+            return os.stat_result(value)
+
+        with patch.object(sandbox.sys, "platform", "darwin"), patch.object(sandbox, "_MACOS_APPLICATIONS", applications), patch.object(
+                sandbox, "_MACOS_DEVELOPER_SELECTOR", selector), patch.object(Path, "lstat", root_owned):
+            with patch.dict(os.environ, {"DEVELOPER_DIR": str(self.root / "untrusted-home-override")}):
+                paths = system_read_paths(sys.executable)
+            self.assertIn(str(developer), paths)
+            self.assertIn(str(selector.parent), paths)
+            self.assertNotIn(str(applications), paths)
+            self.assertNotIn(str(self.root / "private" / "var"), paths)
+            self.assertNotIn(str(self.root), paths)
+            profile = MacOSSandboxBackend.profile(replace(self.policy(), read_paths=paths + (str(self.workspace),)))
+            self.assertIn('(allow file-read-metadata (subpath "{}"))'.format(selector.parent), profile)
+            self.assertNotIn('(allow file-read* (subpath "{}"))'.format(selector.parent), profile)
+            self.assertIn('(allow file-read* (subpath "{}"))'.format(developer), profile)
+            self.assertIn('(allow file-read-metadata (literal "{}"))'.format(selected), profile)
+            self.assertNotIn('(allow file-read* (subpath "{}"))'.format(selected), profile)
+            developer.chmod(0o777)
+            with self.assertRaisesRegex(SandboxError, "root-owned"):
+                system_read_paths(sys.executable)
+            developer.chmod(0o755)
+            selector.unlink()
+            selector.symlink_to(self.root / "user-models")
+            with self.assertRaisesRegex(SandboxError, "outside supported"):
+                system_read_paths(sys.executable)
+
+    def test_xcode_selector_user_owned_and_cyclic_targets_fail_closed(self):
+        from camol import sandbox
+        applications = self.root / "Applications"
+        applications.mkdir()
+        first, second = applications / "One.app", applications / "Two.app"
+        first.symlink_to(second)
+        second.symlink_to(first)
+        selector = self.root / "selector" / "developer_dir"
+        selector.parent.mkdir()
+        selector.symlink_to(first / "Contents" / "Developer")
+        real_lstat = Path.lstat
+
+        def fake_owner(path, uid):
+            value = list(real_lstat(path))
+            value[4] = uid
+            return os.stat_result(value)
+
+        with patch.object(sandbox.sys, "platform", "darwin"), patch.object(sandbox, "_MACOS_APPLICATIONS", applications), patch.object(
+                sandbox, "_MACOS_DEVELOPER_SELECTOR", selector):
+            with patch.object(Path, "lstat", lambda path: fake_owner(path, 501)):
+                with self.assertRaisesRegex(SandboxError, "root-owned"):
+                    system_read_paths(sys.executable)
+            with patch.object(Path, "lstat", lambda path: fake_owner(path, 0)):
+                with self.assertRaisesRegex(SandboxError, "cyclic"):
+                    system_read_paths(sys.executable)
+
+    @unittest.skipUnless(MacOSSandboxBackend.available(), "requires macOS sandbox-exec")
+    def test_xcode_style_selector_metadata_and_selected_content_are_enforced(self):
+        from camol import sandbox
+        applications = self.root / "Applications"
+        developer = applications / "Xcode_26.app" / "Contents" / "Developer"
+        developer.mkdir(parents=True)
+        (developer / "tool").write_text("selected toolchain")
+        alias = applications / "Xcode.app"
+        alias.symlink_to(developer.parents[1])
+        selector = self.root / "private" / "var" / "select" / "developer_dir"
+        selector.parent.mkdir(parents=True)
+        selector.symlink_to(alias / "Contents" / "Developer")
+        (selector.parent / "unrelated-secret").write_text("selector sibling must stay hidden")
+        other = applications / "Other.app"
+        other.mkdir()
+        (other / "secret").write_text("unselected applications must stay hidden")
+        real_lstat = Path.lstat
+
+        def root_owned(path):
+            value = list(real_lstat(path))
+            value[4] = 0  # fixture ownership only; no privileged filesystem edits
+            return os.stat_result(value)
+
+        script = """import os,pathlib
+selector=pathlib.Path(%r)
+selected=pathlib.Path(os.readlink(selector))
+assert (selected/'tool').read_text() == 'selected toolchain'
+assert os.readlink(%r)
+denied=0
+for file in (selector.parent/'unrelated-secret', pathlib.Path(%r)):
+    try: file.read_text()
+    except PermissionError: denied += 1
+assert denied == 2, denied
+""" % (str(selector), str(alias), str(other / "secret"))
+        with patch.object(sandbox, "_MACOS_APPLICATIONS", applications), patch.object(sandbox, "_MACOS_DEVELOPER_SELECTOR", selector), patch.object(
+                Path, "lstat", root_owned):
+            result = asyncio.run(MacOSSandboxBackend().run([sys.executable, "-c", script], cwd=self.workspace,
+                                                          policy=self.policy(), timeout_seconds=10))
+        self.assertEqual(result.exit_code, 0, result.stderr.decode())
+
     def test_unsandboxed_backend_cannot_claim_sandboxed_trust(self):
         with self.assertRaisesRegex(SandboxError, "cannot satisfy"):
             asyncio.run(

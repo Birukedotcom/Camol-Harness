@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .probes import GIT_SAFETY_ARGS, Redactor, sanitized_environment
 from .git_safety import GitSafetyError, safe_git_argv
+from .source_binding import SourceBindingError, load_binding, persist_binding, validate_binding, assert_source
 from .readiness import WorkspaceReceipt
 from .schema import (
     canonical_digest,
@@ -188,6 +189,7 @@ class WorkspaceManager:
         self.source = _real(Path(source))
         self.state_dir = _real(Path(state_dir))
         self.redactor = redactor or Redactor()
+        self._source_bindings = {}
         if not self.source.is_dir():
             raise WorkspaceError("source repository does not exist")
         top = _real(Path(self._git("-C", str(self.source), "rev-parse", "--show-toplevel")))
@@ -235,10 +237,29 @@ class WorkspaceManager:
         if dirty:
             raise WorkspaceError("source checkout is dirty; Camol will not copy uncommitted state implicitly")
 
-    def assert_source_ready(self) -> None:
+    def bind_source_contract(self, binding):
+        binding = validate_binding(binding)
+        if binding["source"]["workspace"] != str(self.source):
+            raise WorkspaceError("approved source binding belongs to another workspace")
+        persist_binding(self.state_dir, binding)
+        self._source_bindings[binding["run_id"]] = binding
+
+    def _assert_bound_source(self, run_id):
+        try:
+            binding = self._source_bindings.get(run_id) or load_binding(self.state_dir, run_id)
+            if binding is not None:
+                self._source_bindings[run_id] = binding
+                assert_source(binding["source"], self.source)
+            return binding
+        except (SourceBindingError, ValueError) as error:
+            raise WorkspaceError(str(error)) from error
+
+    def assert_source_ready(self, run_id=None) -> None:
         """Prove the immutable source input before any provider spend or worker launch."""
         self._assert_clean_source()
         self._git("-C", str(self.source), "rev-parse", "HEAD^{commit}")
+        if run_id is not None:
+            self._assert_bound_source(run_id)
 
     def _repository_id(self) -> str:
         remote = self._git("-C", str(self.source), "remote", "get-url", "origin", check=False)
@@ -277,6 +298,7 @@ class WorkspaceManager:
     def _load_existing(
         self, record_path: Path, *, run_id: str, task_id: str, box_id: str, integration: bool
     ) -> WorkspaceHandle:
+        self._assert_bound_source(run_id)
         try:
             payload = json.loads(record_path.read_text(encoding="utf-8"))
             if payload.get("run_id") != run_id or payload.get("task_id") != task_id or payload.get("box_id") != box_id:
@@ -376,6 +398,7 @@ class WorkspaceManager:
         integration: bool,
     ) -> WorkspaceHandle:
         self._assert_clean_source()
+        source_binding = self._assert_bound_source(run_id)
         safe_run, safe_task, safe_box = map(_component, (run_id, task_id, box_id))
         workspace_id = "ws-{}-{}-{}".format(safe_run, safe_task, safe_box)
         record_path = self._record_path(workspace_id)
@@ -384,7 +407,7 @@ class WorkspaceManager:
                 record_path, run_id=run_id, task_id=task_id, box_id=box_id, integration=integration
             )
 
-        revision = base_revision or self._git("-C", str(self.source), "rev-parse", "HEAD")
+        revision = base_revision or (source_binding["source"]["revision"] if source_binding else self._git("-C", str(self.source), "rev-parse", "HEAD"))
         resolved_revision = self._git("-C", str(self.source), "rev-parse", "{}^{{commit}}".format(revision))
         # New records namespace refs by controller directory. Existing records
         # above retain their exact prior branch, including legacy naming.
@@ -412,6 +435,13 @@ class WorkspaceManager:
             # Conditional includes may select different callback drivers in
             # this worktree. Inspect that configuration before checkout.
             self._git("-C", str(path), "read-tree", "--reset", "-u", resolved_revision)
+            if source_binding is not None:
+                if resolved_revision == source_binding["source"]["revision"]:
+                    # Validate the actual materialized tracked bytes, not just
+                    # a mutable HEAD checked earlier in the client process.
+                    copied_source = dict(source_binding["source"], workspace=str(path.resolve()))
+                    assert_source(copied_source, path)
+                self._assert_bound_source(run_id)
             receipt = WorkspaceReceipt(
                 workspace_id=workspace_id,
                 repository_id=self._repository_id(),
@@ -434,10 +464,12 @@ class WorkspaceManager:
                 },
             )
             return WorkspaceHandle(run_id, task_id, box_id, _real(path), branch, receipt, integration)
-        except Exception:
+        except Exception as error:
             if created:
                 self._git("-C", str(self.source), "worktree", "remove", "--force", str(path), check=False)
                 self._git("-C", str(self.source), "branch", "-D", branch, check=False)
+            if isinstance(error, SourceBindingError):
+                raise WorkspaceError(str(error)) from error
             raise
 
     def refresh_receipt(self, handle: WorkspaceHandle) -> WorkspaceReceipt:

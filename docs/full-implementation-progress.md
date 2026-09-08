@@ -5,6 +5,19 @@ Implementation branch: `codex/v0-full-pass`. The authoritative scope is `SPEC.md
 and the milestone dependencies in `docs/v0-build-plan.md`. The spatial visualizer
 remains post-v1 as explicitly specified.
 
+The frozen foundation checkpoint is `c8fb3d1`, pushed to `codex/v0-full-pass`.
+Its exact local suites passed 551 tests on both Python 3.9 and 3.12; a further
+68-task/eight-box recovery soak passed. The remote matrix passed Linux but exposed
+a macOS selected-Xcode sandbox path failure. See
+[the exact-commit verification record](full-pass-verification.md), including
+packaging, terminal tests and the explicit fixture/live-validation boundaries.
+
+The next wave is isolated on `codex/v0-next`: seed-assisted V5/V6 proposals,
+source-bound client/daemon/runner approval, local model-host lifecycle, SSH-bound
+control transport, strict external JSON ingestion, and the macOS runtime-path fix.
+These changes require their own full-suite and remote CI results. A passing
+foundation result must not be used as the verification record for uncommitted code.
+
 ## Acceptance ledger
 
 Each row needs implementation, negative-path tests, replay/recovery evidence, and
@@ -25,9 +38,9 @@ usable Python/CLI entry points. A fixture cannot establish live provider maturit
 | Capacity / heterogeneous N boxes | Implemented; integration ongoing | Shared broker, fresh observed/owner-declared pools, suspect reservations, real two-run single-slot fairness/cancellation and broker-cursor wake; V6 |
 | Watchers and correctable evidence | Local scheduled source implemented | Durable approved polling, normalized JSONL source, daemon restart, interleaving/expiry/cursor/cancellation tests; live cloud source adapters pending |
 | Repository dependency graph | Implemented; adversarial tests ongoing | Safe static Python/packaging/npm/Docker/runbook scans, evidence-linked impact/path/cycle queries; JSON/DOT/GraphML |
-| Local model lifecycle | Download slice implemented | Exact owner manifests, pinned HTTPS bytes, resumable/cancellable payload accounting, read-only inventory; no model loader/inference proof |
+| Local model lifecycle | Download foundation; owned loader in next wave | Exact owner manifests and pinned bytes; one-shot owned llama.cpp lifecycle with local protocol fixtures. No actual model/inference or planner/worker handoff proof |
 | Evaluator compiler / benchmark campaigns | Core protocols and offline SWE-bench adapter implemented | Explicit V5 mapping; pinned 3-arm campaign, real gold/no-op fixtures, crash/cleanup reconciliation, protected official-grader protocol; live public trials pending |
-| Remote targets / workflow profiles | Pending | Authenticated transport, adoption, salvage, explicit external-effect readback |
+| Remote targets / workflow profiles | SSH control attachment in next wave | Pinned host/bridge/target/run control with durable uncertain outcomes; no distributed worker adoption, provisioning or live cloud/voice proof |
 | Public packaging / portability | In progress | Wheel/sdist built; independent Python 3.12 wheel install+line CLI passed; Homebrew resource hashes verified; OS CI/license/retention remain |
 | Extended final verification | Pending | Repeated DAGs, failure/refinement, process interruption, package and UI tests |
 
@@ -99,15 +112,17 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 
 ## Remaining product and validation gates
 
-- The six-question manual grill produces a legacy V4 runbook. Conversation-driven
-  proposals with explicit reviewed invariants/evaluator bindings are not yet wired.
+- The six-question manual grill produces a legacy V4 runbook. The next wave adds
+  bounded seed-assisted proposals preserving reviewed V5/V6 authority and human
+  gates. Unrestricted prose-to-plan construction remains a separate gap.
 - V5/V6 imported plans support kernel gates; interactive Codex/OSS launch-policy
   acknowledgement is implemented. A real fake-Codex subprocess test covers terminal
   import through detached build/evaluation/integration and final human acceptance.
   Mixed-provider UI launch and interactive plan
   amendments remain separate gaps; the Python/CLI revision path already exists.
 - Local download receipts are not model loading, GPU residency, inference readiness
-  or an air-gap guarantee. Hosting lifecycle adapters remain missing.
+  or an air-gap guarantee. The next wave's narrow owned loader does not yet connect
+  its authenticated endpoint to planning/worker calls or prove actual inference.
 - Public benchmark adapter protocol tests are not public coding-suite performance.
   Official pinned datasets/images and a budget-enforcing executor still need live
   environment validation; no paid trial has been authorized/run here.

@@ -28,7 +28,9 @@ returns a typed state so the host application can arrange a wakeup. A completed 
 reopens without executing its tasks again.
 
 Events use monotonic sequence cursors. Consumers can persist the last sequence they
-processed and use `run.events(after_seq=cursor)` after reconnecting. Their delivery
+processed and use `run.events(after_seq=cursor, limit=1000)` after reconnecting.
+The optional page limit is 1–10,000 and is applied in SQLite before decoding;
+omitting it preserves the complete-snapshot API. Their delivery
 logic remains separate from the authoritative execution loop.
 
 Use `run.debugger` to open and inspect debug cases and drive the full experiment

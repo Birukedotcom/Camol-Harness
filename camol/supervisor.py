@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -27,6 +28,8 @@ from .store import SQLiteEventStore
 from .workspace import WorkspaceManager
 from .watchers import Watcher, WatcherError, WatchSpec
 from .watch_runtime import WatchRuntime
+from .source_binding import SourceBindingError, make_binding, load_binding, persist_binding, assert_source
+from .runbook import runbook_digest
 
 
 class SupervisorError(RuntimeError):
@@ -163,6 +166,8 @@ class Supervisor:
         *,
         database: Optional[Path] = None,
         approve_by: Optional[str] = None,
+        expected_source: Optional[Dict[str, Any]] = None,
+        source_binding_digest: Optional[str] = None,
     ):
         self.runbook_path = Path(runbook).resolve()
         self.workspace = Path(workspace).resolve()
@@ -190,6 +195,8 @@ class Supervisor:
             if metadata.st_uid != os.getuid() or (metadata.st_mode & 0o777) != 0o700:
                 raise SupervisorError("supervisor runtime directory must be owner-only")
         self.approve_by = approve_by
+        self.expected_source = deepcopy(expected_source)
+        self.source_binding_digest = source_binding_digest
         self.lock = LeaderLock(self.paths.lock)
         self.token = ""
         self.server = None
@@ -288,8 +295,17 @@ class Supervisor:
                         raise SupervisorError("active invocation process identity cannot be proven") from error
                     records.append({"path": str(path), **payload})
                 else:
-                    payload.update(state="orphan_dead", finished_at=None, exit_code=None)
-                    self._replace_json(path, payload)
+                    try:
+                        # Read-only existence test, never signal authority. A
+                        # missing leader does not prove its group has stopped.
+                        os.killpg(pgid, 0)
+                    except ProcessLookupError:
+                        payload.update(state="orphan_dead", finished_at=None, exit_code=None)
+                        self._replace_json(path, payload)
+                    except PermissionError:
+                        records.append({"path": str(path), **payload})
+                    else:
+                        records.append({"path": str(path), **payload})
             except (KeyError, OSError, json.JSONDecodeError, SandboxError) as error:
                 raise SupervisorError("invocation recovery record is malformed") from error
         return records
@@ -324,6 +340,7 @@ class Supervisor:
             "schema_version": 1,
             "run_id": self.run_id,
             "plan_digest": state["plan_digest"],
+            **({"source_binding": state["source_binding"]} if state.get("source_binding") else {}),
             "approved_by": state.get("approved_by"),
             "status": state["status"],
             "runbook": self.runbook,
@@ -530,45 +547,38 @@ class Supervisor:
             except asyncio.TimeoutError:
                 pass
 
-    async def _force_shutdown(self, requested_by: str) -> None:
+    async def _force_shutdown(self, requested_by: str, *, expected_run_id=None, expected_plan_digest=None) -> None:
+        if expected_run_id is not None and (self.run_id != expected_run_id or self.orchestrator.state(self.run_id)["plan_digest"] != expected_plan_digest):
+            self.last_error = "force-stop target changed before dispatch"
+            self.mode = "operator_attention"
+            return
         if self._driver_task is not None:
             self._driver_task.cancel()
             try:
                 await self._driver_task
             except asyncio.CancelledError:
                 pass
-        await self._terminate_orphans()
+        try:
+            await self._terminate_orphans()
+        except SupervisorError as error:
+            self.last_error = str(error)
+            self.mode = "operator_attention"
+            return
+        if expected_run_id is not None and (self.run_id != expected_run_id or self.orchestrator.state(self.run_id)["plan_digest"] != expected_plan_digest):
+            self.last_error = "force-stop target changed during process cancellation"
+            self.mode = "operator_attention"
+            return
         if self.runner is not None and self.run_id is not None:
             self.runner.force_interrupt(self.run_id, requested_by=requested_by)
         self.mode = "stopped"
         self._shutdown.set()
 
     async def _terminate_orphans(self) -> None:
-        for item in self.orphans:
-            pid = item["pid"]
-            pgid = item["pgid"]
-            try:
-                if (
-                    os.getpgid(pid) != pgid
-                    or process_start_fingerprint(pid) != item["process_started"]
-                ):
-                    raise SupervisorError("orphan process group identity changed; refusing to signal it")
-                os.killpg(pgid, signal.SIGTERM)
-                for _ in range(50):
-                    try:
-                        os.kill(pid, 0)
-                    except ProcessLookupError:
-                        break
-                    await asyncio.sleep(0.1)
-                else:
-                    os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            path = Path(item["path"])
-            payload = {key: value for key, value in item.items() if key != "path"}
-            payload.update(state="terminated_by_supervisor", finished_at=None, exit_code=None)
-            self._replace_json(path, payload)
-        self.orphans = []
+        # A persisted ps/lstart marker has only second-resolution and is not a
+        # non-reusable process handle. It cannot authorize a signal after this
+        # supervisor restarted; retain operator attention instead of guessing.
+        if self.orphans:
+            raise SupervisorError("persisted orphan ownership cannot be proven by the legacy birth marker; inspect and reconcile externally before resuming")
 
     async def _dispatch(self, request: Dict[str, Any]) -> Dict[str, Any]:
         version = request.get("schema_version")
@@ -577,20 +587,30 @@ class Supervisor:
             if version == 1 else
             ("schema", "schema_version", "token", "request_id", "command", "requested_by", "params")
         )
+        if version == 3:
+            fields += ("expected_run_id", "expected_plan_digest")
         reject_unknown_fields(request, fields, "control request")
         if (
             request.get("schema") != "camol.control_request"
             or type(request.get("schema_version")) is not int
-            or request.get("schema_version") not in {1, 2}
+            or request.get("schema_version") not in {1, 2, 3}
         ):
             raise SupervisorError("unsupported control request")
         if not isinstance(request.get("token"), str) or not hmac.compare_digest(request["token"], self.token):
             raise SupervisorError("control authentication failed")
+        if version == 3:
+            # Every mutating branch below remains synchronous through dispatch.
+            # The only awaited control is read-only event polling. New awaited
+            # mutations must revalidate this binding after their final await.
+            state = self.orchestrator.state(self.run_id)
+            if (request.get("expected_run_id") != self.run_id
+                    or request.get("expected_plan_digest") != state["plan_digest"]):
+                raise SupervisorError("control target run or frozen plan has changed")
         command = request.get("command")
         if not isinstance(command, str):
             raise SupervisorError("control command must be a string")
         params: Dict[str, Any] = {}
-        if version == 2:
+        if version in {2, 3}:
             if not isinstance(request.get("request_id"), str) or not request["request_id"]:
                 raise SupervisorError("control request_id is required")
             if not isinstance(request.get("params"), dict):
@@ -599,31 +619,31 @@ class Supervisor:
         elif "requested_by" not in request:
             request["requested_by"] = "operator"
         if command == "ping":
-            if version == 2:
+            if version in {2, 3}:
                 reject_unknown_fields(params, (), "control ping params")
             return {"ok": True, "pid": os.getpid()}
         if command in {"status", "boxes"}:
-            if version == 2:
+            if version in {2, 3}:
                 reject_unknown_fields(params, (), "control {} params".format(command))
             return {"ok": True, "result": self.status() if command == "status" else self._boxes()}
         if command == "drain":
-            if version == 2:
+            if version in {2, 3}:
                 reject_unknown_fields(params, (), "control drain params")
             self.draining = True
             self.mode = "draining"
             return {"ok": True, "result": {"mode": self.mode}}
         if command == "resume":
-            if version == 2:
+            if version in {2, 3}:
                 reject_unknown_fields(params, (), "control resume params")
             if self.orphans:
-                raise SupervisorError("live orphan invocation requires explicit force-stop or operator reconciliation")
+                raise SupervisorError("live orphan invocation requires external operator reconciliation; its persisted birth marker is not signal authority")
             self.draining = False
             self.stop_after_drain = False
             self.mode = "running"
             self._wake.set()
             return {"ok": True, "result": {"mode": self.mode}}
         if command == "approve":
-            if version == 2:
+            if version in {2, 3}:
                 reject_unknown_fields(params, (), "control approve params")
             state = self.orchestrator.state(self.run_id)
             if state["status"] != "draft":
@@ -634,10 +654,10 @@ class Supervisor:
             self.orchestrator.approve_plan(self.run_id, approved_by, state["plan_digest"])
             self._wake.set()
             return {"ok": True, "result": {"plan_digest": state["plan_digest"], "approved_by": approved_by}}
-        if version == 2 and command == "plan":
+        if version in {2, 3} and command == "plan":
             reject_unknown_fields(params, (), "control plan params")
             return {"ok": True, "result": self._plan()}
-        if version == 2 and command.startswith("watch-"):
+        if version in {2, 3} and command.startswith("watch-"):
             fields = {
                 "watch-inspect": set(),
                 "watch-create": {"spec", "approval_digest", "approved_by"},
@@ -663,7 +683,7 @@ class Supervisor:
             else:
                 result = Watcher(self.orchestrator, self.run_id, params["watcher_id"]).reopen(approved_by=params["approved_by"], reason=params["reason"], cursor=params["cursor"])
             return {"ok": True, "result": result}
-        if version == 2 and command == "acceptance":
+        if version in {2, 3} and command == "acceptance":
             reject_unknown_fields(params, (), "control acceptance params")
             state = self.orchestrator.state(self.run_id)
             return {"ok": True, "result": {
@@ -671,7 +691,7 @@ class Supervisor:
                 "integration_head": state.get("integration_head"), "acceptance": state.get("acceptance"),
                 "pending_gates": {task_id: task["gate_wait"] for task_id, task in state["tasks"].items() if task.get("gate_wait")},
             }}
-        if version == 2 and command in {"accept", "gate-approve"}:
+        if version in {2, 3} and command in {"accept", "gate-approve"}:
             fields = ("approved_by", "outcome_digest") if command == "accept" else ("approved_by", "task_id", "assessment_digest")
             if set(params) != set(fields) or any(not isinstance(params.get(name), str) or not params[name] for name in fields):
                 raise SupervisorError("{} requires exact fields: {}".format(command, ", ".join(fields)))
@@ -688,7 +708,7 @@ class Supervisor:
                 raise SupervisorError(str(error)) from error
             self._wake.set()
             return {"ok": True, "result": {"status": self.orchestrator.state(self.run_id)["status"], **params}}
-        if version == 2 and command == "events":
+        if version in {2, 3} and command == "events":
             reject_unknown_fields(params, ("after_seq", "limit", "wait_ms"), "control events params")
             after_seq = params.get("after_seq", 0)
             limit = params.get("limit", 100)
@@ -700,7 +720,7 @@ class Supervisor:
             if type(wait_ms) is not int or not 0 <= wait_ms <= 30_000:
                 raise SupervisorError("events wait_ms must be between 0 and 30000")
             return {"ok": True, "result": await self._events(after_seq, limit, wait_ms)}
-        if version == 2 and command == "box":
+        if version in {2, 3} and command == "box":
             reject_unknown_fields(params, ("box_id", "after_seq", "limit", "tail"), "control box params")
             box_id = params.get("box_id")
             after_seq = params.get("after_seq", 0)
@@ -716,7 +736,7 @@ class Supervisor:
                 raise SupervisorError("box tail must be a boolean")
             return {"ok": True, "result": self._box(box_id, after_seq, limit, tail=tail)}
         if command == "stop":
-            if version == 2:
+            if version in {2, 3}:
                 reject_unknown_fields(params, (), "control stop params")
             self.draining = True
             self.stop_after_drain = True
@@ -724,10 +744,13 @@ class Supervisor:
             self._wake.set()
             return {"ok": True, "result": {"mode": self.mode}}
         if command == "force-stop":
-            if version == 2:
+            if version in {2, 3}:
                 reject_unknown_fields(params, (), "control force-stop params")
+            if self.orphans:
+                raise SupervisorError("persisted orphan ownership cannot be proven; force-stop refuses to signal it")
             if self._force_task is None:
-                self._force_task = asyncio.create_task(self._force_shutdown(str(request.get("requested_by") or "operator")))
+                self._force_task = asyncio.create_task(self._force_shutdown(str(request.get("requested_by") or "operator"),
+                    expected_run_id=self.run_id, expected_plan_digest=self.orchestrator.state(self.run_id)["plan_digest"]))
             return {"ok": True, "result": {"mode": "stopping"}}
         raise SupervisorError("unknown control command")
 
@@ -760,6 +783,26 @@ class Supervisor:
             self.runbook = load_runbook(self.runbook_path)
             state = self.orchestrator.initialize(self.runbook)
             self.run_id = state["run_id"]
+            persisted_source = load_binding(self.paths.state_dir, self.run_id)
+            approved_source = state.get("source_binding")
+            if self.expected_source is not None:
+                proposed_source = make_binding(self.expected_source, self.run_id, state["plan_digest"])
+                if persisted_source is not None and persisted_source != proposed_source:
+                    raise SupervisorError("explicit source differs from the persisted launch binding")
+                persisted_source = proposed_source
+            if approved_source is not None:
+                if persisted_source is not None and persisted_source != approved_source:
+                    raise SupervisorError("source launch binding differs from the approved event ledger")
+                persisted_source = approved_source
+            if self.source_binding_digest is not None and (persisted_source is None or canonical_digest(persisted_source) != self.source_binding_digest):
+                raise SupervisorError("required source launch binding is missing or changed")
+            if persisted_source is not None:
+                if persisted_source["run_id"] != self.run_id or persisted_source["plan_digest"] != state["plan_digest"]:
+                    raise SupervisorError("source launch binding belongs to a different frozen plan")
+                assert_source(persisted_source["source"], self.workspace)
+                persist_binding(self.paths.state_dir, persisted_source)
+                self.orchestrator.bind_source(self.run_id, persisted_source["source"])
+                state = self.orchestrator.state(self.run_id)
             if state["status"] == "draft" and self.approve_by:
                 self.orchestrator.approve_plan(self.run_id, self.approve_by, state["plan_digest"])
                 state = self.orchestrator.state(self.run_id)
@@ -886,6 +929,7 @@ def spawn_supervisor(
     database: Optional[Path] = None,
     approve_by: Optional[str] = None,
     timeout: float = 10,
+    expected_source: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Start one detached authoritative supervisor and prove its socket is live."""
     workspace = Path(workspace).resolve()
@@ -899,10 +943,19 @@ def spawn_supervisor(
     except ValueError as error:
         raise SupervisorError("supervisor database must stay inside the state directory") from error
     paths.control_dir.mkdir(parents=True, exist_ok=True)
+    frozen_runbook = load_runbook(runbook)
+    launch_binding = load_binding(state_dir, frozen_runbook["run"]["id"])
+    if expected_source is not None:
+        launch_binding = make_binding(expected_source, frozen_runbook["run"]["id"], runbook_digest(frozen_runbook))
+        assert_source(launch_binding["source"], workspace)
+        persist_binding(state_dir, launch_binding)
+    package_root = str(Path(__file__).resolve().parents[1])
+    bootstrap = "import sys;sys.path.insert(0,{});from camol.cli import main;raise SystemExit(main())".format(repr(package_root))
     command = [
         sys.executable,
-        "-m",
-        "camol",
+        "-I",
+        "-c",
+        bootstrap,
         "serve",
         str(Path(runbook).resolve()),
         "--workspace",
@@ -914,15 +967,13 @@ def spawn_supervisor(
         command.extend(["--db", str(Path(database).resolve())])
     if approve_by:
         command.extend(["--approve-by", approve_by])
+    if launch_binding is not None:
+        command.extend(["--source-binding-digest", canonical_digest(launch_binding)])
     child_environment = {
         name: os.environ[name]
-        for name in ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH")
+        for name in ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL")
         if name in os.environ
     }
-    package_root = str(Path(__file__).resolve().parents[1])
-    child_environment["PYTHONPATH"] = os.pathsep.join(
-        item for item in (package_root, child_environment.get("PYTHONPATH", "")) if item
-    )
     with paths.log.open("ab", buffering=0) as log:
         process = subprocess.Popen(
             command,
@@ -943,6 +994,13 @@ def spawn_supervisor(
         if paths.socket.exists() and paths.token.exists():
             try:
                 response = asyncio.run(send_control(state_dir, "ping"))
+                if response.get("pid") != process.pid:
+                    raise SupervisorError("control endpoint is not the newly launched supervisor")
+                actual_plan = asyncio.run(send_control_v2(state_dir, "plan"))["result"]
+                if (actual_plan.get("run_id") != frozen_runbook["run"]["id"]
+                        or actual_plan.get("plan_digest") != runbook_digest(frozen_runbook)
+                        or (launch_binding is not None and actual_plan.get("source_binding") != launch_binding)):
+                    raise SupervisorError("control endpoint does not bind the exact launched plan and source")
             except (SupervisorError, OSError, asyncio.TimeoutError, json.JSONDecodeError):
                 # A previous crash can leave both files behind. The new child
                 # owns the leader lock and will replace the socket; keep

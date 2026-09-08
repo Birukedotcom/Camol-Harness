@@ -32,6 +32,7 @@ from .probes import AdapterBinaryProbe, ProbeContext
 from .capacity import CapacityError
 from .capacity_runtime import CapacityCoordinator, enabled as capacity_enabled
 from .git_view import execution_environment, GitViewError
+from .source_binding import SourceBindingError, load_binding, require_source_admission
 
 
 class HarnessRunner:
@@ -51,6 +52,26 @@ class HarnessRunner:
     def close(self):
         if self.capacity is not None:
             self.capacity.close()
+
+    def _ensure_source_binding(self, run_id):
+        state = self.orchestrator.state(run_id)
+        binding = state.get("source_binding")
+        if self.workspaces is None:
+            if binding is not None:
+                raise WorkspaceError("source-bound runs require a persistent isolated workspace")
+            return None
+        try:
+            persisted = load_binding(self.state_dir, run_id)
+            if binding is None and persisted is not None:
+                raise SourceBindingError("persisted source baseline is not bound in the approved event ledger")
+            if binding is not None:
+                if persisted is not None and persisted != binding:
+                    raise SourceBindingError("persisted source baseline differs from the event ledger")
+                self.workspaces.bind_source_contract(binding)
+                self.workspaces.assert_source_ready(run_id)
+            return binding
+        except SourceBindingError as error:
+            raise WorkspaceError(str(error)) from error
 
     async def _before_launch(self, run_id, assignment, turn_number):
         if self.capacity is None:
@@ -693,10 +714,14 @@ class HarnessRunner:
         else:
             adapter = create_agent_adapter(agent["adapter"]["kind"], execution_workspace, run_id)
         async def authorize_launch(owned, number):
+            self._ensure_source_binding(run_id)
             if self.state_dir is not None:
                 adapter.execution_environment = execution_environment(self.state_dir, execution_workspace, bundle)
             if capacity_enabled(state):
                 await self._before_launch(run_id, owned, number)
+                self._ensure_source_binding(run_id)
+                if self.state_dir is not None:
+                    adapter.execution_environment = execution_environment(self.state_dir, execution_workspace, bundle)
         adapter.before_launch = authorize_launch
         task_status = state["tasks"][assignment["task_id"]]["status"]
         if task_status == "leased":
@@ -888,6 +913,7 @@ class HarnessRunner:
             return None
         state = self.orchestrator.state(run_id)
         evaluator_workspace = self.workspace
+        source_binding = self._ensure_source_binding(run_id)
         revision_base = (state.get("revision") or {}).get("base_revision")
         if revision_base:
             if self.workspaces is None:
@@ -895,6 +921,10 @@ class HarnessRunner:
             baseline = self.workspaces.prepare_verifier(
                 run_id, "revision-baseline", "revision-" + revision_base, base_revision=revision_base,
             )
+            evaluator_workspace = baseline.path
+        elif source_binding:
+            baseline = self.workspaces.prepare_verifier(run_id, "source-baseline", "source-" + source_binding["source"]["revision"],
+                base_revision=source_binding["source"]["revision"])
             evaluator_workspace = baseline.path
         bundle = self.evaluators.compile(
             state["runbook"], evaluator_workspace, state["plan_digest"]
@@ -905,6 +935,7 @@ class HarnessRunner:
     def _ensure_admissions(self, run_id: str) -> None:
         if self.workspaces is None:
             return
+        source_binding = self._ensure_source_binding(run_id)
         state = self.orchestrator.state(run_id)
         runbook = state["runbook"]
         maximum = runbook["run"].get("max_concurrency", runbook["run"].get("max_agents"))
@@ -922,7 +953,7 @@ class HarnessRunner:
             self.workspaces,
             clock=self.orchestrator.clock,
         )
-        integration_base = state.get("integration_head") or self.workspaces.head_revision()
+        integration_base = state.get("integration_head") or (source_binding["source"]["revision"] if source_binding else self.workspaces.head_revision())
         tasks = [
             task for task in state["tasks"].values()
             if task["status"] in {"pending", "waiting"}
@@ -976,6 +1007,8 @@ class HarnessRunner:
                         task_id=task["id"], box_id=agent["id"],
                     ))
                     continue
+                self._ensure_source_binding(run_id)
+                require_source_admission(self.orchestrator.state(run_id), bundle)
                 decision = self.orchestrator.record_admission(run_id, bundle)
                 state = self.orchestrator.state(run_id)
                 if decision.ready:
@@ -1051,6 +1084,11 @@ class HarnessRunner:
 
     async def _run_assignment(self, run_id: str, assignment: Dict[str, Any]) -> None:
         """Keep bounded proof alive while a worker or evaluator is in flight."""
+        try:
+            self._ensure_source_binding(run_id)
+        except WorkspaceError as error:
+            self._pause_assignment(run_id, assignment, "WORKSPACE_CONFLICT", str(error))
+            return
         if self.state_dir is not None:
             boundary_state = self.orchestrator.state(run_id)
             admitted = self._admission_for(boundary_state, assignment)
@@ -1185,6 +1223,7 @@ class HarnessRunner:
                             raise
                         self.orchestrator.block_run(run_id, "admission_failure", {"detail": str(error)})
                         return self.orchestrator.state(run_id)
+                    self._ensure_source_binding(run_id)
                     for assignment in self.orchestrator.lease_ready_tasks(run_id):
                         running[assignment["task_id"]] = asyncio.create_task(self._run_assignment(run_id, assignment))
                 if not running:

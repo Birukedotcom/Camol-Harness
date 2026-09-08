@@ -36,6 +36,9 @@ from .schema import canonical_digest
 from .capacity import CapacityBroker, CapacityError, validate_supply
 from .models import DownloadPlan, ModelStore, ModelError
 from .diagnostics import profile_run, event_metadata
+from .json_contracts import load_contract
+from .ssh_protocol import ALL_COMMANDS as SSH_COMMANDS, MUTATING_COMMANDS as SSH_MUTATIONS, SSHTarget, SSHTransportError
+from .source_binding import SourceBindingError
 
 
 def _write_json(value: Any) -> None:
@@ -177,8 +180,8 @@ def command_watchers(args: argparse.Namespace) -> int:
 
 
 def command_watch(args: argparse.Namespace) -> int:
-    spec = WatchSpec.from_dict(json.loads(Path(args.spec).read_text(encoding="utf-8"))) if args.spec else None
-    schedule = normalize_schedule(json.loads(Path(args.schedule).read_text(encoding="utf-8"))) if args.schedule else None
+    spec = WatchSpec.from_dict(load_contract(args.spec)) if args.spec else None
+    schedule = normalize_schedule(load_contract(args.schedule)) if args.schedule else None
     if args.watch_action == "validate":
         if spec is None and schedule is None:
             raise WatcherError("watch validate requires --spec or --schedule")
@@ -346,10 +349,14 @@ def command_provider_preflight(args: argparse.Namespace) -> int:
 
 
 def command_serve(args: argparse.Namespace) -> int:
+    source_options = {}
+    if getattr(args, "source_binding_digest", None) is not None:
+        source_options["source_binding_digest"] = args.source_binding_digest
     asyncio.run(
         Supervisor(
             Path(args.runbook), Path(args.workspace), Path(args.state_dir),
             database=Path(args.db) if args.db else None, approve_by=args.approve_by,
+            **source_options,
         ).serve()
     )
     return 0
@@ -386,8 +393,8 @@ def command_control(args: argparse.Namespace) -> int:
 
 
 def command_bench_compare(args: argparse.Namespace) -> int:
-    direct = BenchmarkTrial.from_dict(json.loads(Path(args.direct).read_text(encoding="utf-8")))
-    camol = BenchmarkTrial.from_dict(json.loads(Path(args.camol).read_text(encoding="utf-8")))
+    direct = BenchmarkTrial.from_dict(load_contract(args.direct))
+    camol = BenchmarkTrial.from_dict(load_contract(args.camol))
     _write_json(compare_trials(direct, camol))
     return 0
 
@@ -396,7 +403,7 @@ def command_campaign(args: argparse.Namespace) -> int:
     if args.campaign_action == "validate":
         if not args.manifest:
             raise BenchmarkError("campaign validate requires --manifest")
-        manifest = validate_campaign(json.loads(Path(args.manifest).read_text(encoding="utf-8")))
+        manifest = validate_campaign(load_contract(args.manifest, max_bytes=8 << 20))
         _write_json(dict(valid=True, manifest_digest=canonical_digest(manifest),
                          expected_trials=len(manifest["tasks"]) * len(manifest["arms"]) * manifest["repetitions"]))
         return 0
@@ -417,13 +424,13 @@ def command_swebench(args: argparse.Namespace) -> int:
         if not args.images or not args.environment or not args.dataset_revision:
             raise BenchmarkError("swebench freeze requires --images, --environment and a full --dataset-revision")
         lock = freeze_offline_lock(Path(args.dataset), Path(args.prepared), dataset_revision=args.dataset_revision,
-                 images=json.loads(Path(args.images).read_text(encoding="utf-8")),
-                 environment=json.loads(Path(args.environment).read_text(encoding="utf-8")))
+                 images=load_contract(args.images),
+                 environment=load_contract(args.environment))
         _write_json(dict(lock=lock, lock_digest=canonical_digest(lock), download_performed=False, grader_executed=False))
         return 0
     if not args.lock:
         raise BenchmarkError("swebench inspect requires --lock")
-    lock = json.loads(Path(args.lock).read_text(encoding="utf-8"))
+    lock = load_contract(args.lock, max_bytes=8 << 20)
     dataset = OfflineVerifiedDataset(Path(args.dataset), Path(args.prepared), lock)
     identities = [item["instance_id"] for item in dataset.lock["instances"]]
     if args.task_id:
@@ -442,7 +449,7 @@ def command_capacity(args: argparse.Namespace) -> int:
     if args.capacity_action == "publish":
         if not args.supply or not args.by or not args.digest:
             raise CapacityError("publish requires --supply, --by and the exact reviewed --digest")
-        supply = validate_supply(json.loads(Path(args.supply).read_text(encoding="utf-8")))
+        supply = validate_supply(load_contract(args.supply))
         if supply["provenance"] != "owner_declared":
             raise CapacityError("a JSON file is owner-declared supply, not an executed observer receipt")
         if supply["namespace"] != args.namespace or supply["source"] != "owner/" + args.by:
@@ -464,7 +471,7 @@ def command_capacity(args: argparse.Namespace) -> int:
 
 
 def command_models(args: argparse.Namespace) -> int:
-    plan = DownloadPlan.from_dict(json.loads(Path(args.plan).read_text(encoding="utf-8"))) if args.plan else None
+    plan = DownloadPlan.from_dict(load_contract(args.plan)) if args.plan else None
     if args.model_action in {"validate", "prepare"} and plan is None:
         raise ModelError("model validate/prepare requires --plan")
     if args.model_action == "validate":
@@ -499,6 +506,95 @@ def command_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_model_host(args: argparse.Namespace) -> int:
+    from .model_host import LlamaCppModelHost, ModelHostPlan, ModelHostUnload
+    from .session import default_state_root
+
+    action = args.host_action
+    plan = ModelHostPlan.from_dict(load_contract(args.plan)) if args.plan else None
+    if action in {"validate", "prepare"} and plan is None:
+        raise ModelError("model-host validate/prepare requires --plan")
+    if action == "validate":
+        _write_json(dict(plan=plan.to_dict(), plan_digest=plan.digest(), starts_process=False,
+                         downloads_model=False, proves_inference=False))
+        return 0
+    if action not in {"prepare", "inventory", "unload"} and not args.plan_digest:
+        raise ModelError("this model-host operation requires --plan-digest")
+    if action in {"approve", "load", "unload"} and not args.by:
+        raise ModelError("this model-host operation requires --by naming the exact owner")
+    if action in {"load", "propose-unload"} and not args.operation_id:
+        raise ModelError("load/propose-unload requires a unique --operation-id")
+    if action == "unload" and (not args.request or not args.digest):
+        raise ModelError("unload requires --request and the exact reviewed request --digest")
+    request = ModelHostUnload.from_dict(load_contract(args.request)) if action == "unload" else None
+    if args.live and action != "status":
+        raise ModelError("--live is only valid with status; other inspections do not contact a model host")
+    root = Path(args.root).expanduser() if args.root else default_state_root() / "model-hosts"
+    with LlamaCppModelHost(root, read_only=action in {"status", "inventory", "events", "propose-unload"}) as host:
+        if action == "prepare":
+            result = host.prepare(plan)
+        elif action == "approve":
+            result = host.approve(args.plan_digest, args.by)
+        elif action == "load":
+            result = host.load(args.plan_digest, args.by, operation_id=args.operation_id)
+        elif action == "inventory":
+            result = host.inventory()
+        elif action == "events":
+            result = host.events(args.plan_digest)
+        elif action == "propose-unload":
+            proposal = host.propose_unload(args.plan_digest, args.operation_id)
+            result = dict(request=proposal.to_dict(), request_digest=proposal.digest(), stops_process=False)
+        elif action == "unload":
+            result = host.unload(request, args.by, approve_digest=args.digest)
+        else:
+            result = host.status(args.plan_digest, live=args.live)
+    _write_json(result)
+    # A durable operation receipt is not success by itself. Scripts must not
+    # treat an uncertain/failed allocation or stop as a completed transition.
+    if action == "load":
+        return 0 if result.get("status") == "loaded" and result.get("loaded") == "observed" else 2
+    if action == "unload":
+        return 0 if result.get("status") == "unloaded" and result.get("loaded") == "no" else 2
+    return 0
+
+
+def command_remote(args: argparse.Namespace) -> int:
+    from .ssh_bridge import bridge_identity
+    from .ssh_transport import SSHControlClient
+
+    if args.remote_action == "identity":
+        _write_json(dict(identity=bridge_identity(), provenance="local host self-report, not hardware attestation",
+                         contacts_remote=False))
+        return 0
+    if not args.target:
+        raise SSHTransportError("POLICY_DENIED", "remote operation requires --target")
+    target = SSHTarget.from_dict(load_contract(args.target))
+    if args.remote_action == "validate":
+        _write_json(dict(target=target.to_dict(), profile_digest=target.digest(), contacts_remote=False,
+                         proves_worker_readiness=False))
+        return 0
+    if not args.state_dir:
+        raise SSHTransportError("POLICY_DENIED", "remote operation requires a private --state-dir for dispatch receipts")
+    if args.remote_action == "request":
+        if not args.remote_command:
+            raise SSHTransportError("POLICY_DENIED", "remote request requires --command")
+        if args.remote_command in SSH_MUTATIONS and (not args.allow_mutation or not args.by):
+            raise SSHTransportError("POLICY_DENIED", "remote mutation requires explicit --allow-mutation and --by; profile and remote policy must also permit it")
+    if args.remote_action == "acknowledge-unknown" and (not args.request_id or not args.by or not args.reason):
+        raise SSHTransportError("POLICY_DENIED", "acknowledge-unknown requires --request-id, --by and --reason; it does not establish success")
+    params = load_contract(args.params) if args.params else {}
+    client = SSHControlClient(target, state_dir=Path(args.state_dir), ssh_binary=args.ssh_binary,
+                              timeout=args.timeout, read_only=args.remote_action == "receipts")
+    if args.remote_action == "receipts":
+        result = client.receipts()
+    elif args.remote_action == "acknowledge-unknown":
+        result = client.acknowledge_unknown(args.request_id, requested_by=args.by, note=args.reason)
+    else:
+        result = asyncio.run(client.request(args.remote_command, params=params, requested_by=args.by))
+    _write_json(result)
+    return 2 if isinstance(result, dict) and result.get("ok") is False else 0
+
+
 def command_revise(args: argparse.Namespace) -> int:
     if args.revision_action == "show":
         from .supervisor import SupervisorPaths
@@ -516,7 +612,7 @@ def command_revise(args: argparse.Namespace) -> int:
         if args.revision_action == "propose":
             if not args.runbook or not args.reason:
                 raise RevisionError("revise propose requires --runbook and --reason")
-            effects = json.loads(Path(args.effect_reruns).read_text(encoding="utf-8")) if args.effect_reruns else None
+            effects = load_contract(args.effect_reruns) if args.effect_reruns else None
             _write_json(harness.propose_revision(Path(args.runbook), reason=args.reason, effect_reruns=effects))
         else:
             if not args.by or not args.digest:
@@ -699,6 +795,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--workspace", default=".")
     serve.add_argument("--state-dir", required=True)
     serve.add_argument("--approve-by")
+    serve.add_argument("--source-binding-digest", help=argparse.SUPPRESS)
     serve.set_defaults(handler=command_serve)
 
     start = subparsers.add_parser("start", help="start a detached supervisor and return to the shell")
@@ -761,6 +858,32 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--confirm-discard", action="store_true", help="authorize irrecoverable removal of this plan's unverified partial bytes only")
     models.set_defaults(handler=command_models)
 
+    model_host = subparsers.add_parser("model-host", help="explicitly prepare, approve and control a finite, owned local model process")
+    model_host.add_argument("host_action", choices=("validate", "prepare", "approve", "load", "status", "inventory", "events", "propose-unload", "unload"))
+    model_host.add_argument("--root", help="private host lifecycle state (default: Camol state home/model-hosts)")
+    model_host.add_argument("--plan", help="pinned local llama.cpp executable/model/authority contract JSON")
+    model_host.add_argument("--plan-digest", help="exact host plan subject, distinct from an unload request digest")
+    model_host.add_argument("--operation-id", help="explicit one-shot load or unload-request identity")
+    model_host.add_argument("--by", help="exact plan owner authorizing an operation")
+    model_host.add_argument("--request", help="exact frozen unload request JSON")
+    model_host.add_argument("--digest", help="canonical unload request digest approved by its owner")
+    model_host.add_argument("--live", action="store_true", help="explicitly read the exact owned endpoint during status; not inference")
+    model_host.set_defaults(handler=command_model_host)
+
+    remote = subparsers.add_parser("remote", help="explicit authenticated SSH control-plane connection; never worker provisioning")
+    remote.add_argument("remote_action", choices=("validate", "identity", "request", "receipts", "acknowledge-unknown"))
+    remote.add_argument("--target", help="strict pinned SSH target profile JSON")
+    remote.add_argument("--state-dir", help="private local dispatch journal, separate from the remote run state")
+    remote.add_argument("--command", dest="remote_command", choices=sorted(SSH_COMMANDS))
+    remote.add_argument("--params", help="strict JSON control parameters; never shell text")
+    remote.add_argument("--by", help="exact target owner")
+    remote.add_argument("--allow-mutation", action="store_true", help="explicitly opt in to the selected remote control mutation")
+    remote.add_argument("--request-id", help="exact unresolved dispatch to acknowledge without retry")
+    remote.add_argument("--reason", help="owner acknowledgment reason; not proof that a remote effect succeeded")
+    remote.add_argument("--ssh-binary", default="/usr/bin/ssh", help="explicit local OpenSSH executable")
+    remote.add_argument("--timeout", type=float, default=45)
+    remote.set_defaults(handler=command_remote)
+
     revise = subparsers.add_parser("revise", help="review or apply an immutable successor plan (execution must be stopped before apply)")
     revise.add_argument("revision_action", choices=("show", "propose", "apply"))
     revise.add_argument("--workspace", default=".")
@@ -780,8 +903,12 @@ def main(argv: Any = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
+    except SSHTransportError as error:
+        _write_json(dict(ok=False, error=dict(code=error.code, message=str(error)),
+                         request_id=error.request_id, outcome=error.outcome))
+        return 2
     except (
-        ArtifactError, RunbookError, SchemaError, StateTransitionError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
+        ArtifactError, RunbookError, SchemaError, StateTransitionError, SourceBindingError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
         WorkspaceError, ProviderError, SupervisorError, BenchmarkError, OSError, json.JSONDecodeError,
         ConnectionError, ConversationError, SessionError, InteractiveError,
     ) as error:

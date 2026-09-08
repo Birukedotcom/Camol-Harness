@@ -190,6 +190,8 @@ class ModelProfile:
 
 
 def load_model_profile(workspace: Path, relative: str) -> ModelProfile:
+    from .json_contracts import decode_contract, load_contract
+    from .schema import SchemaError
     if relative.startswith("@camol/"):
         profile_id = relative[len("@camol/"):]
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile_id):
@@ -201,8 +203,8 @@ def load_model_profile(workspace: Path, relative: str) -> ModelProfile:
         except (FileNotFoundError, OSError) as error:
             raise ProviderError("built-in model profile is unavailable") from error
         try:
-            return ModelProfile.from_dict(json.loads(payload))
-        except json.JSONDecodeError as error:
+            return ModelProfile.from_dict(decode_contract(payload))
+        except SchemaError as error:
             raise ProviderError("built-in model profile is malformed") from error
     root = Path(workspace).resolve()
     raw = Path(relative)
@@ -222,8 +224,8 @@ def load_model_profile(workspace: Path, relative: str) -> ModelProfile:
     if not path.is_file():
         raise ProviderError("model profile must be a regular non-symlink file")
     try:
-        return ModelProfile.from_dict(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError) as error:
+        return ModelProfile.from_dict(load_contract(path))
+    except (OSError, SchemaError) as error:
         raise ProviderError("model profile is not valid JSON-compatible YAML") from error
 
 
@@ -331,12 +333,14 @@ def capability_path(state_dir: Path, profile_id: str) -> Path:
 
 
 def read_capability(state_dir: Path, profile: ModelProfile) -> Optional[ProviderCapabilityReceipt]:
+    from .json_contracts import load_contract
+    from .schema import SchemaError
     path = capability_path(state_dir, profile.profile_id)
     if not path.is_file() or path.is_symlink():
         return None
     try:
-        return ProviderCapabilityReceipt.from_dict(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, ProviderError):
+        return ProviderCapabilityReceipt.from_dict(load_contract(path))
+    except (OSError, SchemaError, ProviderError):
         return None
 
 

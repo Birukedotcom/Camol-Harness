@@ -9,15 +9,18 @@ import signal
 import subprocess
 import queue
 import threading
-import urllib.error
-import urllib.request
+import tempfile
+import time
+import http.client
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from threading import Event
 
-from .connections import ConnectionError, open_without_proxy, validate_loopback_endpoint
+from .connections import ConnectionError, validate_loopback_endpoint
 from .probes import Redactor
+from .local_planning_http import AbortableLocalHTTP
+from .json_contracts import decode_contract
 
 
 class ConversationError(RuntimeError):
@@ -29,7 +32,7 @@ class ConversationCancelled(ConversationError):
 
 
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
-SYSTEM_PROMPT = """You are the planning-only orchestrator inside Camol. Help the human clarify software work, constraints, invariants, dependencies, evaluators, and resource limits. You do not execute tools, edit files, approve plans, or claim evidence. Be concise and explicitly label assumptions. Camol itself freezes and gates the executable plan after the human runs /grill and /approve."""
+SYSTEM_PROMPT = """You are the planning-only orchestrator inside Camol. Help the human clarify software work, constraints, invariants, dependencies, evaluators, and resource limits. You do not execute tools, edit files, approve plans, or claim evidence. Be concise and explicitly label assumptions. Camol itself freezes and gates executable plans after human review and approval. An explicit seed-assisted proposal request may ask for strict JSON within an existing reviewed envelope; obey that output contract without inventing authority or measurements."""
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,17 @@ class ConversationReply:
     resolved_model: Optional[str]
     input_tokens: Optional[int]
     output_tokens: Optional[int]
+
+    def __post_init__(self):
+        for field in ("input_tokens", "output_tokens"):
+            value = getattr(self, field)
+            if type(value) is not int or not 0 <= value <= (1 << 63) - 1:
+                object.__setattr__(self, field, None)
+        if self.resolved_model is not None and (
+            not isinstance(self.resolved_model, str) or not MODEL_PATTERN.fullmatch(self.resolved_model)
+            or Redactor().contains_sensitive(self.resolved_model)
+        ):
+            object.__setattr__(self, "resolved_model", None)
 
 
 def parse_selection(value: str) -> ProviderSelection:
@@ -64,19 +78,25 @@ def parse_selection(value: str) -> ProviderSelection:
     return ProviderSelection(provider, model or None)
 
 
-def _prompt(message: str, history: Sequence[Mapping[str, str]]) -> str:
-    transcript = []
+def planning_history(history: Sequence[Mapping[str, str]]) -> List[Dict[str, str]]:
+    """The exact bounded dialogue projection; operational notices are excluded."""
     conversation = [
         item
         for item in history
         if item.get("kind", "conversation") == "conversation"
         and not str(item.get("content", "")).startswith("model identity:")
     ]
+    selected = []
     for item in conversation[-20:]:
         role = item.get("role")
         content = item.get("content")
         if role in {"human", "orchestrator"} and isinstance(content, str):
-            transcript.append("{}: {}".format(role.upper(), content[:4_000]))
+            selected.append({"role": role, "content": content[:4_000], "kind": "conversation"})
+    return selected
+
+
+def _prompt(message: str, history: Sequence[Mapping[str, str]]) -> str:
+    transcript = ["{}: {}".format(item["role"].upper(), item["content"]) for item in planning_history(history)]
     return "{}\n\nConversation so far:\n{}\n\nHUMAN: {}\nORCHESTRATOR:".format(
         SYSTEM_PROMPT,
         "\n".join(transcript) if transcript else "(new conversation)",
@@ -85,8 +105,10 @@ def _prompt(message: str, history: Sequence[Mapping[str, str]]) -> str:
 
 
 def provider_argv(
-    selection: ProviderSelection, effort: str, workspace: Path, *, stream: bool = False
+    selection: ProviderSelection, effort: str, workspace: Path, *, stream: bool = False, no_tools: bool = False
 ) -> List[str]:
+    if no_tools:
+        require_tool_free_provider(selection)
     if effort not in {"low", "medium", "high", "xhigh", "max"}:
         raise ConversationError("effort is unsupported")
     if selection.provider == "claude":
@@ -102,6 +124,9 @@ def provider_argv(
         ]
         if stream:
             argv.extend(["--include-partial-messages", "--verbose"])
+        if no_tools:
+            argv.extend(["--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+                         "--setting-sources", ""])
         return argv
     if selection.provider == "codex":
         executable = shutil.which("codex")
@@ -117,6 +142,35 @@ def provider_argv(
         argv.append("-")
         return argv
     raise ConversationError("{} does not use a local CLI argv".format(selection.provider))
+
+
+def require_tool_free_provider(selection: ProviderSelection) -> None:
+    """Supported adapter controls, not a prompt promise or read-only sandbox."""
+    if selection.provider not in {"claude", "local"}:
+        raise ConversationError(
+            "/propose requires an explicitly selected Claude CLI with verified no-tools flags, or a local chat endpoint. "
+            "This Codex/OpenAI API planning path has no verified all-tools-off adapter; normal Codex chat and worker "
+            "plans remain available. A future no-tools API adapter needs its own API credentials, never extracted OAuth tokens."
+        )
+
+
+def _verify_tool_free_cli(executable: str, workspace: Path, runner: Any) -> None:
+    binary = Path(executable).resolve()
+    if binary == Path(workspace).resolve() or Path(workspace).resolve() in binary.parents:
+        raise ConversationError("proposal planning runtime cannot be executable code inside the source workspace")
+    # --help is local CLI introspection, not an inference request. Do not let
+    # project-local customization influence even this capability probe.
+    with tempfile.TemporaryDirectory(prefix="camol-planner-capability-") as directory:
+        try:
+            completed = runner([str(binary), "--safe-mode", "--help"], stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, cwd=directory, env=_environment(), timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ConversationError("cannot verify the Claude no-tools runtime flags; no planning request sent") from error
+    output = completed.stdout.decode("utf-8", "replace")
+    required = ("--tools", "--safe-mode", "--strict-mcp-config", "--mcp-config", "--setting-sources",
+                "--disable-slash-commands", "--permission-prompts", "--max-turns")
+    if completed.returncode or any(flag not in output for flag in required):
+        raise ConversationError("installed Claude runtime lacks verified no-tools controls; no planning request sent")
 
 
 def _environment() -> Dict[str, str]:
@@ -166,28 +220,30 @@ def _parse_cli_reply(provider: str, stdout: bytes) -> Tuple[str, Optional[str], 
     return "\n".join(texts), resolved, input_tokens, output_tokens
 
 
-def _local_reply(endpoint: str, model: str, prompt: str, timeout: int) -> ConversationReply:
+def _local_reply(endpoint: str, model: str, prompt: str, timeout: int, *, no_tools: bool = False, transport=None) -> ConversationReply:
     try:
         endpoint = validate_loopback_endpoint(endpoint)
     except ConnectionError as error:
         raise ConversationError(str(error)) from error
-    payload = json.dumps({
+    body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        endpoint.rstrip("/") + "/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    }
+    if no_tools:
+        body["tool_choice"] = "none"
+    payload = json.dumps(body).encode("utf-8")
     try:
-        with open_without_proxy(request, timeout=timeout) as response:
-            result = json.loads(response.read(8 << 20).decode("utf-8"))
-        text = result["choices"][0]["message"]["content"]
+        result = decode_contract((transport or AbortableLocalHTTP()).request(endpoint, payload, timeout), max_bytes=8 << 20)
+        message = result["choices"][0]["message"]
+        text = message.get("content")
         resolved = result.get("model")
         usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        if no_tools and (message.get("tool_calls") or message.get("function_call")):
+            error = ConversationError("local planning endpoint returned prohibited tool calls; no tools were executed")
+            error.reply = ConversationReply("", "local", model, resolved if isinstance(resolved, str) else None,
+                                            usage.get("prompt_tokens"), usage.get("completion_tokens"))
+            raise error
         if not isinstance(text, str) or not text.strip():
             raise ConversationError("local model returned no orchestrator message")
         return ConversationReply(
@@ -195,7 +251,7 @@ def _local_reply(endpoint: str, model: str, prompt: str, timeout: int) -> Conver
             resolved if isinstance(resolved, str) else None,
             usage.get("prompt_tokens"), usage.get("completion_tokens"),
         )
-    except (OSError, urllib.error.URLError, ValueError, KeyError, IndexError, json.JSONDecodeError) as error:
+    except (OSError, http.client.HTTPException, ValueError, KeyError, IndexError, TypeError, AttributeError, json.JSONDecodeError) as error:
         raise ConversationError("local model request failed without a usable response") from error
 
 
@@ -340,37 +396,52 @@ def converse(
     runner: Any = subprocess.run,
     on_chunk: Optional[Callable[[str], None]] = None,
     cancel_event: Optional[Event] = None,
+    no_tools: bool = False,
 ) -> ConversationReply:
     if cancel_event is not None and cancel_event.is_set():
         raise ConversationCancelled("planning request cancelled")
     selection = parse_selection(selection_text)
+    if no_tools:
+        require_tool_free_provider(selection)
     if selection.provider == "manual":
         raise ConversationError("manual mode has no model call; use /grill GOAL to build a deterministic plan")
     prompt = _prompt(message, history)
     if selection.provider == "local":
-        if cancel_event is not None:
-            result_queue = queue.Queue(maxsize=1)
-            def request_local() -> None:
-                try:
-                    result_queue.put((True, _local_reply(local_endpoint, selection.model or "", prompt, timeout)))
-                except Exception as error:
-                    result_queue.put((False, error))
-            threading.Thread(target=request_local, name="camol-local-planner", daemon=True).start()
+        transport = AbortableLocalHTTP()
+        result_queue = queue.Queue(maxsize=1)
+        def request_local() -> None:
+            try:
+                result_queue.put((True, _local_reply(local_endpoint, selection.model or "", prompt, timeout, no_tools=no_tools, transport=transport)))
+            except Exception as error:
+                result_queue.put((False, error))
+        worker = threading.Thread(target=request_local, name="camol-local-planner", daemon=True)
+        worker.start()
+        deadline = time.monotonic() + timeout
+        try:
             while True:
-                if cancel_event.is_set():
+                if cancel_event is not None and cancel_event.is_set():
                     raise ConversationCancelled("local planning wait cancelled; the endpoint may still finish its request, so usage is unknown")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ConversationError("local planning wait timed out; the endpoint may still finish its request, so usage is unknown")
                 try:
-                    succeeded, result = result_queue.get(timeout=0.1)
+                    succeeded, result = result_queue.get(timeout=min(.1, remaining))
                 except queue.Empty:
                     continue
                 if succeeded:
                     return result
                 raise result
-        return _local_reply(local_endpoint, selection.model or "", prompt, timeout)
+        finally:
+            # Also covers line-mode KeyboardInterrupt and exceptions outside the
+            # explicit cancellation branch; no orphan HTTP reader is intentional.
+            transport.abort()
+            worker.join(timeout=2.5)
     if selection.provider == "openai":
         raise ConversationError("OpenAI API execution is not enabled in Product V0; the key reference can be inspected with /connections")
     use_stream = runner is subprocess.run
-    argv = provider_argv(selection, effort, workspace, stream=use_stream or on_chunk is not None)
+    argv = provider_argv(selection, effort, workspace, stream=use_stream or on_chunk is not None, no_tools=no_tools)
+    if no_tools:
+        _verify_tool_free_cli(argv[0], workspace, runner)
     if use_stream:
         return _stream_cli(selection, argv, prompt, workspace, timeout, on_chunk or (lambda chunk: None), cancel_event)
     try:

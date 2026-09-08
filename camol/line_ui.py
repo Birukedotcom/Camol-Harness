@@ -23,6 +23,8 @@ def run_line_ui(workspace: Path, *, state_root: Optional[Path] = None, show_boot
             print("\ndetached")
             return 0
         try:
+            if text.lstrip().startswith("/propose "):
+                print("Proposal request: after validation, one planning invocation may consume the selected provider's quota; internal request count and cost may be unknown. No hard dollar cap, tools, worker execution, or automatic retry.", flush=True)
             response = controller.handle(text)
         except KeyboardInterrupt:
             controller.cancel_active()

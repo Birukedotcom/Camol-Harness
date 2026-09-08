@@ -284,6 +284,11 @@ class RevisionOrchestratorMixin:
             new_event(destination_id, "REVISION_LINKED", approved_by, {"proposal": proposal, "source_ledger_digest": canonical_digest(source_ledger), "approved_by": approved_by}, occurred_at=self._now()),
             new_event(destination_id, "PLAN_APPROVED", approved_by, {"approved_by": approved_by, "plan_digest": proposal["destination_plan_digest"]}, occurred_at=self._now()),
         ]
+        if state.get("source_binding") is not None:
+            from .source_binding import make_binding
+            destination_events.insert(2, new_event(destination_id, "SOURCE_BASELINE_BOUND", self.actor_id,
+                make_binding(state["source_binding"]["source"], destination_id, proposal["destination_plan_digest"]), occurred_at=self._now()))
+            destination_events[-1]["payload"]["source_binding_digest"] = canonical_digest(destination_events[2]["payload"])
         destination_projection = empty_state()
         for event in destination_events:
             destination_projection = apply_event(destination_projection, event)
@@ -354,6 +359,8 @@ def verify_revision_lineage(events, sources):
         if not isinstance(prior_events, list) or canonical_digest(prior_events) != payload["source_ledger_digest"]:
             raise RevisionError("revision source ledger digest is invalid")
         prior = project(prior_events)
+        if prior.get("source_binding") is not None and (current.get("source_binding") or {}).get("source") != prior["source_binding"]["source"]:
+            raise RevisionError("revision lost or changed its approved source baseline")
         if (prior["run_id"] != source_id or prior["status"] != "superseded"
                 or prior["plan_digest"] != proposal["source_plan_digest"]
                 or prior["approved_by"] != payload["approved_by"]

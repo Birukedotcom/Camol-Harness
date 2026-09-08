@@ -2,6 +2,7 @@
 
 import asyncio
 import getpass
+import hashlib
 import json
 import shlex
 import sqlite3
@@ -14,7 +15,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
 
 from .connections import ConnectionError, ConnectionRegistry
-from .conversation import ConversationCancelled, ConversationError, converse, parse_selection
+from .conversation import ConversationCancelled, ConversationError, converse, parse_selection, planning_history, require_tool_free_provider
 from .planning import (
     GrillState,
     PlanningError,
@@ -71,6 +72,7 @@ SLASH_COMMANDS = (
     SlashCommand("/model", "Choose the planning model", takes_value=True),
     SlashCommand("/effort", "Set provider reasoning effort", takes_value=True),
     SlashCommand("/grill", "Turn a goal into a gated plan", takes_value=True),
+    SlashCommand("/propose", "One model proposal inside a reviewed seed", takes_value=True),
     SlashCommand("/import", "Review an existing executable runbook", takes_value=True),
     SlashCommand("/plan", "Inspect the exact candidate plan", run_from_palette=True),
     SlashCommand("/approve", "Confirm the exact visible plan", takes_value=True),
@@ -110,6 +112,8 @@ skills and slash commands are not imported into the planning-only orchestrator."
 
 HELP = """Commands
   /grill GOAL              question and freeze a candidate plan
+  /propose --from SEED.json GOAL
+                            one disclosed no-tools invocation; unapproved V5/V6 seed refinement
   /import PATH             import an exact runbook, bound to this checkout revision
   /plan                    show the full candidate plan and exact digest
   /approve yes|DIGEST      approve only that visible plan
@@ -209,14 +213,16 @@ def validate_envelope(value: Mapping[str, Any]) -> Dict[str, Any]:
         "schema", "schema_version", "proposal", "run_id", "execution_status",
         "execution_limitation", "runbook",
     }
-    if isinstance(value, dict) and value.get("schema_version") == 2:
+    if isinstance(value, dict) and value.get("schema_version") in {2, 3}:
         fields.add("source")
+        if value["schema_version"] == 3:
+            fields.add("origin")
     if not isinstance(value, dict) or set(value) != fields:
         raise InteractiveError("product plan has the wrong fields")
-    if value["schema"] != "camol.product_plan" or type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2}:
+    if value["schema"] != "camol.product_plan" or type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2, 3}:
         raise InteractiveError("product plan schema is unsupported")
     proposal = validate_proposal(value["proposal"]) if value["proposal"] is not None else None
-    if proposal is None and (value["schema_version"] != 2 or value["runbook"] is None):
+    if proposal is None and (value["schema_version"] not in {2, 3} or value["runbook"] is None):
         raise InteractiveError("only an imported executable runbook may omit a proposal")
     if value["schema_version"] == 2:
         source = value["source"]
@@ -226,6 +232,18 @@ def validate_envelope(value: Mapping[str, Any]) -> Dict[str, Any]:
             raise InteractiveError("imported source identity must be non-empty")
         if not Path(source["workspace"]).is_absolute():
             raise InteractiveError("imported workspace must be absolute")
+    if value["schema_version"] == 3:
+        from .debug_execution import validate_source
+        from .schema import require_digest, require_identifier
+        validate_source(value["source"])
+        origin = value["origin"]
+        if not isinstance(origin, dict) or set(origin) != {"kind", "seed_path", "seed_digest", "seed_bytes_digest", "request_digest", "response_digest", "planning_call_id"}:
+            raise InteractiveError("model proposal origin has missing or unknown fields")
+        if origin["kind"] != "seed_assisted_model_proposal" or not isinstance(origin["seed_path"], str) or not Path(origin["seed_path"]).is_absolute():
+            raise InteractiveError("model proposal origin is invalid")
+        for name in ("seed_digest", "seed_bytes_digest", "request_digest", "response_digest"):
+            require_digest(origin[name], name)
+        require_identifier(origin["planning_call_id"], "planning_call_id")
     if not isinstance(value["run_id"], str) or not value["run_id"]:
         raise InteractiveError("product plan run_id is required")
     if value["execution_status"] not in {"planning_only", "preflight_required", "ready"}:
@@ -254,8 +272,11 @@ def render_plan(plan: Mapping[str, Any], digest: str) -> str:
             "kernel runbook digest: " + runbook_digest(runbook),
             "This exact imported contract defines agents, tasks, commands, verification, authority and budgets.",
             "limitation: " + plan["execution_limitation"],
+            *( ["Model-generated candidate: all state gates remain human; origin=" + json.dumps(plan["origin"], sort_keys=True)] if plan["schema_version"] == 3 else [] ),
             "canonical product plan JSON:", json.dumps(plan, indent=2, sort_keys=True),
-            "Nothing has started. Review every command and grant, then /approve yes or the exact plan digest.",
+            ("Nothing has started. Review every command, grant and mapping, then /approve " + digest
+             if plan["schema_version"] == 3 else
+             "Nothing has started. Review every command and grant, then /approve yes or the exact plan digest."),
         ])
     lines = [
         "PLAN {}".format(digest),
@@ -371,42 +392,10 @@ class InteractiveController:
         self._persist_message("human", text, kind="command" if text.startswith("/") else "conversation")
         try:
             if text.startswith("/"):
-                return self._command(text)
+                return self._command(text, on_chunk=on_chunk)
             if self.session.get("grill"):
                 return self._answer_grill(text)
-            selection = parse_selection(self.session["model"])
-            started_at = datetime.now(timezone.utc).isoformat()
-            started = time.monotonic()
-            reply = None
-            call_status = "failed"
-            try:
-                reply = self.converse_fn(
-                    self.session["model"], text, self.session["messages"][:-1],
-                    effort=self.session["effort"], workspace=self.workspace, on_chunk=on_chunk,
-                    cancel_event=self._cancel_event,
-                )
-                if self._cancel_event.is_set():
-                    raise ConversationCancelled("planning request cancelled")
-                call_status = "completed"
-            except ConversationCancelled:
-                call_status = "cancelled"
-                raise
-            finally:
-                if selection.provider != "manual":
-                    self.store.append_planning_call({
-                        "schema": "camol.planning_call", "schema_version": 1,
-                        "call_id": "planning-" + uuid4().hex,
-                        "session_id": self.session["session_id"],
-                        "provider": selection.provider,
-                        "requested_model": selection.model,
-                        "resolved_model": reply.resolved_model if reply else None,
-                        "effort": self.session["effort"], "started_at": started_at,
-                        "duration_seconds": round(time.monotonic() - started, 6),
-                        "status": call_status,
-                        "input_tokens": reply.input_tokens if reply else None,
-                        "output_tokens": reply.output_tokens if reply else None,
-                        "total_cost_usd": None,
-                    })
+            reply, _ = self._call_planning(text, on_chunk=on_chunk)
             identity = "{} -> {}".format(reply.requested_model or "default", reply.resolved_model or "unreported")
             identity_message = "model identity: {} ({})".format(identity, reply.provider)
             self._persist_message("orchestrator", reply.text, kind="conversation")
@@ -418,7 +407,44 @@ class InteractiveController:
         ) as error:
             return self._respond("denied: {}".format(error), kind="error")
 
-    def _command(self, text: str) -> CommandResponse:
+    def _call_planning(self, text: str, *, on_chunk=None, request_kind="conversation", call_id=None, history=None, no_tools=False):
+        selection = parse_selection(self.session["model"])
+        call_id = call_id or "planning-" + uuid4().hex
+        started_at, started = datetime.now(timezone.utc).isoformat(), time.monotonic()
+        reply, call_status = None, "failed"
+        try:
+            options = {"no_tools": True} if no_tools else {}
+            reply = self.converse_fn(
+                self.session["model"], text, self.session["messages"][:-1] if history is None else history,
+                effort=self.session["effort"], workspace=self.workspace, on_chunk=on_chunk,
+                cancel_event=self._cancel_event,
+                **options,
+            )
+            if self._cancel_event.is_set():
+                raise ConversationCancelled("planning request cancelled")
+            call_status = "completed"
+            return reply, call_id
+        except ConversationCancelled:
+            call_status = "cancelled"
+            raise
+        except ConversationError as error:
+            reply = getattr(error, "reply", None)
+            raise
+        finally:
+            if selection.provider != "manual":
+                self.store.append_planning_call({
+                    "schema": "camol.planning_call", "schema_version": 1, "call_id": call_id,
+                    "session_id": self.session["session_id"], "provider": selection.provider,
+                    "requested_model": selection.model, "resolved_model": reply.resolved_model if reply else None,
+                    "effort": self.session["effort"], "started_at": started_at,
+                    "duration_seconds": round(time.monotonic() - started, 6), "status": call_status,
+                    "request_kind": request_kind, "input_tokens": reply.input_tokens if reply else None,
+                    "output_tokens": reply.output_tokens if reply else None, "total_cost_usd": None,
+                    "tool_policy": "none" if no_tools else "legacy_planning",
+                    "provider_request_count": None,
+                })
+
+    def _command(self, text: str, *, on_chunk=None) -> CommandResponse:
         try:
             parts = shlex.split(text)
         except ValueError as error:
@@ -453,6 +479,8 @@ class InteractiveController:
             return self._respond("GRILL 1/{} — {}".format(len(grill_question_names()), grill.question()))
         if command == "/import":
             return self._import(arguments)
+        if command == "/propose":
+            return self._propose(arguments, on_chunk=on_chunk)
         if command == "/plan":
             if self.session["plan"] is None:
                 raise InteractiveError("there is no plan; start with /grill GOAL")
@@ -746,6 +774,89 @@ class InteractiveController:
         )
         return self._respond(rendered)
 
+    def _propose(self, arguments: Sequence[str], *, on_chunk=None) -> CommandResponse:
+        from .debug_execution import source_identity
+        from .proposal import MAX_SEED_BYTES, MAX_RESPONSE_CHARS, parse_response, read_seed_bytes, request_prompt, strict_json, validate_seed
+        if len(arguments) < 3 or arguments[0] != "--from":
+            raise InteractiveError("usage: /propose --from REVIEWED_SEED.json GOAL (one planning invocation; no worker execution)")
+        self._reconcile_session()
+        if self.session["status"] == "running":
+            raise InteractiveError("an unfinished run owns this session; inspect it before proposing a replacement")
+        selection = parse_selection(self.session["model"])
+        require_tool_free_provider(selection)
+        path = Path(arguments[1]).expanduser()
+        path = path if path.is_absolute() else self.workspace / path
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_SEED_BYTES:
+            raise InteractiveError("proposal seed must be a regular non-symlink JSON file of at most 24000 bytes")
+        path = path.resolve(strict=True)
+        seed_bytes = read_seed_bytes(path)
+        if len(seed_bytes) > MAX_SEED_BYTES:
+            raise InteractiveError("proposal seed changed or exceeds its byte bound")
+        seed = validate_seed(strict_json(seed_bytes.decode("utf-8")))
+        source = source_identity(self.workspace)
+        goal, owner = " ".join(arguments[2:]), getpass.getuser()
+        prompt = request_prompt(seed, goal, source, owner)
+        call_id = "planning-" + uuid4().hex
+        seed_bytes_digest = "sha256:" + hashlib.sha256(seed_bytes).hexdigest()
+        # This is the exact logical request, including the existing bounded
+        # dialogue; no arbitrary repository contents or dependency crawl is sent.
+        request = {"message": prompt, "history": planning_history(self.session["messages"][:-1]),
+                   "model": self.session["model"], "effort": self.session["effort"], "tool_policy": "none"}
+        origin = {"kind": "seed_assisted_model_proposal", "seed_path": str(path),
+                  "seed_digest": canonical_digest(seed), "seed_bytes_digest": seed_bytes_digest,
+                  "request_digest": canonical_digest(request), "response_digest": None, "planning_call_id": call_id}
+        notice = ("PROPOSE — one planning-only {} invocation, 120-second request timeout; internal provider request count and cost may be unknown and are not hard-capped. "
+                  "Sending the reviewed seed, goal and existing bounded dialogue, not repository file contents. "
+                  "No tools, worker launch, approval, or automatic retry. Response must stay inside the seed envelope.").format(self.session["model"])
+        self._persist_message("system", notice, kind="notice")
+        if on_chunk:
+            on_chunk(notice + "\n")
+        self._persist_message("system", "PROPOSAL REQUEST\n" + prompt, kind="notice")
+        self.store.append_proposal_event({"type": "PROPOSAL_REQUESTED", "origin": origin, "source": source,
+                                         "request": request, "observed_at": datetime.now(timezone.utc).isoformat()})
+        outcome = "rejected"
+        try:
+            reply, _ = self._call_planning(prompt, request_kind="seed_proposal", call_id=call_id,
+                                           history=request["history"], no_tools=True)
+            if not isinstance(reply.text, str):
+                raise PlanningError("planning provider returned a non-text proposal")
+            origin["response_digest"] = "sha256:" + hashlib.sha256(reply.text.encode("utf-8")).hexdigest()
+            self._persist_message("orchestrator", "UNAPPROVED PROPOSAL RESPONSE\n" + reply.text[:MAX_RESPONSE_CHARS]
+                                  + ("\n[response truncated; oversized candidate rejected]" if len(reply.text) > MAX_RESPONSE_CHARS else ""), kind="notice")
+            result = parse_response(reply.text, seed, goal=goal, owner=owner)
+            if source_identity(self.workspace) != source:
+                raise InteractiveError("source checkout changed during planning; proposal rejected, usage retained")
+            if path.is_symlink() or read_seed_bytes(path) != seed_bytes:
+                raise InteractiveError("reviewed seed changed during planning; proposal rejected, usage retained")
+            if "questions" in result:
+                outcome = "questions"
+                questions = "\n".join("{}. {}".format(index, text) for index, text in enumerate(result["questions"], 1))
+                self._persist_message("orchestrator", "Questions about the proposed goal " + goal + ":\n" + questions, kind="conversation")
+                return self._respond("PROPOSAL QUESTIONS — no new candidate or approval was created. Existing plan, if any, is unchanged. Answer in dialogue, revise the seed if needed, then explicitly invoke /propose again.\n" + questions)
+            runbook = result["runbook"]
+            kinds = {agent["adapter"]["kind"] for agent in runbook["agents"]}
+            plan = validate_envelope({
+                "schema": "camol.product_plan", "schema_version": 3, "proposal": None,
+                "run_id": runbook["run"]["id"], "runbook": runbook, "source": source, "origin": origin,
+                "execution_status": "ready" if kinds == {"process"} else "preflight_required",
+                "execution_limitation": "Seed-assisted model proposal, not verified evidence. Every task/state gate and final acceptance requires human review. Existing provider limitations and exact readiness remain in force; mixed-provider terminal launches are unsupported.",
+            })
+            digest = canonical_digest(plan)
+            rendered = render_plan(plan, digest)
+            if len(rendered) > 200000:
+                raise InteractiveError("model candidate is too large to review safely")
+            self.session = self.store.update(self.session, plan=plan, plan_digest=digest, approved_digest=None,
+                run_id=plan["run_id"], goal=goal, grill=None, state_dir=str(self.store.runs_dir / ("run-" + uuid4().hex)),
+                selected_box=None, event_cursor=0, status="plan_ready")
+            outcome = "candidate_ready"
+            return self._respond("MODEL CANDIDATE — nothing has started. Inspect every command, scope, and proposed invariant/evaluator mapping; use /plan and approve its exact digest only after review.", rendered)
+        except ConversationCancelled:
+            outcome = "cancelled"
+            raise
+        finally:
+            self.store.append_proposal_event({"type": "PROPOSAL_FINISHED", "outcome": outcome, "origin": origin,
+                                             "source": source, "observed_at": datetime.now(timezone.utc).isoformat()})
+
     def _answer_grill(self, text: str) -> CommandResponse:
         grill = GrillState.from_dict(self.session["grill"])
         grill = grill.answer(text)
@@ -780,6 +891,8 @@ class InteractiveController:
         if self.session["plan"] is None or self.session["status"] != "plan_ready":
             raise InteractiveError("there is no unapproved plan ready for confirmation")
         if not arguments:
+            if self.session["plan"]["schema_version"] == 3:
+                return self._respond("Model proposal approval requires its exact digest. Review /plan, then /approve " + self.session["plan_digest"])
             return self._respond(
                 "Approval required for {}. Review /plan, then type `/approve yes` or `/approve {}`.".format(
                     self.session["plan_digest"], self.session["plan_digest"]
@@ -787,6 +900,9 @@ class InteractiveController:
             )
         if len(arguments) != 1 or arguments[0] not in {"yes", self.session["plan_digest"]}:
             raise InteractiveError("approval must be `yes` or the exact plan digest")
+        if self.session["plan"]["schema_version"] == 3 and arguments[0] == "yes":
+            raise InteractiveError("a model-generated proposal requires the exact /plan digest, not a bare yes")
+        self._verify_proposal_source(self.session["plan"])
         self.session = self.store.update(
             self.session,
             approved_digest=self.session["plan_digest"],
@@ -912,12 +1028,15 @@ class InteractiveController:
             else:
                 if remote_plan["plan_digest"] != runbook_digest(plan["runbook"]):
                     raise InteractiveError("another supervisor owns this session state with a different plan")
+                if plan["schema_version"] == 3 and (remote_plan.get("source_binding") or {}).get("source") != plan["source"]:
+                    raise InteractiveError("supervisor source binding differs from the exact approved proposal; reattach refused")
                 session_status = "terminal" if remote_status["run"]["status"] in {"completed", "blocked"} else "running"
                 self.session = self.store.update(self.session, status=session_status)
                 return self._respond(
                     "Reattached to the existing supervisor without a new provider request or preflight.",
                     "Supervisor reattached pid={}; closing this client will not stop it.".format(remote_status["pid"]),
                 )
+        self._verify_proposal_source(plan)
         workspace = WorkspaceManager(self.workspace, state_dir)
         workspace.assert_source_ready()
         if plan.get("source") is not None and (
@@ -1013,11 +1132,13 @@ class InteractiveController:
         else:
             raise InteractiveError("Product V0 cannot execute a mixed or unsupported adapter plan")
         runbook_path = self.store.write_runbook(self.session, plan["runbook"])
+        launch_options = {"expected_source": plan["source"]} if plan["schema_version"] == 3 else {}
         started = self.spawn_fn(
             runbook_path,
             self.workspace,
             state_dir,
             approve_by=getpass.getuser(),
+            **launch_options,
         )
         self.session = self.store.update(self.session, status="running")
         return self._respond(
@@ -1045,6 +1166,12 @@ class InteractiveController:
                                 "inner_model_turn_cap": "unsupported", "restricted_egress": "unsupported; ambient network explicitly granted",
                                 "capability_preflight": "none; runtime/login or catalog observation only",
                                 "local_model_load_or_download": "never implicit"}}
+
+    def _verify_proposal_source(self, plan: Mapping[str, Any]) -> None:
+        if plan.get("schema_version") == 3:
+            from .debug_execution import source_identity
+            if source_identity(self.workspace) != plan["source"]:
+                raise InteractiveError("source checkout changed since the model proposal; request and review a fresh candidate")
 
     def _status(self) -> CommandResponse:
         self._reconcile_session()

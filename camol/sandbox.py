@@ -5,6 +5,7 @@ import hashlib
 import os
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import json
@@ -535,7 +536,17 @@ class MacOSSandboxBackend(SandboxBackend):
         for path in sorted(ancestors):
             rules.append('(allow file-read-metadata (literal "{}"))'.format(_escape_profile(path)))
         for path in policy.read_paths:
-            rules.append('(allow file-read* (subpath "{}"))'.format(_escape_profile(path)))
+            if path == str(_MACOS_DEVELOPER_SELECTOR.parent):
+                # xcode-select reads an OS-owned symlink here. Permit link
+                # metadata, not arbitrary contents of the selector directory.
+                rules.append('(allow file-read-metadata (subpath "{}"))'.format(_escape_profile(path)))
+                selected, links = _macos_developer_selection()
+                if selected and selected[1] not in policy.read_paths:
+                    raise SandboxError("selected macOS developer runtime changed since policy preparation")
+                for link in links:
+                    rules.append('(allow file-read-metadata (literal "{}"))'.format(_escape_profile(link)))
+            else:
+                rules.append('(allow file-read* (subpath "{}"))'.format(_escape_profile(path)))
         for path in policy.write_paths:
             rules.append('(allow file-write* (subpath "{}"))'.format(_escape_profile(path)))
         protected_parents = set()
@@ -567,9 +578,88 @@ class MacOSSandboxBackend(SandboxBackend):
         )
 
 
+_MACOS_DEVELOPER_SELECTOR = Path("/private/var/select/developer_dir")
+_MACOS_APPLICATIONS = Path("/Applications")
+_MACOS_COMMAND_LINE_TOOLS = Path("/Library/Developer/CommandLineTools")
+
+
+def _macos_developer_selection():
+    """Read only the root-owned selected Xcode toolchain, never a user override.
+
+    /usr/bin/git is an Apple launcher. CI selects a versioned Xcode app outside
+    /Library; denying the selector makes that otherwise installed Git unusable.
+    Resolve a bounded OS-owned link chain without running xcode-select or
+    honoring ambient DEVELOPER_DIR. A selector into user storage is not an
+    implicit permission to read it.
+    """
+    if sys.platform != "darwin":
+        return (), ()
+    selector = _MACOS_DEVELOPER_SELECTOR
+    try:
+        selected = selector.lstat()
+    except FileNotFoundError:
+        # CommandLineTools installations commonly have no explicit selector.
+        return (), ()
+
+    def trusted(path, *, directory=True, container=False):
+        info = path.lstat()
+        if (info.st_uid != 0 or (directory and not stat.S_ISDIR(info.st_mode))
+                or (not directory and not stat.S_ISLNK(info.st_mode))
+                or (directory and info.st_mode & (0o002 if container else 0o022))):
+            raise SandboxError("selected macOS developer runtime is not trusted root-owned system metadata")
+        return info
+
+    trusted(selector.parent)
+    if selected.st_uid != 0 or not stat.S_ISLNK(selected.st_mode):
+        raise SandboxError("macOS developer selector must be a root-owned symbolic link")
+    target = os.readlink(selector)
+    if not target or len(target) > 4096 or not Path(target).is_absolute() or ".." in Path(target).parts:
+        raise SandboxError("macOS developer selector has an unsafe target")
+    pending, traversed, links = Path(target), set(), []
+    for _ in range(16):
+        if str(pending) in traversed:
+            raise SandboxError("macOS developer runtime link chain is cyclic")
+        traversed.add(str(pending))
+        if pending == _MACOS_COMMAND_LINE_TOOLS:
+            trusted(pending)
+            break
+        try:
+            relative = pending.relative_to(_MACOS_APPLICATIONS)
+        except ValueError:
+            raise SandboxError("selected developer runtime is outside supported system toolchain locations") from None
+        if len(relative.parts) != 3 or not relative.parts[0].endswith(".app") or relative.parts[1:] != ("Contents", "Developer"):
+            raise SandboxError("selected developer runtime is not a precise Xcode Developer directory")
+        # The system Applications container can be admin-group writable. The
+        # selected bundle and its actual runtime must not be group writable.
+        trusted(_MACOS_APPLICATIONS, container=True)
+        cursor, changed = _MACOS_APPLICATIONS, False
+        for index, part in enumerate(relative.parts):
+            cursor = cursor / part
+            info = cursor.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                trusted(cursor, directory=False)
+                links.append(str(cursor))
+                link = Path(os.readlink(cursor))
+                linked = link if link.is_absolute() else cursor.parent / link
+                pending = Path(os.path.abspath(str(linked.joinpath(*relative.parts[index + 1:]))))
+                changed = True
+                break
+            trusted(cursor)
+        if not changed:
+            break
+    else:
+        raise SandboxError("macOS developer runtime link chain exceeds its safety bound")
+    current = selector.lstat()
+    if ((current.st_dev, current.st_ino) != (selected.st_dev, selected.st_ino)
+            or current.st_uid != 0 or os.readlink(selector) != target):
+        raise SandboxError("macOS developer selector changed during observation")
+    return (str(selector.parent), str(pending)), tuple(links)
+
+
 def system_read_paths(executable: Optional[str] = None) -> Tuple[str, ...]:
     """Conservative platform runtime roots; never includes the user's whole home."""
     candidates = ["/System", "/usr", "/bin", "/sbin", "/Library"]
+    candidates.extend(_macos_developer_selection()[0])
     if executable:
         lexical = Path(os.path.abspath(executable))
         resolved = Path(_real(executable))

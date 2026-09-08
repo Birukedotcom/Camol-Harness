@@ -141,6 +141,7 @@ class SessionStore:
         self.runs_dir = self.project_dir / "runs"
         self.transcript_path = self.project_dir / "transcript.jsonl"
         self.planning_calls_path = self.project_dir / "planning-calls.jsonl"
+        self.proposal_events_path = self.project_dir / "proposal-events.jsonl"
 
     @contextmanager
     def transaction(self):
@@ -171,10 +172,16 @@ class SessionStore:
             os.fsync(handle.fileno())
 
     def append_planning_call(self, value: Mapping[str, Any]) -> None:
-        self._append_jsonl(self.planning_calls_path, value)
+        self._append_jsonl(self.planning_calls_path, Redactor().value(dict(value)))
 
     def planning_calls(self):
         return self._read_jsonl(self.planning_calls_path)
+
+    def append_proposal_event(self, value: Mapping[str, Any]) -> None:
+        self._append_jsonl(self.proposal_events_path, Redactor().value(dict(value)))
+
+    def proposal_events(self):
+        return self._read_jsonl(self.proposal_events_path)
 
     def _read_jsonl(self, path: Path):
         if not path.exists():

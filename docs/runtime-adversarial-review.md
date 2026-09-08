@@ -89,3 +89,15 @@ isolate host filesystem access. OS process-group termination covers normal child
 processes, not a hostile process deliberately escaping into another session. Strict
 containment of arbitrary daemonizing workloads requires an enforcing container or
 OS job boundary in addition to the current local process-group lifecycle.
+
+`tests.test_process_descendants` preserves a bounded macOS characterization: a
+worker can fork, enter a new session, close its inherited pipes, and continue
+writing its old task checkout after the parent's invocation is recorded complete.
+The child self-terminates within 2.5 seconds. Seatbelt rejects its writes to sibling
+verifier/integration generations and frozen controller evaluator data; independently
+materialized, hash-addressed candidates remain unchanged. This demonstrates no
+accepted-candidate or frozen-oracle bypass in that fixture, not complete descendant
+containment. A later retry reusing the old task checkout could still be disturbed
+by such a survivor. Per-invocation writable generations and an OS-owned descendant
+boundary are needed before claiming full lease-time process revocation. A process
+group or best-effort process-tree scan alone does not establish that stronger claim.

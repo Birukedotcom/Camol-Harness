@@ -130,16 +130,29 @@ class Orchestrator(GateOrchestratorMixin, RevisionOrchestratorMixin):
         self._emit(run_id, "RUN_CREATED", {"runbook": runbook, "plan_digest": digest})
         return self.state(run_id)
 
+    def bind_source(self, run_id: str, source: Dict[str, Any]) -> None:
+        from .source_binding import make_binding, apply_source_binding
+        state = self.state(run_id)
+        binding = make_binding(source, run_id, state["plan_digest"])
+        if state.get("source_binding") == binding:
+            return
+        event = {"payload": binding, "run_id": run_id, "actor_id": self.actor_id}
+        apply_source_binding(state, event)
+        self._emit(run_id, "SOURCE_BASELINE_BOUND", binding, expected_seq=state["last_seq"])
+
     def approve_plan(self, run_id: str, approved_by: str, expected_digest: str) -> None:
         state = self._require_status(run_id, "draft")
         if state["plan_digest"] != expected_digest:
             raise StateTransitionError("the plan changed after review; re-open planning")
         if not approved_by.strip():
             raise ValueError("approved_by is required")
+        if state.get("source_binding") and (approved_by in state["agents"] or self.actor_id in state["agents"]):
+            raise StateTransitionError("source-bound approval requires a human owner, not a registered worker")
         self._emit(
             run_id,
             "PLAN_APPROVED",
-            {"approved_by": approved_by, "plan_digest": expected_digest},
+            {"approved_by": approved_by, "plan_digest": expected_digest,
+             **({"source_binding_digest": canonical_digest(state["source_binding"])} if state.get("source_binding") else {})},
         )
 
     def start(self, run_id: str) -> None:
@@ -201,6 +214,8 @@ class Orchestrator(GateOrchestratorMixin, RevisionOrchestratorMixin):
     def record_admission(self, run_id: str, bundle: AdmissionBundle) -> ReadinessDecision:
         """Persist a complete candidate bundle; red bundles become typed waits."""
         state = self._require_status(run_id, "running")
+        from .source_binding import require_source_admission
+        require_source_admission(state, bundle)
         subject = bundle.binding
         if subject.run_id != run_id or subject.plan_digest != state["plan_digest"]:
             raise StateTransitionError("admission bundle belongs to another run or plan")
@@ -717,6 +732,8 @@ class Orchestrator(GateOrchestratorMixin, RevisionOrchestratorMixin):
             "scope": "verification_resume" if verification_resume else "active",
         }
         try:
+            from .source_binding import require_source_admission
+            require_source_admission(state, bundle)
             validate_authorization(state, payload)
             self._emit(run_id, "LEASE_AUTHORIZATION_REFRESHED", payload, expected_seq=state["last_seq"])
         except (ValueError, ConcurrentAppendError) as error:

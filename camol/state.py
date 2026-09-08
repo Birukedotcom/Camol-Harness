@@ -15,8 +15,9 @@ from .revisions import REVISION_EVENTS, apply_revision_event
 from .capacity_runtime import CAPACITY_EVENTS, apply_capacity_event, capacity_for_task
 from .readiness import LeaseFence, ReadinessReceipt, WaitingReason
 from .leases import validate_authorization
-from .schema import reject_unknown_fields, require_digest, require_string, parse_timestamp
+from .schema import reject_unknown_fields, require_digest, require_string, parse_timestamp, canonical_digest
 from .workspace import SalvageReceipt
+from .source_binding import apply_source_binding, require_source_admission
 
 
 def empty_state() -> Dict[str, Any]:
@@ -62,7 +63,9 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     if state["status"] == "superseded":
         raise ValueError("superseded run is sealed; continue its linked successor")
 
-    if event_type in CAPACITY_EVENTS:
+    if event_type == "SOURCE_BASELINE_BOUND":
+        apply_source_binding(next_state, event)
+    elif event_type in CAPACITY_EVENTS:
         apply_capacity_event(next_state, event)
     elif event_type in REVISION_EVENTS:
         apply_revision_event(next_state, event)
@@ -103,6 +106,16 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
             for task in runbook["tasks"]
         }
     elif event_type == "PLAN_APPROVED":
+        if next_state.get("source_binding") is not None:
+            if (next_state["status"] != "draft" or payload.get("plan_digest") != next_state["plan_digest"]
+                    or event["actor_id"] in next_state["agents"]
+                    or not isinstance(payload.get("approved_by"), str) or not payload["approved_by"].strip()
+                    or payload["approved_by"] in next_state["agents"]):
+                raise ValueError("source-bound approval requires the exact draft plan and a human owner")
+            if payload.get("source_binding_digest") != canonical_digest(next_state["source_binding"]):
+                raise ValueError("human approval does not bind the exact source baseline")
+        elif "source_binding_digest" in payload:
+            raise ValueError("source-bound approval has no prior source baseline")
         if next_state.get("revision") and payload["approved_by"] != next_state["revision"]["approved_by"]:
             raise ValueError("revision approval owner changed")
         next_state["status"] = "ready"
@@ -126,6 +139,7 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         if admission_payload is None:
             raise ValueError("TASK_LEASED has no persisted admission bundle")
         admission = AdmissionBundle.from_dict(admission_payload)
+        require_source_admission(next_state, admission)
         shared_capacity = capacity_for_task(next_state, task["id"], agent["id"], now=fence.issued_at, local_reservation_id=admission.reservation.reservation_id)
         if shared_capacity is not None and parse_timestamp(fence.expires_at, "fence expiry") > parse_timestamp(shared_capacity["expires_at"], "capacity expiry"):
             raise ValueError("TASK_LEASED fence outlives shared global capacity")

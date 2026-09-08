@@ -11,6 +11,7 @@ from textual.app import App, ComposeResult
 from textual import work
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Input, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
@@ -501,6 +502,13 @@ class CamolApp(App):
         boxes = await self.run_worker(
             self.controller.box_summaries, thread=True, group="fleet", exclusive=True
         ).wait()
+        # Detach/modal transitions can remove the target screen while this
+        # read-only background query is pending. A disposable view is not a run
+        # failure, and must not crash the client after a successful command.
+        try:
+            fleet = self.query_one("#fleet", Static)
+        except NoMatches:
+            return
         self.boxes = boxes
         items = ["ORCH[Alt+0]", "BOXES {}".format(len(boxes))]
         selected_index = next((index for index, box in enumerate(boxes) if box["box_id"] == self.selected), 0)
@@ -515,7 +523,7 @@ class CamolApp(App):
             items.append("{}{} {}:{}({})".format(selected, mark, index, box["box_id"], shortcut))
         if len(boxes) > len(visible_boxes):
             items.append("[{}–{}/{}; cycle [ ] or /box ID]".format(start + 1, start + len(visible_boxes), len(boxes)))
-        self.query_one("#fleet", Static).update("  ".join(items))
+        fleet.update("  ".join(items))
         self._render_dependency_rail()
         if self.selected != "orchestrator":
             target, subview = self.selected, self.selected_view
@@ -524,6 +532,8 @@ class CamolApp(App):
                 thread=True, group="box-view", exclusive=True,
             ).wait()
             if self.selected == target and self.selected_view == subview:
+                if not self.query("#box-transcript"):
+                    return
                 self._render_box(target, subview, rendered)
 
     def action_submit(self) -> None:

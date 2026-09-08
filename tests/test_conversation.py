@@ -5,9 +5,9 @@ import unittest
 import threading
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from camol.conversation import ConversationCancelled, ConversationError, _environment, _prompt, converse, parse_selection, provider_argv
+from camol.conversation import ConversationCancelled, ConversationError, ConversationReply, _environment, _prompt, converse, parse_selection, provider_argv
 
 
 class ConversationTests(unittest.TestCase):
@@ -24,6 +24,13 @@ class ConversationTests(unittest.TestCase):
         for value in ("claude:--dangerous", "unknown:model", "local"):
             with self.subTest(value=value), self.assertRaises(ConversationError):
                 parse_selection(value)
+
+    def test_unusable_usage_and_model_metadata_stay_unknown(self):
+        for count in (-1, True, "12", float("nan"), 1 << 80):
+            reply = ConversationReply("text", "local", "fixture", {"not": "an identity"}, count, count)
+            self.assertIsNone(reply.input_tokens)
+            self.assertIsNone(reply.output_tokens)
+            self.assertIsNone(reply.resolved_model)
 
     def test_provider_context_contains_dialogue_but_not_slash_command_noise(self):
         prompt = _prompt(
@@ -94,8 +101,96 @@ class ConversationTests(unittest.TestCase):
             with self.subTest(selection=selection), self.assertRaises(ConversationError):
                 converse(selection, "hello", [], effort="high", workspace=self.workspace)
 
+    def test_proposal_codex_is_denied_before_invocation_but_normal_chat_remains_supported(self):
+        runner = Mock(side_effect=AssertionError("must not invoke runtime"))
+        with self.assertRaisesRegex(ConversationError, "all-tools-off"):
+            converse("codex:gpt-5.4", "plan", [], effort="high", workspace=self.workspace,
+                     no_tools=True, runner=runner)
+        runner.assert_not_called()
+
+    def test_proposal_claude_requires_and_uses_no_tools_runtime_controls(self):
+        help_text = "--tools --safe-mode --strict-mcp-config --mcp-config --setting-sources --disable-slash-commands --permission-prompts --max-turns"
+        payload = {"result": '{"questions":["Which oracle?"]}', "usage": {"input_tokens": 2, "output_tokens": 3}}
+        calls = []
+        def runner(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout=(help_text.encode() if "--help" in argv else json.dumps(payload).encode()), stderr=b"")
+        with patch("camol.conversation.shutil.which", return_value="/opt/camol-test/claude"):
+            reply = converse("claude:fable", "plan", [], effort="high", workspace=self.workspace,
+                             no_tools=True, runner=runner)
+        self.assertEqual(len(calls), 2)  # read-only help probe, then one model invocation
+        self.assertNotEqual(calls[0][1]["cwd"], str(self.workspace))
+        argv = calls[1][0]
+        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "")
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertIn('{"mcpServers":{}}', argv)
+        self.assertEqual(reply.output_tokens, 3)
+        calls.clear()
+        help_text = "old runtime without required flags"
+        with patch("camol.conversation.shutil.which", return_value="/opt/camol-test/claude"):
+            with self.assertRaisesRegex(ConversationError, "no planning request sent"):
+                converse("claude:fable", "plan", [], effort="high", workspace=self.workspace,
+                         no_tools=True, runner=runner)
+        self.assertEqual(len(calls), 1)
+
+    def test_proposal_local_tool_call_response_is_rejected_with_usage_without_execution(self):
+        payload = json.dumps({"choices": [{"message": {"content": None, "tool_calls": [{"name": "Bash"}]}}],
+                              "usage": {"prompt_tokens": 2, "completion_tokens": 3}, "model": "fixture"}).encode()
+        with patch("camol.conversation.AbortableLocalHTTP.request", return_value=payload) as opened:
+            with self.assertRaisesRegex(ConversationError, "prohibited tool calls") as failure:
+                converse("local:fixture", "plan", [], effort="high", workspace=self.workspace, no_tools=True)
+        self.assertEqual(json.loads(opened.call_args.args[1])["tool_choice"], "none")
+        self.assertNotIn("tools", json.loads(opened.call_args.args[1]))
+        self.assertEqual(failure.exception.reply.output_tokens, 3)
+
+    def test_local_wait_has_wall_clock_bound_even_when_endpoint_keeps_processing(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        disconnected = threading.Event()
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Length", "999999")
+                self.end_headers()
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    try:
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                    except OSError:
+                        disconnected.set()
+                        return
+                    time.sleep(.01)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        service = threading.Thread(target=server.serve_forever, daemon=True)
+        service.start()
+        try:
+            for cancel in (False, True):
+                cancelled = threading.Event()
+                timer = threading.Timer(.06, cancelled.set) if cancel else None
+                if timer:
+                    timer.start()
+                started = time.monotonic()
+                expected = "cancelled" if cancel else "timed out"
+                with self.assertRaisesRegex(ConversationError, expected + ".*usage is unknown"):
+                    converse("local:fixture", "plan", [], effort="high", workspace=self.workspace,
+                             no_tools=True, timeout=1 if cancel else .08, cancel_event=cancelled,
+                             local_endpoint="http://127.0.0.1:{}/v1".format(server.server_port))
+                if timer:
+                    timer.cancel()
+                self.assertLess(time.monotonic() - started, .8)
+                self.assertFalse(any(thread.name == "camol-local-planner" and thread.is_alive() for thread in threading.enumerate()))
+                self.assertTrue(disconnected.wait(.5))
+                disconnected.clear()
+        finally:
+            server.shutdown()
+            server.server_close()
+            service.join(1)
+
     def test_local_conversation_rejects_non_loopback_before_network_access(self):
-        with patch("camol.conversation.open_without_proxy", side_effect=AssertionError("network called")):
+        with patch("camol.conversation.AbortableLocalHTTP.request", side_effect=AssertionError("network called")):
             with self.assertRaisesRegex(ConversationError, "numeric loopback"):
                 converse(
                     "local:qwen", "private plan", [], effort="high", workspace=self.workspace,

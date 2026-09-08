@@ -35,6 +35,7 @@ from .providers import ModelProfile, model_profile_for_adapter
 from .schema import canonical_digest, require_bool, require_digest, parse_timestamp
 from .workspace import WorkspaceHandle, WorkspaceManager
 from .git_view import ENVIRONMENT_NAMES, GitInspectionProbe, GitViewError, prepare_view, scratch_path
+from .source_binding import SourceBaselineProbe
 
 
 class AdmissionError(RuntimeError):
@@ -312,6 +313,9 @@ class AdmissionController:
         registry = self.registry_factory()
         registry.register(SandboxBoundaryProbe(sandbox_policy))
         registry.register(GitInspectionProbe(git_root, git_manifest))
+        source_binding = self.workspaces._assert_bound_source(binding.run_id)
+        if source_binding is not None:
+            registry.register(SourceBaselineProbe(source_binding))
         context = ProbeContext.guarded(
             runbook=self.runbook,
             workspace=handle.path,

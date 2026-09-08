@@ -149,11 +149,18 @@ class Harness:
     def status(self) -> Dict[str, Any]:
         return summary(self.state())
 
-    def events(self, *, after_seq: int = 0) -> list:
+    def events(self, *, after_seq: int = 0, limit: Optional[int] = None) -> list:
+        """Read one durable cursor page; omit limit for a complete legacy snapshot.
+
+        Long-running consumers should pass a finite limit and resume after the
+        last returned sequence. The bound is applied by SQLite before decoding.
+        """
         if type(after_seq) is not int or after_seq < 0:
             raise ValueError("after_seq must be a non-negative integer")
+        if limit is not None and (type(limit) is not int or not 1 <= limit <= 10000):
+            raise ValueError("limit must be an integer between 1 and 10000")
         run_id = self._require_run()
-        return self.store.read(run_id, after_seq=after_seq)
+        return self.store.read(run_id, after_seq=after_seq, limit=limit)
 
     def usage(self) -> Dict[str, Any]:
         from .usage import usage_report

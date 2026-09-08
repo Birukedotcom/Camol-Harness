@@ -68,6 +68,25 @@ class HarnessApiTests(unittest.TestCase):
                     harness.run()
         asyncio.run(scenario())
 
+    def test_event_pages_are_bounded_without_starting_workers(self):
+        with Harness(self.workspace, self.state_dir) as harness:
+            state = harness.prepare(ROOT / "examples/local-n-box-runbook.json")
+            harness.approve(by="owner", digest=state["plan_digest"])
+            expected = harness.events()
+            pages, cursor = [], 0
+            while True:
+                page = harness.events(after_seq=cursor, limit=2)
+                if not page:
+                    break
+                self.assertLessEqual(len(page), 2)
+                pages.extend(page)
+                cursor = page[-1]["seq"]
+            self.assertEqual(pages, expected)
+            self.assertFalse((self.state_dir / "worktrees").exists())
+            for invalid in (True, 0, -1, 10001, 1.5, "2"):
+                with self.subTest(limit=invalid), self.assertRaises(ValueError):
+                    harness.events(limit=invalid)
+
     def test_shared_external_database_cannot_bypass_state_directory_ownership(self):
         database = self.state_dir / "owned.sqlite3"
         with Harness(self.workspace, self.state_dir, database=database):

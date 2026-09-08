@@ -16,5 +16,5 @@ setup(
     packages=["camol"],
     package_data={"camol": ["assets/*.txt", "assets/profiles/*.json"]},
     extras_require={"tui": ["textual>=8.0,<9"], "graph": ["tomli>=2,<3; python_version < '3.11'"]},
-    entry_points={"console_scripts": ["camol=camol.cli:main"]},
+    entry_points={"console_scripts": ["camol=camol.cli:main", "camol-ssh-bridge=camol.ssh_bridge:main"]},
 )

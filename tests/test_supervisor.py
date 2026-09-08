@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import Mock, AsyncMock, patch
 
 from camol.sandbox import process_start_fingerprint
 from camol.schema import canonical_digest
@@ -28,6 +28,55 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_absent_orphan_leader_does_not_hide_a_surviving_group(self):
+        supervisor = Supervisor(ROOT / "examples/three-agent-runbook.json", self.source, self.state)
+        record = self.state / "packets" / "scope.invocation.json"
+        record.parent.mkdir(parents=True)
+        payload = {"schema": "camol.process_invocation", "schema_version": 1, "state": "active",
+            "owner_pid": 999998, "pid": 999999, "pgid": 999999, "process_started": "Mon Sep 7 01:02:03 2026",
+            "cwd": str(self.source), "argv_digest": canonical_digest(["fixture"]), "policy_digest": canonical_digest({}),
+            "started_at": "2026-09-07T00:00:00+00:00", "finished_at": None, "exit_code": None}
+        record.write_text(json.dumps(payload))
+        with patch("camol.supervisor.os.kill", side_effect=ProcessLookupError), patch("camol.supervisor.os.killpg") as group_probe:
+            recovered = supervisor._scan_invocations()
+        self.assertEqual(len(recovered), 1)
+        group_probe.assert_called_once_with(999999, 0)
+        self.assertEqual(json.loads(record.read_text())["state"], "active")
+        with patch("camol.supervisor.os.kill", side_effect=ProcessLookupError), patch("camol.supervisor.os.killpg", side_effect=ProcessLookupError):
+            self.assertEqual(supervisor._scan_invocations(), [])
+        self.assertEqual(json.loads(record.read_text())["state"], "orphan_dead")
+
+    async def test_force_stop_rechecks_exact_target_after_cancellation_await(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        supervisor.run_id = "original"
+        supervisor.orchestrator = Mock(state=Mock(return_value={"plan_digest": "original-plan"}))
+        supervisor.runner = Mock()
+        supervisor.orphans = []
+        supervisor._shutdown = asyncio.Event()
+        async def driver():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                supervisor.run_id = "changed-run"
+        supervisor._driver_task = asyncio.create_task(driver())
+        await asyncio.sleep(0)
+        await supervisor._force_shutdown("owner", expected_run_id="original", expected_plan_digest="original-plan")
+        supervisor.runner.force_interrupt.assert_not_called()
+        self.assertFalse(supervisor._shutdown.is_set())
+        self.assertEqual(supervisor.mode, "operator_attention")
+
+    async def test_weak_persisted_orphan_identity_never_authorizes_a_signal_or_false_cleanup(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        orphan = {"pid": 1234, "pgid": 1234, "process_started": "Mon Sep 7 01:02:03 2026", "path": "/not-touched"}
+        supervisor.orphans = [orphan]
+        supervisor._replace_json = Mock()
+        with patch("camol.supervisor.os.killpg") as signal_group:
+            with self.assertRaisesRegex(SupervisorError, "cannot be proven"):
+                await supervisor._terminate_orphans()
+        signal_group.assert_not_called()
+        supervisor._replace_json.assert_not_called()
+        self.assertEqual(supervisor.orphans, [orphan])
+
     async def test_shared_capacity_wait_wakes_on_cursor_local_control_or_deadline(self):
         supervisor = Supervisor.__new__(Supervisor)
         supervisor._wake = asyncio.Event()
@@ -299,7 +348,7 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
                 database=outside / "db.sqlite3",
             )
 
-    async def test_live_orphan_blocks_resume_until_explicit_force_stop(self):
+    async def test_live_orphan_blocks_resume_and_force_stop_until_external_reconciliation(self):
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
         record = self.state / "packets/run/task/turn-001.invocation.json"
         record.parent.mkdir(parents=True)
@@ -330,13 +379,12 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
             self.assertEqual(status["result"]["mode"], "orphaned")
             self.assertEqual(status["result"]["orphan_invocations"][0]["pid"], process.pid)
-            with self.assertRaisesRegex(SupervisorError, "explicit force-stop"):
+            with self.assertRaisesRegex(SupervisorError, "external operator reconciliation"):
                 await send_control(self.state, "resume")
-            reaped = asyncio.create_task(asyncio.to_thread(process.wait))
-            await send_control(self.state, "force-stop", requested_by="human-owner")
-            await asyncio.wait_for(reaped, timeout=5)
-            await asyncio.wait_for(serving, timeout=5)
-            self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["state"], "terminated_by_supervisor")
+            with self.assertRaisesRegex(SupervisorError, "cannot be proven"):
+                await send_control(self.state, "force-stop", requested_by="human-owner")
+            self.assertIsNone(process.poll())
+            self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["state"], "active")
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, 9)

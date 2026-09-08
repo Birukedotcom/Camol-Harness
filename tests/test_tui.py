@@ -67,6 +67,46 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.screen.id, "_default")
             self.assertIsNotNone(app.query_one("#prompt", PromptArea))
 
+    async def test_seed_proposal_from_composer_is_visible_unapproved_and_needs_exact_digest(self):
+        from tests.test_proposal import ProposalUITests
+        fixture = ProposalUITests()
+        fixture.setUp()
+        try:
+            app = CamolApp(fixture.controller, show_boot=False, discover_connections=False)
+            async with app.run_test(size=(110, 32)) as pilot:
+                await pilot.pause()
+                prompt = app.query_one("#prompt", PromptArea)
+                prompt.load_text(fixture.command)
+                app.action_submit()
+                for _ in range(30):
+                    await pilot.pause(.1)
+                    if fixture.controller.session["status"] == "plan_ready":
+                        break
+                self.assertEqual(fixture.controller.session["status"], "plan_ready")
+                await pilot.pause(.1)
+                rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+                self.assertIn("MODEL CANDIDATE", rendered)
+                self.assertIsNone(fixture.controller.session["approved_digest"])
+                prompt.load_text("/approve " + fixture.controller.session["plan_digest"])
+                app.action_submit()
+                for _ in range(30):
+                    await pilot.pause(.1)
+                    if fixture.controller.session["status"] == "approved":
+                        break
+                self.assertEqual(fixture.controller.session["status"], "approved",
+                                 "\n".join(line.text for line in app.query_one("#transcript").lines))
+                self.assertFalse(Path(fixture.controller.session["state_dir"]).exists())
+                fixture.provider.assert_called_once()
+        finally:
+            fixture.tearDown()
+
+    async def test_detached_fleet_target_is_not_a_background_refresh_failure(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await app.query_one("#fleet").remove()
+            await app._refresh_fleet()
+
     async def test_n_box_fleet_and_keyboard_navigation(self):
         for command in (
             "/model claude:fable",

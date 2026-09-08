@@ -35,6 +35,7 @@ from typing import Any, Dict, Iterable, List
 from .events import EVIDENCE_KINDS
 from .readiness import TRUST_TIERS
 from .schema import canonical_digest
+from .json_contracts import load_contract
 
 
 class RunbookError(ValueError):
@@ -658,8 +659,9 @@ def migrate_runbook_v3_to_v4(
 
 
 def load_runbook(path: Path) -> Dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        return validate_runbook(json.load(handle))
+    # Unknown fields are not the only ambiguity: duplicate names disappear
+    # under ordinary json.load before schema validation can see them.
+    return validate_runbook(load_contract(path, max_bytes=8 << 20))
 
 
 def runbook_digest(runbook: Dict[str, Any]) -> str:
