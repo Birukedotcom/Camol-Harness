@@ -798,3 +798,28 @@ not return normally. With the old wait injected, this regression fails in
 all three refresh paths, while the existing supersession check remains passing.
 Final focused and whole-suite/package results follow separately; this does not
 retroactively make the interrupted native-predecessor full run pass.
+
+Final focused cancellation/supersession checks passed **3 tests in 0.351 seconds
+on Python 3.12** and **0.366 seconds on Python 3.9**. The startup product at
+`cacfb252b0dac20b58eea0d0b3d7bb27f345c5ae` was built sdist-to-wheel and installed
+with TUI/graph extras and the independent test-only MCP SDK. The corrected
+installed group passed **54 tests in 85.590 seconds**, including both native
+provider fixtures, actual macOS sandboxing, relay protocol checks and graph
+parser shadowing. The real Codex command was used only for its read-only config
+parser test; no model invocation was made.
+
+The terminal repair product at `0cd4b3e1540ab20abc0886e5c8c6490df660466a` was
+separately built sdist-to-wheel and installed into another fresh environment.
+**52 installed-package tests passed in 41.156 seconds**, covering the full terminal
+group and all staged-startup tests. Both package runs imported Camol from their
+installed `site-packages`, not the source tree.
+
+The canonical full suites for that combined product are now running on Python
+3.12 and 3.9 with verbose names and a per-test traceback diagnostic. An initial
+driver used `discover("tests")`, giving different module identities from the
+repository's ordinary discovery; both runs were intentionally interrupted before
+completion and restarted with `discover(".")`. Those abbreviated-discovery
+attempts are not full acceptance results. The active full gates remain pending.
+Both feature branches were pushed under the owner's Git identity; main and the
+user's installed Camol were not modified. Native live-provider acceptance and the
+remaining product/spec gates are still open.
