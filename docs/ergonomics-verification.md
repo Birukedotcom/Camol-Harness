@@ -1113,3 +1113,17 @@ product modules matched their source bytes. Python 3.12 and 3.9 full suites for
 this exact product have started with verbose logs and stall diagnostics; they
 remain unverified until terminal results are recorded. The earlier run-recovery
 full suites are separate jobs, not substitutes for this checkpoint's gate.
+
+The first own-repository smoke returned one node and an incomplete observation:
+this managed checkout's ordinary files have two hard links. That is the strict
+policy refusing content, not a successful complete graph. This exposed the need
+for an explicit reviewed source policy for managed hard-link layouts; it must not
+silently weaken archive readers or pretend link ownership is known.
+
+An independent disposable `--no-hardlinks` clone then produced **387 nodes and
+2,772 edges**, with five explicit dynamic-import warnings. Running the predecessor
+scanner code against that same disposable clone produced the identical snapshot
+content identity. The changed reader preserves ordinary-file graph semantics;
+it does not resolve dynamic imports or establish runtime readiness. No worktree
+files were rewritten to remove links, and all graph databases/output remained in
+the disposable verification directory.

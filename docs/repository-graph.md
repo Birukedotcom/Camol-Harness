@@ -51,6 +51,12 @@ read member refuses the inventory. Skipped unsafe/unreadable entries produce an
 incomplete observation. Existing files, Git refs and user configuration are not
 rewritten to make a crawl pass.
 
+Some managed checkouts use hard links for their ordinary source files. The strict
+reader skips those files too; a one-node incomplete graph is not a useful complete
+crawl. Use an explicitly chosen independent checkout with ordinary files when that
+boundary is needed. Camol does not automatically copy the project, sever links, or
+weaken the rule. A reviewed policy for such managed source layouts remains open.
+
 The explicit initial root resolves the caller's selected path (including macOS
 temporary-directory aliases). This is not an atomic filesystem snapshot, a
 hostile-kernel boundary, a same-owner adversarial filesystem sandbox, or proof of
