@@ -1698,3 +1698,12 @@ The same **64 tests passed in 79.886 seconds**, including the real child-process
 CLI flush, in `/tmp/camol-worker-tls-installed.log`. The V1 example validates and
 `git diff --check` passes. A fresh whole-suite gate for this product is still required;
 the predecessor failures above are not erased by this focused gate.
+
+The frozen product commit is `22df69bff708f4a50095dd86f71420b9c6060a9c`, on
+`codex/v0-worker-tls`, authored by `Birukedotcom <birukehdix@gmail.com>` without
+agent attribution. Its Python 3.12 full suite is now running in
+`/tmp/camol-worker-tls-full-py312.log`. It uses a process-scoped idle-sleep assertion
+bounded to 2,400 seconds, not a system power-setting change. That assertion cannot
+prevent lid closure, low-power shutdown or every external interruption. Only one
+new whole suite was started to avoid competing full-run timing load. Its result
+is pending; a subsequent minimum-Python whole gate is also still required.
