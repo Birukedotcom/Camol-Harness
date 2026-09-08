@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .probes import Redactor
+from .archive_io import ArchiveRoot
+from .json_contracts import decode_contract
 from .schema import (
     canonical_digest,
     reject_unknown_fields,
@@ -292,10 +294,83 @@ def artifact_refs(value: Any) -> Tuple[ArtifactRef, ...]:
 
 
 class RunArchive:
-    """Export and verify a self-contained event stream plus referenced blobs."""
+    """Bounded event/ordinary-blob export, not a complete recovery backup.
+
+    Hashes establish integrity, not authorship or permission to restore/run.
+    Git objects, raw salvage and process authority are not included.
+    """
 
     MANIFEST_SCHEMA = "camol.run_archive"
     MANIFEST_VERSION = 1
+    MAX_MANIFEST_BYTES = 4 << 20
+    MAX_EVENT_BYTES = 1 << 20
+    MAX_EVENT_TOTAL = 32 << 20
+    MAX_EVENTS = 20000
+    MAX_LINEAGE = 256
+    MAX_BLOBS = 10000
+    MAX_BLOB_BYTES = 8 << 20
+    MAX_BLOB_TOTAL = 64 << 20
+    MAX_JSON_NODES = 1000000
+
+    @classmethod
+    def _json(cls, raw, maximum, budget=None):
+        value = decode_contract(raw, max_bytes=maximum)
+        pending = [(value, 0)]
+        budget = [0] if budget is None else budget
+        while pending:
+            item, depth = pending.pop()
+            budget[0] += 1
+            if budget[0] > cls.MAX_JSON_NODES or depth > 64:
+                raise ArtifactError("archive JSON exceeds its structural ceiling")
+            if isinstance(item, dict):
+                pending.extend((child, depth + 1) for child in item.values())
+            elif isinstance(item, list):
+                pending.extend((child, depth + 1) for child in item)
+        return value
+
+    @staticmethod
+    def _lineage_path(identifier):
+        require_identifier(identifier, "lineage run ID")
+        if "/" in identifier or "\\" in identifier or identifier in {".", ".."}:
+            raise ArtifactError("archive v2 lineage ID must be a single safe filename component")
+        return "lineage/" + identifier + ".jsonl"
+
+    @classmethod
+    def _stream(cls, encoded, identifier, count, budget=None):
+        require_identifier(identifier, "archive run ID")
+        if type(count) is not int or not 0 <= count <= cls.MAX_EVENTS:
+            raise ArtifactError("archive event count exceeds its supported bound")
+        events = []
+        for line in encoded.splitlines():
+            if not line:
+                continue
+            if len(events) >= count:
+                raise ArtifactError("archive event count is invalid")
+            event = cls._json(line, cls.MAX_EVENT_BYTES, budget)
+            if not isinstance(event, dict) or event.get("run_id") != identifier:
+                raise ArtifactError("archive event identity or object shape is invalid")
+            events.append(event)
+        if len(events) != count:
+            raise ArtifactError("archive event count is invalid")
+        return events
+
+    @classmethod
+    def _encode_stream(cls, events, identifier, *, maximum=None, budget=None):
+        require_identifier(identifier, "archive run ID")
+        maximum = cls.MAX_EVENT_TOTAL if maximum is None else maximum
+        if len(events) > cls.MAX_EVENTS:
+            raise ArtifactError("archive event count exceeds its supported bound")
+        chunks, normalized, total = [], [], 0
+        for event in events:
+            # Canonical validation also rejects ambiguous keys, cycles and NaN.
+            canonical_digest(event)
+            raw = json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            normalized.extend(cls._stream(raw, identifier, 1, budget))
+            total += len(raw) + 1
+            if total > maximum:
+                raise ArtifactError("archive events exceed their total byte ceiling")
+            chunks.append(raw + b"\n")
+        return b"".join(chunks), normalized
 
     @classmethod
     def export(
@@ -307,38 +382,43 @@ class RunArchive:
         *,
         lineage_events: Optional[Mapping[str, List[Dict[str, Any]]]] = None,
     ) -> Dict[str, Any]:
+        try:
+            return cls._export(run_id, events, store, destination, lineage_events=lineage_events)
+        except (OSError, ValueError, RecursionError, TypeError) as error:
+            raise ArtifactError("run archive export refused: invalid, changed, unsafe or oversized input") from error
+
+    @classmethod
+    def _export(cls, run_id, events, store, destination, *, lineage_events=None):
         from .revisions import RevisionError, verify_revision_lineage
         lineage = dict(lineage_events or {})
+        if len(lineage) > cls.MAX_LINEAGE or len(events) + sum(len(values) for values in lineage.values()) > cls.MAX_EVENTS:
+            raise ArtifactError("archive lineage or total event count exceeds its ceiling")
+        budget = [0]
+        encoded_events, events = cls._encode_stream(events, run_id, budget=budget)
+        encoded_lineage, frozen_lineage, total = {}, {}, len(encoded_events)
+        for identifier, values in lineage.items():
+            cls._lineage_path(identifier)
+            encoded, normalized = cls._encode_stream(values, identifier,
+                                                      maximum=cls.MAX_EVENT_TOTAL - total, budget=budget)
+            encoded_lineage[identifier] = encoded
+            frozen_lineage[identifier] = normalized
+            total += len(encoded)
+        lineage = frozen_lineage
         if lineage or any(event.get("type") == "REVISION_LINKED" for event in events):
             try:
                 verify_revision_lineage(list(events), lineage)
             except (ValueError, RevisionError) as error:
-                raise ArtifactError("revision archive needs its verified complete source lineage: " + str(error)) from error
-        target = Path(destination)
-        if target.is_symlink() or (target.exists() and any(target.iterdir())):
-            raise ArtifactError("archive destination must be absent or an empty real directory")
-        target.mkdir(parents=True, exist_ok=True)
-        if target.is_symlink():
-            raise ArtifactError("archive destination must not be a symlink")
-        if any(event.get("run_id") != run_id for event in events):
-            raise ArtifactError("archive events must all belong to the selected run")
+                raise ArtifactError("revision archive needs its verified complete source lineage") from error
         all_events = list(events) + [event for values in lineage.values() for event in values]
         if store.redactor.value(all_events) != all_events:
             raise ArtifactError("event ledger contains material requiring redaction; export refused")
-        encoded_events = b"".join(
-            json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
-            for event in events
-        )
         all_references = [reference for event in all_events for reference in artifact_refs(event)]
         references = {reference.digest: reference for reference in all_references}
+        if len(references) > cls.MAX_BLOBS or sum(ref.stored_bytes for ref in references.values()) > cls.MAX_BLOB_TOTAL:
+            raise ArtifactError("archive blob inventory exceeds its ceiling")
         for reference in all_references:
-            store.verify(reference)
-        for digest, reference in references.items():
-            content = store.read(reference)
-            hexadecimal = digest.split(":", 1)[1]
-            output = target / "blobs" / "sha256" / hexadecimal[:2] / hexadecimal[2:]
-            cls._write_export_file(output, content)
-        cls._write_export_file(target / "events.jsonl", encoded_events)
+            if reference.stored_bytes > cls.MAX_BLOB_BYTES or references[reference.digest].stored_bytes != reference.stored_bytes:
+                raise ArtifactError("archive blob size verification failed")
         core = {
             "schema": cls.MANIFEST_SCHEMA,
             "schema_version": cls.MANIFEST_VERSION,
@@ -350,35 +430,43 @@ class RunArchive:
         if lineage:
             inventory = {}
             for identifier, values in sorted(lineage.items()):
-                require_identifier(identifier, "lineage run ID")
-                encoded = b"".join(json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n" for event in values)
-                cls._write_export_file(target / "lineage" / (identifier + ".jsonl"), encoded)
+                encoded = encoded_lineage[identifier]
                 inventory[identifier] = {"event_count": len(values), "events_sha256": _sha256(encoded)}
             core["schema_version"] = 2
             core["lineage"] = inventory
         manifest = dict(core, manifest_digest=canonical_digest(core))
-        cls._write_export_file(
-            target / "manifest.json",
-            json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n",
-        )
+        encoded_manifest = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        cls._json(encoded_manifest, cls.MAX_MANIFEST_BYTES, budget)
+        with ArchiveRoot(store.state_dir) as source, ArchiveRoot(destination, create=True) as target:
+            for digest, reference in references.items():
+                hexadecimal = digest.split(":", 1)[1]
+                suffix = "sha256/" + hexadecimal[:2] + "/" + hexadecimal[2:]
+                content = source.read("artifacts/" + suffix, cls.MAX_BLOB_BYTES)
+                if _sha256(content) != digest or len(content) != reference.stored_bytes:
+                    raise ArtifactError("archive source blob verification failed")
+                target.write("blobs/" + suffix, content)
+            target.write("events.jsonl", encoded_events)
+            for identifier, encoded in encoded_lineage.items():
+                target.write(cls._lineage_path(identifier), encoded)
+            source.verify()
+            target.write("manifest.json", encoded_manifest)
         return manifest
-
-    @staticmethod
-    def _write_export_file(path: Path, content: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() or path.is_symlink():
-            raise ArtifactError("archive output already exists: {}".format(path))
-        with path.open("xb") as handle:
-            handle.write(content)
 
     @classmethod
     def verify(cls, source: Path) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        root = Path(source)
         try:
-            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-            encoded_events = (root / "events.jsonl").read_bytes()
-        except (OSError, json.JSONDecodeError) as error:
-            raise ArtifactError("run archive manifest or event stream is unreadable") from error
+            with ArchiveRoot(source) as root:
+                return cls._verify_root(root)
+        except (OSError, ValueError, RecursionError, TypeError) as error:
+            raise ArtifactError("run archive verification refused: invalid, changed, unsafe or oversized input") from error
+
+    @classmethod
+    def _verify_root(cls, root):
+        budget = [0]
+        manifest = cls._json(root.read("manifest.json", cls.MAX_MANIFEST_BYTES), cls.MAX_MANIFEST_BYTES, budget)
+        if not isinstance(manifest, dict):
+            raise ArtifactError("run archive manifest must be an object")
+        encoded_events = root.read("events.jsonl", cls.MAX_EVENT_TOTAL)
         expected_fields = {
             "schema", "schema_version", "run_id", "event_count", "events_sha256",
             "artifact_digests", "manifest_digest",
@@ -390,29 +478,22 @@ class RunArchive:
         core = {name: value for name, value in manifest.items() if name != "manifest_digest"}
         if canonical_digest(core) != manifest["manifest_digest"] or _sha256(encoded_events) != manifest["events_sha256"]:
             raise ArtifactError("run archive manifest or event stream digest is invalid")
-        try:
-            events = [json.loads(line) for line in encoded_events.splitlines() if line]
-        except json.JSONDecodeError as error:
-            raise ArtifactError("run archive event stream contains invalid JSON") from error
-        if len(events) != manifest["event_count"] or any(event.get("run_id") != manifest["run_id"] for event in events):
-            raise ArtifactError("run archive event count or run identity is invalid")
+        events = cls._stream(encoded_events, manifest["run_id"], manifest["event_count"], budget)
+        total_event_bytes, total_events = len(encoded_events), len(events)
         lineage = {}
         inventory = manifest.get("lineage", {})
-        if not isinstance(inventory, dict):
+        if not isinstance(inventory, dict) or len(inventory) > cls.MAX_LINEAGE:
             raise ArtifactError("run archive lineage inventory is invalid")
         for identifier, record in inventory.items():
-            require_identifier(identifier, "lineage run ID")
             if not isinstance(record, dict) or set(record) != {"event_count", "events_sha256"}:
                 raise ArtifactError("run archive lineage entry is invalid")
-            path = root / "lineage" / (identifier + ".jsonl")
-            if path.is_symlink() or path.parent.is_symlink():
-                raise ArtifactError("run archive lineage cannot use symlinks")
-            try:
-                encoded = path.read_bytes()
-                values = [json.loads(line) for line in encoded.splitlines() if line]
-            except (OSError, json.JSONDecodeError) as error:
-                raise ArtifactError("run archive lineage is unreadable") from error
-            if _sha256(encoded) != record["events_sha256"] or len(values) != record["event_count"] or any(event.get("run_id") != identifier for event in values):
+            encoded = root.read(cls._lineage_path(identifier), cls.MAX_EVENT_TOTAL - total_event_bytes)
+            total_event_bytes += len(encoded)
+            values = cls._stream(encoded, identifier, record["event_count"], budget)
+            total_events += len(values)
+            if total_events > cls.MAX_EVENTS:
+                raise ArtifactError("archive total event count exceeds its ceiling")
+            if _sha256(encoded) != record["events_sha256"]:
                 raise ArtifactError("run archive lineage hash, count, or identity is invalid")
             lineage[identifier] = values
         if lineage or any(event.get("type") == "REVISION_LINKED" for event in events):
@@ -420,18 +501,22 @@ class RunArchive:
             try:
                 verify_revision_lineage(events, lineage)
             except ValueError as error:
-                raise ArtifactError("run archive lineage is not replayable: " + str(error)) from error
+                raise ArtifactError("run archive lineage is not replayable") from error
         all_events = list(events) + [event for values in lineage.values() for event in values]
         all_references = [reference for event in all_events for reference in artifact_refs(event)]
         references = {reference.digest: reference for reference in all_references}
+        if len(references) > cls.MAX_BLOBS or sum(ref.stored_bytes for ref in references.values()) > cls.MAX_BLOB_TOTAL:
+            raise ArtifactError("archive blob inventory exceeds its ceiling")
         discovered = sorted(references)
         if discovered != manifest["artifact_digests"]:
             raise ArtifactError("run archive artifact inventory is invalid")
         for reference in all_references:
+            if reference.stored_bytes > cls.MAX_BLOB_BYTES or reference.stored_bytes != references[reference.digest].stored_bytes:
+                raise ArtifactError("archive artifact size verification failed")
+        for reference in references.values():
             digest = reference.digest
             hexadecimal = digest.split(":", 1)[1]
-            blob = root / "blobs" / "sha256" / hexadecimal[:2] / hexadecimal[2:]
-            content = blob.read_bytes() if blob.is_file() and not blob.is_symlink() else None
+            content = root.read("blobs/sha256/" + hexadecimal[:2] + "/" + hexadecimal[2:], cls.MAX_BLOB_BYTES)
             if (
                 content is None
                 or _sha256(content) != digest

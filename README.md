@@ -590,6 +590,7 @@ real hosted-agent run.
 - [Debugger protocol](docs/debugger-protocol.md): observed-versus-target behavior,
   experiments, evidence, and eval promotion.
 - [Embedding](docs/embedding.md): Python harness ownership, execution, approvals and exports.
+- [Archive boundary](docs/archive-boundary.md): private, bounded ledger exports and what they do not recover or authorize.
 - [Usage and logging](docs/usage-accounting.md): observed versus reserved spend, profiling,
   metadata log sinks and incomplete measurement coverage.
 - [Durable observers](docs/durable-observers.md): bounded approved polling, normalized

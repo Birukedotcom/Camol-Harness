@@ -343,8 +343,12 @@ def command_repo(args: argparse.Namespace) -> int:
 
 
 def command_verify_export(args: argparse.Namespace) -> int:
-    manifest, _ = RunArchive.verify(Path(args.archive))
-    state = RunArchive.replay(Path(args.archive))
+    from .state import project
+
+    # Project exactly the verified snapshot, not a second independently read
+    # archive whose manifest or events may have changed in between.
+    manifest, events = RunArchive.verify(Path(args.archive))
+    state = project(events)
     _write_json({"valid": True, "manifest": manifest, "run": summary(state)})
     return 0
 

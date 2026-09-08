@@ -132,6 +132,10 @@ model files, API keys, watcher journals and remote targets are never followed.
 
 ## Before any future purge
 
+The [portable ledger archive boundary](archive-boundary.md) now bounds and anchors
+archive reads/writes, rejects ambiguous JSON and unsafe member paths, and preserves
+the distinction between integrity verification and recovery authority.
+
 The existing run export includes ordinary ArtifactRefs and revision lineage, not
 the separate salvage CAS or all required Git objects. Verified replay is not a
 teardown receipt. A later archive slice must independently restore pinned Git and
