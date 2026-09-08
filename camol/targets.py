@@ -58,7 +58,13 @@ def descriptor(value):
 
 
 def _provider_identity(value):
-    return tuple(value["provider"][name] for name in ("kind", "account", "project", "location", "resource_id"))
+    provider = value["provider"]
+    # A GCP login/account label is reviewed access context, not a second resource
+    # namespace inside the same project. Keep it in the approved descriptor but
+    # do not let another credential label duplicate one machine in the registry.
+    names = ("kind", "project", "location", "resource_id") if provider["kind"] == "gcp" else (
+        "kind", "account", "project", "location", "resource_id")
+    return tuple(provider[name] for name in names)
 
 
 def proposal(state, value, *, expires_at):
@@ -114,7 +120,7 @@ def apply(state, event):
             raise TargetError("retirement predates adoption")
         target_id = record["proposal"]["descriptor"]["target_id"]
         # Expired but unreconciled leases still block retirement: expiry is not salvage.
-        if any(task.get("status") in {"running", "verifying"} and
+        if any(task.get("status") in {"leased", "running", "verifying"} and
                (task.get("lease_fence") or {}).get("target_id") == target_id for task in state["tasks"].values()):
             raise TargetError("reconcile this run's target leases before retirement")
         record.update(status="retired", retired_at=event["occurred_at"], retirement_reason=payload["reason"])

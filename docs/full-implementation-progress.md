@@ -46,6 +46,12 @@ per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
+The `codex/v0-target-identity` review closes two reproduced adoption defects: a
+changed GCP account label could duplicate the same provider resource, and retirement
+ignored leased work before process launch. Exact resource identity and outstanding
+prelaunch leases now gate adoption/retirement in both mutation and replay. This does
+not add remote execution; see [target lifecycle limits](target-adoption.md).
+
 The `codex/v0-target-inventory` follow-up adds versioned offline GCP inventory
 decoding, scoped identity review and partial-result reporting for SPEC §19.5.
 It feeds the existing owner adoption flow without authenticating or executing a

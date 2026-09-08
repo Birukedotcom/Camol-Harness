@@ -2022,3 +2022,44 @@ CLI paths. Log: `/tmp/camol-target-inventory-installed.log`. Installed decoder
 discovery/help, V1 example validation and `git diff --check` passed. Main and the
 user installation remain unchanged. These are offline/fixture gates, not live
 GCP discovery, authenticated adoption or distributed execution acceptance.
+
+## Target identity and prelaunch retirement review — 2026-09-08
+
+The isolated `codex/v0-target-identity` review reproduced two defects against
+`da7c054a166edf17f895fd84eb8f38cdeb16dc1a`: changing a GCP account label allowed
+the same project/location/resource ID to be adopted twice, and an outstanding
+`leased` task did not prevent retirement before launch. Both initial regressions
+failed in **0.934 seconds**; log: `/tmp/camol-target-identity-red.log`.
+
+Only `camol/targets.py` changes in the product. GCP resource identity no longer
+includes its declared access-account label; that label remains in the exact
+approved descriptor and digest. Other provider namespaces retain account scope.
+Retirement now checks leased, running and verifying work, including expired but
+unreconciled prelaunch leases. Explicit prelaunch revocation permits subsequent
+metadata retirement. Neither change grants execution, provisions a target, performs
+salvage or authorizes deletion. Replay enforces the same checks; older histories
+containing these invalid transitions need explicit review rather than silent repair.
+
+Additional tests cover forged replay events, unchanged stores after rejection,
+account changes after retirement with new exact approval, generic provider account
+scope, distinct GCP project/location namespaces, and expiry followed by explicit
+revocation. During test insertion an existing assertion was accidentally moved from
+the expired-proposal test into the retirement test. The first 14-test run and both
+80-test expansions failed at that misplaced assertion; the product guards already
+passed. Restoring the assertion to its original test corrected the test-edit error.
+
+Final groups passed **80 tests in 28.494 seconds on Python 3.12** and **80 in
+28.104 seconds on modern Python 3.9**. Logs:
+`/tmp/camol-target-identity-final-py312.log` and `-py39.log`. V1 example validation
+and `git diff --check` pass. The earlier inventory full-suite process is still
+running at its exact `da7c054` checkpoint in `/tmp/camol-target-inventory-full-py312.log`;
+it has not been restarted and does not cover these later identity repairs.
+
+The sdist-built wheel installed without dependencies into
+`/tmp/camol-target-identity-package.UfYBQIzP/venv`. Isolated imports outside the
+checkout confirmed site-packages ownership and byte equality for all **113 product
+modules**, with Textual/MCP/cryptography absent, before loading test fixtures.
+The installed group passed **80 tests in 28.083 seconds**; log:
+`/tmp/camol-target-identity-installed.log`. Main remains clean at `cca1b4b` and
+the user's installation is unchanged. No new full-suite or distributed-execution
+acceptance is claimed for this repair.

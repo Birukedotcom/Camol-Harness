@@ -36,7 +36,9 @@ machine stays healthy or that an adopted record is a renewable execution lease.
 
 The internal review schema is strict and versioned. Provider-specific discovery
 adapters must normalize raw inventory separately; this is not a raw provider API
-decoder, and tolerant fleet decoding/capability negotiation remains unfinished.
+decoder. The [offline inventory decoder](target-inventory.md) now handles GCP dump
+formats, partial results and optional-field drift; authenticated live collection
+and other providers remain unfinished.
 
 | Field | Meaning |
 | --- | --- |
@@ -47,7 +49,7 @@ decoder, and tolerant fleet decoding/capability negotiation remains unfinished.
 | `label` | Display-only label, never a routing identity |
 | `ownership` | Exactly `adopted`; created infrastructure requires a future provisioning receipt |
 | `provider.kind` | Provider namespace, e.g. `gcp`, `manual`, `local` |
-| `provider.account`, `.project`, `.location` | Explicit resource namespace; not inferred from ambient credentials |
+| `provider.account`, `.project`, `.location` | Explicit reviewed access/resource scope; not inferred from ambient credentials. For `gcp`, account is an access label, not another resource namespace inside a project. |
 | `provider.resource_id` | Stable provider identity, distinct from its display name |
 | `provider.resource_name` | Provider's human-readable name; renaming cannot bypass duplicate detection |
 | `transport.kind` | `local`, `ssh` or `worker_tls` |
@@ -71,9 +73,28 @@ An active target ID or provider resource cannot be adopted twice under different
 names. Retire it before approving a new generation. A retried adoption returns its
 original record, including its retired status, rather than reviving it. A changed
 proposal or changed retirement reason under the same identity is rejected.
-Retirement refuses running/verifying leases bound to that target in the current
+Retirement refuses leased/running/verifying work bound to that target in the current
 run, including expired but unreconciled leases. New adoption into a terminal run is
 rejected; historical receipt retrieval remains possible.
+
+For provider kind `gcp`, duplicate-resource identity is `(kind, project, location,
+resource_id)`. A different login/account label or VM display name cannot make the
+same resource a second adopted machine. The account remains in the exact approval
+digest and inspection output: changing it still needs a newly reviewed generation
+after retirement. Other provider namespaces retain account in their identity key;
+the harness does not assume every provider's account field has GCP semantics.
+Project-ID/number aliases and differently declared provider kinds are not resolved
+without authenticated provider evidence. This registry is not machine attestation.
+
+A lease is already outstanding authority before its process starts. Retirement
+must wait for its explicit revocation/reconciliation, not just a missing heartbeat
+or elapsed expiry. Once the prelaunch lease is revoked, metadata retirement can
+proceed; that is still not a machine-deletion or completed-salvage receipt.
+
+These checks also run during replay. Older ledgers containing account-alias duplicate
+GCP adoptions or retirement during an outstanding prelaunch lease are rejected rather
+than silently dropping records or transferring their authority. Preserve those
+ledgers for explicit owner review/migration; no automatic history rewrite is provided.
 
 This is **run-scoped metadata retirement**, not fleet-wide drain, salvage or a
 provider deletion receipt. Other runs, pending external effects, unpushed commits,

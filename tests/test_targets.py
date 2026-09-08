@@ -12,6 +12,7 @@ from camol.artifacts import ArtifactStore, RunArchive
 from camol.cli import main
 from camol.events import new_event
 from camol.schema import canonical_digest
+from camol.readiness import WaitingReason
 from camol.state import apply_event, project
 from camol.store import ConcurrentAppendError
 from camol.targets import TargetError, TargetRegistry, descriptor, snapshot
@@ -101,6 +102,73 @@ class TargetTests(unittest.TestCase):
         with self.assertRaises(TargetError):
             self.adopt(proposal)
         self.assertNotIn("execution_targets", self.orch.state(self.run))
+
+    def test_gcp_account_label_cannot_duplicate_same_machine(self):
+        self.adopt()
+        changed = copy.deepcopy(self.target)
+        changed.update(target_id="renamed-target", generation="generation-2")
+        changed["provider"].update(account="another-login-label", resource_name="another-display-name")
+        before = self.orch.state(self.run)
+        with self.assertRaises(TargetError):
+            self.adopt(self.proposal(changed))
+        self.assertEqual(self.orch.state(self.run), before)
+        proposed = self.proposal(changed)
+        forged = new_event(self.run, "TARGET_ADOPTED", "test-owner", dict(proposal=proposed,
+            approval_digest=proposed["digest"]), occurred_at=self.orch._now())
+        events = self.fixture.store.read(self.run)
+        with self.assertRaises(TargetError):
+            project(events + [dict(forged, seq=before["last_seq"] + 1)])
+        self.assertEqual(self.fixture.store.read(self.run), events)
+
+    def test_gcp_account_change_after_retirement_keeps_exact_new_review(self):
+        first = self.proposal()
+        self.adopt(first)
+        self.retire(first)
+        changed = copy.deepcopy(self.target)
+        changed.update(target_id="renamed-target", generation="generation-2")
+        changed["provider"]["account"] = "another-login-label"
+        proposed = self.proposal(changed)
+        with self.assertRaises(TargetError):
+            self.registry.adopt(proposed, by="test-owner", approval_digest=first["digest"])
+        record = self.adopt(proposed)
+        self.assertEqual(record["proposal"]["descriptor"]["provider"]["account"], "another-login-label")
+        self.assertEqual(project(self.fixture.store.read(self.run)), self.orch.state(self.run))
+
+    def test_provider_specific_account_and_project_namespaces_stay_distinct(self):
+        self.target["provider"]["kind"] = "manual"
+        self.adopt()
+        changed = copy.deepcopy(self.target)
+        changed.update(target_id="second-target", generation="generation-2")
+        changed["provider"]["account"] = "different-resource-account"
+        self.adopt(self.proposal(changed))
+        for index, provider in enumerate((dict(self.target["provider"], kind="gcp"),
+                dict(self.target["provider"], kind="gcp", project="project-2"),
+                dict(self.target["provider"], kind="gcp", location="zone-b")), start=3):
+            target = dict(self.target, target_id="target-" + str(index), generation="generation-" + str(index), provider=provider)
+            self.adopt(self.proposal(target))
+        self.assertEqual(self.registry.inspect()["count"], 5)
+
+    def test_retirement_denies_lease_before_process_launch(self):
+        bundle, _ = self.fixture.admit()
+        proposal = self.proposal(dict(self.target, target_id=bundle.binding.target_id))
+        self.adopt(proposal)
+        assignment = self.fixture.frame_assignment()
+        self.assertEqual(self.orch.state(self.run)["tasks"][assignment["task_id"]]["status"], "leased")
+        for elapsed in (0, 60):
+            self.fixture.clock.advance(elapsed)
+            before = self.orch.state(self.run)
+            with self.assertRaises(TargetError):
+                self.retire(proposal)
+            self.assertEqual(self.orch.state(self.run), before)
+            forged = new_event(self.run, "TARGET_RETIRED", "test-owner", dict(generation=proposal["descriptor"]["generation"],
+                adoption_digest=proposal["digest"], reason="premature retirement"), occurred_at=self.orch._now())
+            with self.assertRaises(TargetError):
+                apply_event(copy.deepcopy(before), dict(forged, seq=before["last_seq"] + 1))
+        self.orch.revoke_lease(self.run, assignment, WaitingReason(code="READINESS_STALE",
+            detail="fixture prelaunch lease revoked", wake_condition="fresh admission",
+            task_id=assignment["task_id"], box_id=assignment["agent_id"]))
+        self.assertEqual(self.retire(proposal)["status"], "retired")
+        self.assertEqual(project(self.fixture.store.read(self.run)), self.orch.state(self.run))
 
     def test_contract_unknowns_wrong_types_and_created_claim_are_rejected(self):
         changes = [((), "unknown", 1), ((), "schema_version", True), ((), "ownership", "created"),
