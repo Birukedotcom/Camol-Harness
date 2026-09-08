@@ -1801,3 +1801,12 @@ fixtures. Textual, MCP and cryptography were absent. The same **61 tests passed 
 `git diff --check` passes. Current-product whole-suite verification remains pending.
 Main is still clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; the user's
 installed Camol has not been updated.
+
+The gateway product is frozen at `a86c54ff0a4a2cc8c6f4455705f14fa3add15d85`,
+pushed to `codex/v0-worker-gateway` under `Birukedotcom <birukehdix@gmail.com>`
+with no agent coauthor. Its Python 3.12 whole suite is running, not yet passed:
+`/tmp/camol-worker-gateway-full-py312.log`. A process-scoped idle-sleep assertion
+is bounded to 2,400 seconds. No second whole suite was started concurrently.
+The exact running process must be observed to completion; a polling timeout is
+not permission to restart it or claim a result. A minimum-Python whole gate and
+the outstanding distributed execution/live acceptance work remain required.
