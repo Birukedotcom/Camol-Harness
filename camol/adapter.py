@@ -388,7 +388,7 @@ class ProcessAgentAdapter:
             raise AdapterError("agent result must be an object")
         allowed = {
             "status", "packet_sha256", "checkpoint", "completed_step_ids",
-            "input_tokens", "output_tokens", "evidence", "messages", "summary", "blocker",
+            "input_tokens", "output_tokens", "evidence", "messages", "summary", "blocker", "message_acknowledgments",
         }
         unknown = sorted(set(result) - allowed)
         if unknown:
@@ -415,6 +415,11 @@ class ProcessAgentAdapter:
         for message in result["messages"]:
             if not isinstance(message, dict):
                 raise AdapterError("each agent message must be an object")
+        acknowledgments = result.get("message_acknowledgments", [])
+        if (not isinstance(acknowledgments, list) or len(acknowledgments) > 10
+                or any(not isinstance(item, str) or not item or len(item) > 100 for item in acknowledgments)
+                or len(set(acknowledgments)) != len(acknowledgments)):
+            raise AdapterError("message acknowledgments must be at most ten unique IDs")
         if result.get("packet_sha256") != packet_sha256:
             raise AdapterError("agent result does not belong to the current context packet")
         if result["status"] == "complete" and (

@@ -243,3 +243,8 @@ class Harness:
         run_id = self._require_run()
         return RunArchive.export(run_id, self.events(), ArtifactStore(self.paths.state_dir), Path(destination),
                                  lineage_events=collect_revision_lineage(self.store, run_id))
+
+    def mailbox(self):
+        """Owner-scoped observation/post/inbox API; no implicit execution."""
+        from .mailbox import Mailbox
+        return Mailbox(self.orchestrator, self._require_run())

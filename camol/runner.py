@@ -766,6 +766,11 @@ class HarnessRunner:
                     task_id=task["id"], agent_id=assignment["agent_id"], lease_id=assignment["lease_id"],
                     wait_digest=task["runtime_wait"]["wait_digest"], reason="restart_recheck"))
             packet = self.orchestrator.context_packet(run_id, assignment)
+            from .mailbox import Mailbox
+            mailbox = Mailbox(self.orchestrator, run_id)
+            # Legacy unfenced runs retain their original packet contract.
+            if task.get("lease_fence"):
+                mailbox.populate_packet(assignment, packet)
             try:
                 execution_agent = self._execution_agent(state, assignment, execution_workspace)
             except (ProviderError, StateTransitionError) as error:
@@ -775,6 +780,8 @@ class HarnessRunner:
                 packet["provider_policy"] = execution_agent["adapter"]["profile_snapshot"]
             cost_budget = self._provider_cost_remaining(state, execution_agent, task["id"], execution_workspace)
             try:
+                for message in packet.get("box_messages", []):
+                    mailbox.acknowledge(assignment, message["message_id"])
                 result = await self._tracked_provider_turn(adapter, run_id,
                     execution_agent,
                     assignment,
@@ -830,6 +837,16 @@ class HarnessRunner:
                             artifact_cwd=execution_workspace / agent["box"])
                 self._capture_workspace_diff(run_id, assignment)
                 for message in result.get("messages", []):
+                    if message.get("schema") == "camol.box_message_request":
+                        from .mailbox import fields
+                        try:
+                            fields(message, {"schema", "target", "request_id", "body", "kind", "correlation_id", "ttl_seconds"})
+                            mailbox.post(message["target"], request_id=message["request_id"], body=message["body"],
+                                         kind=message["kind"], correlation_id=message["correlation_id"], ttl_seconds=message["ttl_seconds"],
+                                         sender=assignment["agent_id"], assignment=assignment)
+                        except ValueError as error:
+                            mailbox.reject_outbound(assignment, message, error)
+                        continue
                     self.orchestrator.route_message(
                         run_id,
                         assignment,
@@ -837,6 +854,10 @@ class HarnessRunner:
                         message.get("kind", "information"),
                         message.get("body"),
                     )
+                for message_id in result.get("message_acknowledgments", []):
+                    if message_id not in {item["message_id"] for item in packet.get("box_messages", [])}:
+                        raise ValueError("worker acknowledged a message absent from its current packet")
+                    mailbox.acknowledge(assignment, message_id, consumed=True)
             except (ValueError, StateTransitionError) as error:
                 self.orchestrator.retry_or_block(
                     run_id, assignment, "invalid_agent_result: {}".format(error)

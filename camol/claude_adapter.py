@@ -103,6 +103,7 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
             "output_tokens": 0,
             "evidence": [{"evidence_id": "unique-id", "kind": "claim", "data": {"claim": "..."}}],
             "messages": [],
+            "message_acknowledgments": [],
             "summary": "required for complete",
             "blocker": "required for blocked",
         }

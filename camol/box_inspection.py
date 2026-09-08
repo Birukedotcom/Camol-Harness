@@ -76,6 +76,10 @@ def box_snapshot(run_id, runbook, state, events, box_id, *, after_seq=0, limit=2
                      if isinstance(payload.get(name), str)]
         associated = (named == box_id or (binding.get("run_id") == run_id and binding.get("box_id") == box_id)
                       or (named is None and any(owners.get(task) == box_id for task in mentioned)))
+        if event.get("type") in {"BOX_MESSAGE_POSTED", "BOX_MESSAGE_DELIVERED", "BOX_MESSAGE_CONSUMED", "BOX_MESSAGE_SEND_REJECTED"}:
+            target = payload.get("target", {}).get("subject", payload.get("subject", {}))
+            sender = payload.get("sender", {}).get("subject") or {}
+            associated = associated or any(item.get("run_id") == run_id and item.get("box_id") == box_id for item in (target, sender))
         if associated and event.get("seq", 0) > after_seq:
             relevant.append(event)
     task_ids = sorted(task_id for task_id, task in state["tasks"].items() if task.get("agent_id") == box_id)
@@ -121,6 +125,13 @@ def box_snapshot(run_id, runbook, state, events, box_id, *, after_seq=0, limit=2
         observation=dict(basis="durable_ledger_snapshot", event_cursor=state.get("last_seq", 0),
             live_connection_proven=False, task_readiness_proven=False, historical_task_ids=sorted(historical),
             matched_events=len(relevant), more_events=len(relevant) > len(selected), tail=tail))
+    if state.get("box_messages"):
+        from .mailbox import inbox
+        # A retained cut is not a live connection check. Its message statuses
+        # are evaluated at the cut's last recorded time, preserving stable reads.
+        result["mailbox"] = dict(inbox(state, box_id, events[-1]["occurred_at"]), basis="retained_event_cut_not_live_delivery_proof")
+    if state.get("box_message_failures"):
+        result["message_send_failures"] = [item for item in state["box_message_failures"].values() if item["subject"]["box_id"] == box_id][-100:]
     result = Redactor().value(result)
     return dict(result, snapshot_digest=canonical_digest(result))
 

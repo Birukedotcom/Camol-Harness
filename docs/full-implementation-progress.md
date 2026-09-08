@@ -53,7 +53,9 @@ and standalone command now expose boxes, task dependencies and attention. The
 current-run searchable switcher is now implemented with grouped metadata, paginated
 keyboard selection and stale-plan rejection. Exact-run offline box inspection and
 persistent current-plan pins/groups are implemented. Tiled layouts and the durable
-scoped message bridge remain implementation gates; adding a visual pane never
+message UI/automatic peer-tool bridge remain implementation gates. The durable
+lease-scoped mailbox now has owner CLI, embedding, worker delivery/consumption,
+idempotency, rejection records and offline inspection; adding a visual pane never
 creates execution authority.
 
 Each row needs implementation, negative-path tests, replay/recovery evidence, and
@@ -157,7 +159,9 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   implemented. Exact current-plan pins and custom display groups now persist across
   clients and reorder/search worker navigation without changing authority.
   Task-qualified dependency evidence/selection, split/grid layouts and scoped
-  durable box communication still need their gates.
+  durable box communication UI/peer-tool integration still need their gates. The
+  owner-side mailbox and worker packet/receipt core are implemented with local
+  execution, real socket/CLI, replay/export and negative-path tests.
 - V5/V6 imported plans support kernel gates; interactive Codex/OSS launch-policy
   acknowledgement is implemented. A real fake-Codex subprocess test covers terminal
   import through detached build/evaluation/integration and final human acceptance.

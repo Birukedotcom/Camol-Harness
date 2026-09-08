@@ -281,3 +281,54 @@ used. Full-suite checks of this successor remain pending.
 These remain local protocol/execution proofs. Actual hosted-model behavior, paid
 benchmarks, complete box messaging/tiling, and public-release acceptance remain
 open; the full goal is not complete.
+
+## Lease-scoped mailbox development checkpoint
+
+Predecessor evidence finished during this wave: `ac9f2b0b20317d6cbcea1d030e63b7bd9ab4e00e`
+passed its Python 3.9 whole suite (**863 tests, 634.117 seconds**), in addition
+to the Python 3.12 result above. Integration and `codex/v0-next` were fast-forwarded
+to that checkpoint; the user's installed environment remains untouched.
+`f3f3828bf424ce1cae6e4965474d9f79b1515fc3` passed its Python 3.12 whole suite
+(**865 tests, 604.402 seconds**); its Python 3.9 suite remains a separate check.
+
+The isolated `codex/v0-box-mailbox` wave adds the versioned mailbox service,
+authenticated CLI/control calls, embedding API, bounded packet data, worker
+consumption, rejected-send records and offline inspection. An early **60-test**
+mailbox/runner/native-adapter/box-inspection/supervisor group passed on Python 3.12
+(**106.992 seconds**) and Python 3.9 (**115.869 seconds**). The later twelve-test
+mailbox group, including real socket/CLI and worker/export checks, passed on
+Python 3.12 (**36.095 seconds**) and Python 3.9 (**38.242 seconds**), before the
+final no-head-of-line-blocking case and installed-CLI import-path check.
+
+The actual local worker receives and explicitly consumes an owner message, runs
+the declared commands and reaches completion with one attempt per task. Its
+intentionally malformed outbound messages produce visible rejections rather than
+retries of successful build work. Replay and verified export reproduce both
+message and rejection state. A separate real CLI subprocess observes an active
+box, posts through the private socket, retries the same request, reads one inbox
+record, and is denied after force-stop. That check does not claim its queued
+message was consumed; the worker/export fixture proves consumption separately.
+
+Adversarial checks cover missing/changed observations, foreign lease/plan/cursor,
+worker impersonation, wrong-recipient acknowledgments, event actor tampering,
+missing/duplicate delivery, expiry/late receipts, bounded pending queues, invalid
+message kinds/control characters, reassignment and context-budget backlogs.
+The archive test initially treated the verifier's `(manifest, events)` return as
+a dictionary; its caller was corrected and now explicitly replays the verified
+events. No product check was waived.
+
+See [mailbox boundaries](box-mailbox.md) for remaining TUI, fresh peer-tool,
+remote and delegation integration. This is not a full V0 completion claim.
+
+The final **13 mailbox tests** passed on Python 3.12 (**38.401 seconds**) and
+Python 3.9 (**40.811 seconds**), including the no-head-of-line-blocking packet
+selection case and subprocess import selection tied to the loaded Camol package.
+
+A source distribution rebuilt into a wheel was installed with TUI/graph extras
+in an independent environment. **25 installed-package mailbox/box-inspection
+checks passed in 47.423 seconds**, including the real CLI socket test and actual
+worker/export test. The parent, supervisor and CLI subprocess imported installed
+Camol rather than the source checkout. This checkpoint used only temporary local
+repositories and deterministic agents: no paid model, credentials login, live
+remote host or downloaded model weights. Whole-suite successor verification is
+still pending and must not be inferred from predecessor results.

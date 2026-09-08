@@ -30,6 +30,7 @@ from .watchers import Watcher, WatcherError, WatchSpec
 from .watch_runtime import WatchRuntime
 from .source_binding import SourceBindingError, make_binding, load_binding, persist_binding, assert_source
 from .runbook import runbook_digest
+from .mailbox import MailboxError
 
 
 class SupervisorError(RuntimeError):
@@ -650,6 +651,32 @@ class Supervisor:
             if type(tail) is not bool:
                 raise SupervisorError("box tail must be a boolean")
             return {"ok": True, "result": self._box(box_id, after_seq, limit, tail=tail)}
+        if version in {2, 3} and command in {"box-observe", "box-message", "box-inbox"}:
+            from .mailbox import Mailbox
+            common = {"run_id", "plan_digest", "box_id"}
+            extra = {"request_id", "target", "body", "kind", "correlation_id", "ttl_seconds"} if command == "box-message" else ({"offset", "limit"} if command == "box-inbox" else set())
+            reject_unknown_fields(params, common | extra, "box mailbox params")
+            state = self.orchestrator.state(self.run_id)
+            if params.get("run_id") != self.run_id or params.get("plan_digest") != state["plan_digest"]:
+                raise SupervisorError("mailbox target run or plan changed")
+            if not isinstance(params.get("box_id"), str) or not params["box_id"]:
+                raise SupervisorError("mailbox requires an exact string box ID")
+            mailbox = Mailbox(self.orchestrator, self.run_id)
+            if command == "box-inbox":
+                result = mailbox.inbox(params.get("box_id"), offset=params.get("offset", 0), limit=params.get("limit", 100))
+            else:
+                if self.orphans or self.draining or self.mode in {"stopped", "operator_attention"}:
+                    raise SupervisorError("mailbox delivery requires a connected, reconciled controller")
+                if command == "box-observe":
+                    result = mailbox.observe(params.get("box_id"))
+                else:
+                    target = params.get("target")
+                    if not isinstance(target, dict) or not isinstance(target.get("subject"), dict) or target["subject"].get("box_id") != params.get("box_id"):
+                        raise SupervisorError("message target differs from its exact box")
+                    result = mailbox.post(target, request_id=params.get("request_id"), body=params.get("body"),
+                        sender=request["requested_by"], kind=params.get("kind", "information"),
+                        correlation_id=params.get("correlation_id"), ttl_seconds=params.get("ttl_seconds", 300))
+            return {"ok": True, "result": result}
         if command == "stop":
             if version in {2, 3}:
                 reject_unknown_fields(params, (), "control stop params")
@@ -678,7 +705,7 @@ class Supervisor:
             if not isinstance(request, dict):
                 raise SupervisorError("control request must be an object")
             response = await self._dispatch(request)
-        except (json.JSONDecodeError, SupervisorError, StateTransitionError, SchemaError, WatcherError, OSError) as error:
+        except (json.JSONDecodeError, SupervisorError, StateTransitionError, SchemaError, WatcherError, OSError, MailboxError) as error:
             response = {"ok": False, "error": str(error)}
         writer.write((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
         await writer.drain()

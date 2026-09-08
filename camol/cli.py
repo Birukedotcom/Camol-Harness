@@ -179,6 +179,19 @@ def command_overview(args: argparse.Namespace) -> int:
 
 
 def command_box(args: argparse.Namespace) -> int:
+    if args.box_command in {"observe", "message", "inbox"}:
+        from .supervisor import send_control_v2
+        params = dict(run_id=args.run_id, plan_digest=args.plan_digest, box_id=args.box_id)
+        if args.box_command == "message":
+            from .json_contracts import load_contract
+            target = load_contract(args.target_receipt, max_bytes=65536)
+            params.update(target=target, request_id=args.request_id, body=args.body,
+                          kind=args.kind, correlation_id=args.correlation_id, ttl_seconds=args.ttl)
+        elif args.box_command == "inbox":
+            params.update(offset=args.offset, limit=args.limit)
+        command = {"observe": "box-observe", "message": "box-message", "inbox": "box-inbox"}[args.box_command]
+        _write_json(asyncio.run(send_control_v2(Path(args.state_dir), command, requested_by=args.sender, params=params))["result"])
+        return 0
     inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
     if args.box_command == "list":
         report = inspector.list(args.run_id)
@@ -838,7 +851,7 @@ def build_parser() -> argparse.ArgumentParser:
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(handler=command_overview)
 
-    box = subparsers.add_parser("box", help="read exact run/box snapshots without a supervisor or model call")
+    box = subparsers.add_parser("box", help="inspect exact boxes or send lease-scoped data messages through a live controller")
     box_commands = box.add_subparsers(dest="box_command", required=True)
     for name in ("list", "resolve", "read"):
         operation = box_commands.add_parser(name)
@@ -852,6 +865,25 @@ def build_parser() -> argparse.ArgumentParser:
             operation.add_argument("--limit", type=int, choices=range(1, 1001), default=200, metavar="1..1000")
             operation.add_argument("--tail", action="store_true")
             operation.add_argument("--no-previews", action="store_true")
+        operation.set_defaults(handler=command_box)
+
+    for name in ("observe", "message", "inbox"):
+        operation = box_commands.add_parser(name, help="lease-scoped mailbox via the authenticated live supervisor")
+        operation.add_argument("box_id", help="exact worker box ID")
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--run-id", required=True)
+        operation.add_argument("--plan-digest", required=True)
+        operation.add_argument("--sender", default="operator", help="human attribution; authentication uses the private controller token")
+        if name == "message":
+            operation.add_argument("--target-receipt", required=True, help="JSON receipt returned by box observe")
+            operation.add_argument("--request-id", required=True, help="stable idempotency key; reuse only for identical retries")
+            operation.add_argument("--body", required=True)
+            operation.add_argument("--kind", choices=("information", "question", "proposal", "warning"), default="information")
+            operation.add_argument("--correlation-id")
+            operation.add_argument("--ttl", type=int, default=300)
+        elif name == "inbox":
+            operation.add_argument("--offset", type=int, default=0)
+            operation.add_argument("--limit", type=int, default=100)
         operation.set_defaults(handler=command_box)
 
     retention = subparsers.add_parser("retention", help="inspect bounded cold-state references; never archive or delete")

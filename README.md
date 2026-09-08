@@ -250,6 +250,12 @@ retained box identity/evidence without a supervisor or TUI. All require an expli
 `/box` view `RETAINED`; corrupt state is unavailable, not a fresh dormant pool.
 See [pane commands and bounds](docs/pane-orchestration.md#retained-box-inspection).
 
+The development mailbox adds `camol box observe`, `message` and `inbox` through
+the authenticated live supervisor, plus `Harness.mailbox()` for embedding. Sends
+are lease-scoped and idempotent; prepared-packet delivery and explicit worker
+consumption are separate records. See [the mailbox workflow and limits](docs/box-mailbox.md).
+TUI message/reply controls and automatic model-tool peer discovery are still pending.
+
 Provider startup displays cached observations without running account probes.
 `/connections refresh` requests a bounded inspection; `↻` marks that explicit
 refresh in progress. Cached authentication is labeled as an observation, not live
