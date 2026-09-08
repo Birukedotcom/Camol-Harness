@@ -28,7 +28,9 @@ revision, checks and receipt digests. This is not a complete commit ancestry cra
 untracked-file digest inventory. That patch is **not** necessarily a HEAD-to-dirty
 working-tree diff. `git_status_digest` is therefore null. Push receipt, PR and
 remote review fields are explicitly unobserved, never inferred from local green
-tests. Captured files, prompts and tool output are not included.
+tests. Explicit [remote observations](vcs-observations.md) can populate PR and
+readback fields in V2 snapshots; a ref readback is still not a push-operation
+receipt. Captured files, prompts and tool output are not included.
 
 ## Owner-reviewed relationships
 
@@ -99,8 +101,9 @@ Recorded state requires the same owner-controlled storage as the rest of Camol.
 
 ## Remaining §19.6 scope
 
-Remote push/readback receipts, provider PR/check/review observations, cross-run or
-cross-repository objects, live change detection and workflow-specific Git mutations
-remain open. These relationships are owner declarations, not independent ancestry
-or deployment proof. This layer is not completion of the full VCS specification
-or distributed build execution.
+Explicit GitHub branch/PR/check/review observations are now implemented in a
+separate owner workflow. Actual push-operation receipts, ruleset/approval-policy
+evaluation, cross-run or cross-repository objects, live change detection and Git
+mutations remain open. Relationships are owner declarations, not ancestry or
+deployment proof. This is not completion of the full VCS specification or
+distributed build execution.

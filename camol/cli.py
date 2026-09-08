@@ -182,6 +182,8 @@ def command_overview(args: argparse.Namespace) -> int:
 
 def command_vcs(args: argparse.Namespace) -> int:
     from .vcs import snapshot, propose, impact
+    if args.vcs_action == "observe" and not args.allow_network:
+        raise VCSError("vcs observe requires explicit --allow-network; no login or mutation is performed")
     # Reuse the bounded, noncreating exact-run reader, including unsafe-path and
     # malformed-ledger checks. Applying also acquires the execution leader lock.
     inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
@@ -193,6 +195,28 @@ def command_vcs(args: argparse.Namespace) -> int:
     elif args.vcs_action == "propose":
         result = propose(state, source=args.source, target=args.target, relation=args.relation,
                          action=args.action, reason=args.reason)
+    elif args.vcs_action == "observation":
+        result = state.get("vcs_observations", {}).get(args.request_id)
+        if result is None:
+            raise VCSError("unknown exact VCS observation request ID")
+    elif args.vcs_action == "observe":
+        import os
+        import re
+        from .github_vcs import target
+        destination = target(load_contract(args.target, max_bytes=65536))
+        token = None
+        if args.token_env is not None:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", args.token_env):
+                raise VCSError("token-env must name one explicit environment variable")
+            token = os.environ.get(args.token_env)
+            if not token:
+                raise VCSError("the explicitly named credential environment variable is unavailable")
+        with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+            if harness.run_id != args.run_id:
+                raise VCSError("VCS observation requires the exact current run")
+            result = harness.observe_vcs(candidate_id=args.candidate, integration_id=args.integration,
+                target=destination, by=args.by, allow_network=True, request_id=args.request_id,
+                token=token, timeout=args.timeout)
     else:
         proposal = load_contract(args.proposal, max_bytes=65536)
         with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
@@ -200,6 +224,16 @@ def command_vcs(args: argparse.Namespace) -> int:
                 raise VCSError("VCS apply requires the exact current run of this state directory")
             result = harness.apply_vcs_relation(proposal, by=args.by, review_digest=args.review_digest)
     _write_json(result)
+    if args.vcs_action == "observe":
+        receipt = result.get("receipt")
+        if not receipt or receipt["status"] != "observed":
+            return 2
+        observed = receipt["result"]
+        if (not observed["branch_readback"]["matches_integration"]
+                or (observed["pull_request"] is not None and not observed["pull_request"]["matches_integration"])
+                or any(item["status"] != 200 or (isinstance(item["data"], dict) and item["data"].get("complete") is False)
+                       for item in observed["observations"])):
+            return 2
     return 0
 
 
@@ -939,7 +973,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     vcs = subparsers.add_parser("vcs", help="record candidate relationships and inspect prospective verification impact; never Git mutation")
     vcs_commands = vcs.add_subparsers(dest="vcs_action", required=True)
-    for name in ("inspect", "impact", "propose", "apply"):
+    for name in ("inspect", "impact", "propose", "apply", "observe", "observation"):
         operation = vcs_commands.add_parser(name)
         operation.add_argument("--state-dir", required=True)
         operation.add_argument("--db", help="existing database inside state-dir; default camol.sqlite3")
@@ -958,6 +992,18 @@ def build_parser() -> argparse.ArgumentParser:
             operation.add_argument("--proposal", required=True, help="exact saved proposal JSON")
             operation.add_argument("--by", required=True)
             operation.add_argument("--review-digest", required=True)
+        elif name == "observe":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--candidate", required=True)
+            operation.add_argument("--integration", required=True)
+            operation.add_argument("--target", required=True, help="strict GitHub VCS target JSON; no credentials")
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--allow-network", action="store_true", help="explicitly permit fixed read-only api.github.com requests")
+            operation.add_argument("--token-env", help="optional explicit credential variable; never logs in or reads other account stores")
+            operation.add_argument("--request-id", help="stable observation request ID; exact retry never reissues network calls")
+            operation.add_argument("--timeout", type=float, default=30)
+        elif name == "observation":
+            operation.add_argument("--request-id", required=True)
         operation.set_defaults(handler=command_vcs)
 
     box = subparsers.add_parser("box", help="inspect exact boxes or send lease-scoped data messages through a live controller")

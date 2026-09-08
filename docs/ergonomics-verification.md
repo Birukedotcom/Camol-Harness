@@ -1424,3 +1424,57 @@ RPC audit suites remain their own running processes, not substituted results.
 Main remains clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; the user's installed
 Camol and account configuration are unchanged. Full VCS/remote execution scope
 and real provider acceptance remain open in the acceptance ledger.
+
+## GitHub VCS observation checkpoint
+
+The predecessor RPC audit product `466090482f273ef352425b0a3572870ccff8fc17`
+completed **1,108 tests in 955.508 seconds on Python 3.12** and **1,026.099 seconds
+on Python 3.9**, with three optional skips on 3.9. The predecessor VCS relationship
+product `6a827f90dc791c91314856875369c7a271ba7c50` completed **1,119 tests in
+970.279 seconds on Python 3.12** and **1,064.666 seconds on Python 3.9**, also with
+three optional skips. Their existing `/tmp/camol-rpc-audit-full-py*.log` and
+`/tmp/camol-vcs-full-py*.log` files retain the exact results. These processes have
+finished; neither result is substituted for the subsequent observation changes.
+
+The isolated `codex/v0-vcs-observations` branch now attaches explicit bounded
+GitHub metadata reads to exact accepted integration receipts. Durable start/finish
+records bind the approved owner, candidate, integration, target, request identity
+and transport limits. Pending and failed reads remain visible; repeating a request
+ID cannot silently reissue networking. The pure reader, CLI and embedding API do
+not push, approve, change tasks, spend on models, or turn reviews into gate verdicts.
+
+An initial six-test parser run failed one fixture assertion in 1.024 seconds: the
+test itself embedded its fake credential in the child prelude while asserting it
+was absent from argv. The corrected fixture obtains that value from private stdin.
+The expanded source group then passed 86 tests in 70.032 seconds on Python 3.12
+and 76.318 seconds on Python 3.9. Final review reproduced an actual replay defect:
+an unrelated later environment secret matching retained metadata or an owner
+relationship reason could invalidate historical evidence. Capture-time redaction
+is now separate from environment-independent replay validation; explicit supplied
+credential echoes are sanitized before persistence, including embedding results.
+Both cases have new regression tests.
+
+The final focused group passed **88 tests in 75.956 seconds on Python 3.12** and
+**84.257 seconds on Python 3.9**. Logs are
+`/tmp/camol-vcs-observations-final-focused-py312.log` and
+`/tmp/camol-vcs-observations-final-focused-py39.log`. Coverage includes real local
+N-box receipts, export/replay, foreign/forged identities, moved heads, partial
+collections, token handling, bounded child timeout/output/cancellation, immutable
+pending retries and logging failure. Final receipt validation precedes append.
+An explicit embedding callback has owner-enforced deadlines, not the native
+collector's owned-process enforcement; the request records that distinction.
+
+One unauthenticated native smoke test made four read-only GitHub GETs against
+`Birukedotcom/Camol-Harness`, branch `codex/v0-vcs-lineage`, expecting
+`1b1828a81bc5f14f863d8e42692a9340f0c9b351`. All four returned HTTP 200 and the two
+branch reads matched that revision. This tested the standalone collector before
+the final redaction fix, not an end-to-end live candidate binding, provider build,
+PR policy or proof of a Camol push. No credential, login, paid model call or remote
+mutation was involved. An archive produced by the prior installed VCS wheel also
+replayed with its identical V1 graph digest and relationship under the new source.
+
+The current source built successfully through sdist into a wheel. Fresh installed
+and exact-product full-suite gates are tracked below when complete. Main remains
+unchanged at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; user installation and
+account configuration are untouched. Distributed workers, native live execution,
+push/PR mutations and the remaining acceptance-ledger gates are still open.

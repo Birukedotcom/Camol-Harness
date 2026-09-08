@@ -170,6 +170,12 @@ class Harness:
         from .vcs import impact
         return impact(self.state(), candidates=candidates, change=change)
 
+    def observe_vcs(self, **kwargs):
+        run_id = self._require_run()
+        if self._running:
+            raise StateTransitionError("stop embedded execution before synchronous external VCS observation")
+        return self.orchestrator.observe_vcs(run_id, **kwargs)
+
     def events(self, *, after_seq: int = 0, limit: Optional[int] = None) -> list:
         """Read one durable cursor page; omit limit for a complete legacy snapshot.
 

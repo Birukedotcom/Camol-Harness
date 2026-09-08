@@ -133,6 +133,10 @@ These measurements include monitor reads, not provider billing. See
 `camol vcs inspect`, `propose`, `apply` and `impact` provide ledger-backed owner
 review and prospective verification impact without Git mutations or model calls.
 See [candidate relationships and remaining VCS scope](docs/vcs-lineage.md).
+`camol vcs observe` can explicitly collect bounded GitHub branch/PR/check/review
+observations for an exact accepted integration. `camol vcs observation` reads its
+retained receipt offline. This does not push, merge or approve anything; see
+[setup, credentials and evidence limits](docs/vcs-observations.md).
 
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference

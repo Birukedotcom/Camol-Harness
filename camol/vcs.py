@@ -53,6 +53,11 @@ def snapshot(state):
             repository_id=receipt.workspace.repository_id, checks_digest=receipt.checks_digest,
             evaluator_digest=receipt.evaluator_digest, receipt_digest=receipt.digest()))
     nodes = []
+    external = {}
+    if state.get("vcs_observations"):
+        from .vcs_observations import summaries
+        for row in summaries(state):
+            external.setdefault(row["candidate_id"], []).append(row)
     for identity, value in sorted(state.get("candidates", {}).items()):
         candidate = CandidateRecord.from_dict(value)
         if candidate.candidate_id != identity or candidate.run_id != state["run_id"]:
@@ -73,12 +78,24 @@ def snapshot(state):
             evaluator_digest=candidate.evaluator_digest,
             integrations=accepted,
             remote_push_receipt=None, pull_request=None, remote_review_state="not_observed"))
+        if identity in external:
+            history = external[identity]
+            latest = history[-1]
+            nodes[-1].update(remote_observations=history, remote_ref_readback=latest["branch_readback"],
+                             pull_request=latest["pull_request"], remote_review_state=latest["review_state"])
     result = dict(schema="camol.vcs_snapshot", schema_version=1, run_id=state["run_id"],
         plan_digest=state["plan_digest"], event_cursor=state["last_seq"], nodes=nodes,
         relations=[deepcopy(value) for _, value in sorted(state.get("vcs_relations", {}).items())],
         basis="recorded_candidates_and_owner_declared_relations_not_live_git",
         coverage=dict(cross_run_relations=False, remote_push_observed=False, pull_requests_observed=False),
         execution_authority=False)
+    if external:
+        # Preserve byte-identical v1 snapshots/relation replay before the first
+        # observation. V2 never hides pending/failing reads behind an older green.
+        result["schema_version"] = 2
+        result["basis"] = "recorded_candidates_relations_and_external_observations_not_live_git"
+        result["coverage"]["pull_requests_observed"] = any(row["pull_request"] is not None for rows in external.values() for row in rows)
+        result["coverage"]["remote_observation_requests_recorded"] = True
     return _digest(result)
 
 
@@ -118,7 +135,7 @@ def _validate_edges(edges):
         raise VCSError("candidate consumption relationships cannot contain a cycle")
 
 
-def propose(state, *, source, target, relation, action="add", reason):
+def _propose(state, *, source, target, relation, action="add", reason, redact):
     _owner(state, state.get("approved_by"))
     _settled(state)
     edge = _relation(source, target, relation)
@@ -141,15 +158,19 @@ def propose(state, *, source, target, relation, action="add", reason):
     return _digest(dict(schema="camol.vcs_change", schema_version=1,
         run_id=state["run_id"], plan_digest=state["plan_digest"],
         graph_digest=snapshot(state)["digest"], action=action, relation_id=relation_id,
-        **edge, reason=Redactor().text(reason), approved_owner=state["approved_by"],
+        **edge, reason=Redactor().text(reason) if redact else reason, approved_owner=state["approved_by"],
         authority="relationship_record_only"))
+
+
+def propose(state, *, source, target, relation, action="add", reason):
+    return _propose(state, source=source, target=target, relation=relation, action=action, reason=reason, redact=True)
 
 
 def _validate_proposal(state, value):
     if not isinstance(value, dict):
         raise VCSError("VCS proposal must be an object")
-    expected = propose(state, source=value.get("source"), target=value.get("target"),
-                       relation=value.get("relation"), action=value.get("action"), reason=value.get("reason"))
+    expected = _propose(state, source=value.get("source"), target=value.get("target"),
+                       relation=value.get("relation"), action=value.get("action"), reason=value.get("reason"), redact=False)
     if value != expected or type(value.get("schema_version")) is not int:
         raise VCSError("VCS proposal changed or its exact graph snapshot is stale")
     return expected
@@ -207,6 +228,11 @@ def render_snapshot(graph, *, offset=0, limit=50):
     for edge in graph["relations"][offset:offset + limit]:
         lines.append("{} --{}--> {}".format(_label(edge["source"], 128), edge["relation"], _label(edge["target"], 128)))
     lines.append("{} candidates / {} relationships; graph {}".format(len(graph["nodes"]), len(graph["relations"]), graph["digest"]))
+    for node in graph["nodes"][offset:offset + limit]:
+        if node.get("remote_observations"):
+            latest = node["remote_observations"][-1]
+            lines.append("Remote read {}: {} at {}; request {} (retained, not a gate)".format(
+                _label(node["candidate_id"], 128), latest["status"], latest["finished_at"] or latest["started_at"], latest["request_id"]))
     if offset + limit < max(len(graph["nodes"]), len(graph["relations"])):
         lines.append("More: /vcs {} (offset applies to both lists)".format(offset + limit))
     lines.append("Use camol vcs inspect/impact for complete JSON; camol vcs propose/apply reviews relationship changes.")
