@@ -258,6 +258,11 @@ Use `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX]` and `/outbox`
 in the TUI or line client. Uncertain sends retain their exact request for explicit
 `/message retry ID`; automatic model-tool peer discovery remains pending.
 
+`/layout split` and `/layout grid` keep the orchestrator beside paginated box
+status tiles. Alt+Left/Right pages; Tab/Enter or click opens a detail; Escape
+returns to the composer. `/layout focus` restores the single view. Tiles show
+recorded state/usage, not live readiness, and never send terminal input to workers.
+
 Provider startup displays cached observations without running account probes.
 `/connections refresh` requests a bounded inspection; `↻` marks that explicit
 refresh in progress. Cached authentication is labeled as an observation, not live

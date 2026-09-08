@@ -377,3 +377,48 @@ or live remote host was used.
 The UI successor's complete suite is still a separate running gate. Automatic
 fresh peer-observation tools, remote mailbox transport, tiled layouts and reviewed
 task-delegation UI remain open. This is not a completed V0 or public-release claim.
+
+## Native tiled-monitor checkpoint
+
+The isolated `codex/v0-tiled-monitor` successor to `fac94d1` implements client-only
+focus/split/grid monitoring, while preserving the orchestrator transcript and
+composer. Tiles use one metadata projection with bounded responsive pages and
+the existing scope-checked selection path. They are not replicated PTYs, live
+connectivity proof, or a new authority channel.
+
+The **89-test** layout/TUI/controller/switcher/organization/real-terminal group
+passed on Python 3.12 (**24.370 seconds**) and Python 3.9 (**27.486 seconds**).
+Adversarial cases cover 77 projected boxes, page clamping, frozen plan changes,
+corrupt ledgers, command/refresh contention, literal markup, invalidated tiles
+after resize, queued input retaining its original identity across page refresh,
+and preserving an unsent draft through refresh, selection, Escape and focus mode.
+The existing real PTY navigation test now enters grid mode before opening the
+switcher, selecting a box and exiting with Ctrl+C.
+
+Two early test failures were fixture errors: command history legitimately changes
+when `/layout` is entered, and the test attempted an invalid plan/digest pair
+instead of a valid amended plan. Assertions now check the unchanged authority
+fields and use a correctly rehashed amended plan. A synthetic 77-box view also
+needed a matching refresh fixture rather than being replaced by the real
+three-box fixture's observation. No product gate was waived.
+
+A source distribution rebuilt into a wheel was installed with TUI/graph extras
+in an independent environment. Its initial **28 installed-package checks** passed
+in **4.933 seconds**. Visual inspection of the installed client's actual Textual
+render found a cramped help line; the header was shortened and column sizing
+adjusted to use the monitor width. The affected **13 layout/terminal tests** then
+passed on Python 3.12 (**4.805 seconds**) and Python 3.9 (**5.263 seconds**).
+The rebuilt final wheel passed all **28 installed-package checks again in 4.936
+seconds**, including real PTY grid/switch/exit behavior. A second rendered view
+confirmed the header, tiles and unsent composer were visible without overlap.
+Parent and CLI child processes imported the installed package. The initial
+render helper accidentally selected an old package in another environment and
+failed before rendering; the verified render used the fresh installed environment.
+
+Only local temporary fixtures and synthetic metadata were used. The 77-box test
+does not claim 77 simultaneously running agents. No paid model call, actual
+provider login, remote deployment or model-weight download occurred. Earlier
+mailbox/UI whole-suite runs remain independent pending checks; this successor
+still needs its own full-suite gate. Automatic peer tools, reviewed delegation,
+remote execution, task-qualified dependency proof and public-release gates remain
+open. The complete V0 goal is still active.

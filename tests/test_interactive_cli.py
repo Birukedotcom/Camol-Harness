@@ -96,6 +96,9 @@ class InteractiveCliTests(unittest.TestCase):
                 self.fail("terminal did not render expected picker stage: " + _pty_diagnostic(captured, _terminal_state(master)))
         try:
             read_until(b"CAMOL PRODUCT V0")
+            os.write(master, b"/layout grid\r")
+            read_until(b"GRID")
+            os.write(master, b"\x1b")
             os.write(master, b"/switch\r")
             read_until(b"BOX SWITCHER")
             os.write(master, target.encode() + b"\r")

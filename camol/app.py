@@ -59,6 +59,8 @@ class CommandResponse:
     box_view: Optional[str] = None
     focus_orchestrator: bool = False
     switcher: Optional[Dict[str, Any]] = None
+    layout: Optional[str] = None
+    monitor: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ SLASH_COMMANDS = (
     SlashCommand("/boxes", "List the N-box worker pool", run_from_palette=True),
     SlashCommand("/overview", "See boxes, dependencies and attention together", run_from_palette=True),
     SlashCommand("/switch", "Search and switch read-only box panes", takes_value=True, run_from_palette=True),
+    SlashCommand("/layout", "Choose focus, split or paginated grid monitoring", takes_value=True),
     SlashCommand("/pin", "Pin/unpin an exact box; no arguments lists pins", takes_value=True, run_from_palette=True),
     SlashCommand("/group", "Organize an exact box under a display-only group", takes_value=True, run_from_palette=True),
     SlashCommand("/inbox", "Inspect box messages and consumption receipts", takes_value=True, run_from_palette=True),
@@ -149,6 +152,7 @@ HELP = """Commands
   /status                  current local session and supervisor state
   /boxes                   list the arbitrary-N worker pool
   /switch [WORDS]          searchable box picker; Alt+B in the TUI
+  /layout focus|split|grid client-only monitoring; Alt+Left/Right pages, Escape focuses composer
   /pin [BOX [on|off]]      persist exact-box shortcut; default on
   /group [BOX NAME]        assign a display group; BOX --clear removes it
   /inbox [BOX [OFFSET]]    inspect lease-scoped data messages
@@ -521,6 +525,14 @@ class InteractiveController:
         arguments = parts[1:]
         if command == "/help":
             return CommandResponse(messages=(HELP,))
+        if command == "/layout":
+            if len(arguments) != 1 or arguments[0] not in {"focus", "split", "grid"}:
+                raise InteractiveError("usage: /layout focus|split|grid")
+            snapshot = self._monitor_snapshot() if arguments[0] != "focus" else None
+            message = "Layout {} requested; terminal view only, no execution change.".format(arguments[0])
+            if snapshot is not None:
+                message += " Line clients use /overview and /box ID; tiling requires the TUI."
+            return CommandResponse(messages=(message,), layout=arguments[0], monitor=snapshot)
         if command == "/quit":
             return self._respond("Client detached. The supervisor, if running, was not stopped.", exit_client=True)
         if command == "/grill":
@@ -1307,6 +1319,25 @@ class InteractiveController:
             if state["run_id"] != self.session["run_id"]:
                 raise InteractiveError("pane plan differs from the selected run")
             return state, "plan_only"
+
+    def _monitor_snapshot(self):
+        from .pane_layout import monitor_snapshot
+        from .pane_switcher import pane_scope
+        from .pane_organization import load
+        state, basis = self._pane_state()
+        preferences = load(self.store.project_dir / "pane-organization.json", pane_scope(self.session, state))
+        return monitor_snapshot(self.session, state, basis, preferences)
+
+    def read_monitor(self):
+        """Serialize the project observation against plan changes, never run work."""
+        if not self._command_lock.acquire(blocking=False):
+            raise InteractiveError("client command in progress; monitor refresh deferred")
+        try:
+            with self.store.transaction():
+                self.session = self.store.load()
+                return self._monitor_snapshot()
+        finally:
+            self._command_lock.release()
 
     def _switch(self, arguments):
         from .pane_switcher import switch_snapshot, filter_rows, row_label, pane_scope

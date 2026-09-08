@@ -39,7 +39,7 @@ Connected transport, account observation and task readiness are separate indicat
 | `/usage run`, `/debug inbox`, `/gate TASK` | Accounting, failed-evaluator inbox and gate detail | Implemented |
 | `/switch [WORDS]`, `Alt+B` | Search current-run box/task/status/adapter metadata, grouped by orchestrator/attention/workers; arrows/Enter, preserved draft | Implemented |
 | `/pin [BOX [on\|off]]`, `/group [BOX NAME\|BOX --clear]` | Persistent current-plan pins and display groups | Implemented; no authority change |
-| `/layout focus\|split\|grid` | Client-only tiled monitoring | Planned |
+| `/layout focus\|split\|grid` | Composer plus paginated box monitoring; detail selection is scope-checked | Implemented; metadata tiles, not mirrored PTYs |
 | `camol box list\|resolve\|read` | Scoped observation using explicit run/box IDs, including stopped runs | Implemented; no message delivery or execution grant |
 | `camol box observe\|message\|inbox` | Lease-scoped owner CLI and embedding mailbox, idempotent sends and worker consumption receipts | Implemented; automatic peer-tool/remote integration pending |
 | `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX [OFFSET]]`, `/outbox [REQUEST_ID]` | Interactive sends/replies, inbox pane and immutable pending-request inspection | Implemented; explicit `/message retry ID` preserves its original scope |
@@ -108,18 +108,47 @@ special database/artifact files and unsafe sidecars are rejected. This is an
 owner-side diagnostic API, not a sandbox against an attacker controlling the owner
 UID. It supplies no messaging, input injection, lease grant or automatic resume.
 
-## Next UI implementation
+## Tiled monitoring
+
+`/layout split` keeps the orchestrator transcript/composer beside one row of box
+tiles. `/layout grid` allows more rows; `/layout focus` restores the single-view
+client. These are ephemeral client layout choices, not plan or session-schema
+changes. Reopening defaults to focus. A box detail selected while tiled keeps the
+orchestrator transcript beside its read-only detail; Escape returns to the tiles
+and focuses the composer without deleting an unsent draft.
+
+Alt+Left/Alt+Right pages the monitor. Tab then Enter, or a click, opens a tile.
+Ordinary prompt spaces and letters remain input. The existing bottom box bar,
+Alt+B picker, pins and groups remain available. Tiles follow the same attention,
+pin and group order as the picker. Pages hold at most six boxes, adapting to the
+monitor's actual width and terminal height. N boxes do not require N widgets or
+N independent database reads; a single ledger snapshot populates the page.
+
+Tiles show exact box/task labels, lifecycle, gate/wait, recorded agent tokens and
+turns, and the event cursor. The heading distinguishes `plan_only` from a retained
+`ledger_snapshot`; neither is a live readiness or connectivity proof. This is
+metadata monitoring, not terminal-output replication, 3D rendering, or a remote
+worker bridge. The pure `camol.pane_layout.monitor_snapshot` and `page` projection
+helpers are usable without Textual. Line clients get an explicit tiling limitation
+and continue using `/overview` and `/box`.
+
+Refreshes serialize the project observation against commands. A failed or deferred
+read disables and clears the tiles with an unavailable label, rather than keeping
+a healthy-looking stale interaction. Resize cannot revive invalidated tiles.
+Each input captures its exact key and scope before the selection event is queued;
+page refresh cannot reinterpret that event as a different worker. The existing
+scope-checked switch command rereads current state and refuses changed plans.
+No tile selection sends terminal input, spawns a process or grants execution.
+
+## Remaining UI implementation
 
 Keep the orchestrator composer available and retain the bottom box navigator.
 Current-run custom groups and pins are implemented. Project/target grouping and
 folding remain future work. Preserve selection by immutable identity during refresh,
 never by row number.
-The native terminal overview should offer focus, split and paginated grid layouts.
-Each tile identifies its box/task, current lifecycle, last event cursor, gate/wait,
-and bounded usage. Selecting a tile opens the detailed read-only view. Escape
-returns to the composer without changing execution; destructive controls remain
-separate explicit actions. Keyboard routing must not steal ordinary prompt spaces
-or letters. The same projection/API must work without Textual or tmux.
+Focus/split/paginated-grid monitoring is implemented as described above. Richer
+task-qualified dependency evidence and project/target folding remain open;
+destructive controls stay separate from navigation and monitoring.
 
 ### Persistent display organization
 

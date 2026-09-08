@@ -11,7 +11,7 @@ from typing import Dict, Mapping, Optional, Sequence
 from textual.app import App, ComposeResult
 from textual import work
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Input, OptionList, RichLog, Static, TextArea
@@ -24,6 +24,7 @@ from .boot import compose_boot
 from .connections import ConnectionError, observation_label
 from .probes import Redactor
 from .pane_switcher import filter_rows, row_label
+from .tiled_monitor import TiledMonitor
 
 
 class _OwnedClientWork:
@@ -447,6 +448,8 @@ class CamolApp(App):
         scrollbar-corner-color: #09100b;
     }
     #box-transcript { display: none; }
+    #work-area { height: 1fr; }
+    #work-area > RichLog, #work-area > TiledMonitor { width: 1fr; }
     #stream { height: auto; max-height: 5; color: #68e892; padding: 0 2; }
     #prompt {
         height: 5;
@@ -473,6 +476,9 @@ class CamolApp(App):
     BINDINGS = [
         Binding("alt+0", "orchestrator", "Orchestrator", show=False),
         Binding("alt+b", "switcher", "Boxes", show=True),
+        Binding("alt+left", "monitor_page(-1)", "Previous tiles", show=False),
+        Binding("alt+right", "monitor_page(1)", "Next tiles", show=False),
+        Binding("escape", "monitor_back", "Composer", show=False),
         Binding("alt+1", "box(1)", "Box 1", show=False),
         Binding("alt+2", "box(2)", "Box 2", show=False),
         Binding("alt+3", "box(3)", "Box 3", show=False),
@@ -509,6 +515,7 @@ class CamolApp(App):
         self.selected = "orchestrator"
         self.in_box = False
         self.selected_view = "events"
+        self.layout_mode = "focus"
         self._box_rendered = None
         self._visible_box_start = 0
         self.boxes = []
@@ -525,8 +532,10 @@ class CamolApp(App):
         with Vertical():
             yield Static("", id="dependency-rail")
             yield Static("ORCHESTRATOR", id="context")
-            yield RichLog(id="transcript", markup=False, wrap=True, highlight=False)
-            yield RichLog(id="box-transcript", markup=False, wrap=True, highlight=False)
+            with Horizontal(id="work-area"):
+                yield RichLog(id="transcript", markup=False, wrap=True, highlight=False)
+                yield RichLog(id="box-transcript", markup=False, wrap=True, highlight=False)
+                yield TiledMonitor(id="tiled-monitor")
             yield Static("", id="stream", markup=False)
             yield PromptArea(
                 "", id="prompt", soft_wrap=True, show_line_numbers=False,
@@ -692,6 +701,8 @@ class CamolApp(App):
             items.append("[{}–{}/{}; cycle [ ] or /box ID]".format(start + 1, start + len(visible_boxes), len(boxes)))
         fleet.update("  ".join(items))
         self._render_dependency_rail()
+        if self.layout_mode != "focus" and not self.in_box:
+            await self._refresh_monitor()
         if self.in_box:
             target, subview = self.selected, self.selected_view
             try:
@@ -705,6 +716,38 @@ class CamolApp(App):
                 if not self.query("#box-transcript"):
                     return
                 self._render_box(target, subview, rendered)
+
+    async def _refresh_monitor(self):
+        try:
+            snapshot = await self.run_worker(self.controller.read_monitor, thread=True,
+                group="monitor", exclusive=True, exit_on_error=False).wait()
+        except WorkerCancelled:
+            return
+        except Exception as error:
+            # Worker exceptions must remain a visible observation failure, not
+            # a crash or a fallback to planned healthy tiles.
+            if self.query("#tiled-monitor"):
+                self.query_one(TiledMonitor).unavailable(Redactor().text(str(error)))
+            return
+        if self.layout_mode != "focus" and self.query("#tiled-monitor"):
+            self.query_one(TiledMonitor).show_snapshot(snapshot, self.layout_mode)
+
+    def _sync_layout(self):
+        self.query_one("#transcript", RichLog).display = not self.in_box or self.layout_mode != "focus"
+        self.query_one("#box-transcript", RichLog).display = self.in_box
+        self.query_one(TiledMonitor).display = self.layout_mode != "focus" and not self.in_box
+
+    def on_tiled_monitor_selected(self, message):
+        import shlex
+        self._submit("/switch --select {} --scope {}".format(shlex.quote(message.key), shlex.quote(message.scope)))
+
+    def action_monitor_page(self, direction):
+        if self.layout_mode != "focus" and not self.in_box and len(self.screen_stack) == 1:
+            self.query_one(TiledMonitor).turn_page(direction)
+
+    def action_monitor_back(self):
+        if len(self.screen_stack) == 1:
+            self.action_orchestrator()
 
     def action_submit(self) -> None:
         prompt = self.query_one("#prompt", PromptArea)
@@ -830,6 +873,11 @@ class CamolApp(App):
             return
         if response.focus_orchestrator:
             self.action_orchestrator()
+        if response.layout is not None:
+            self.layout_mode = response.layout
+            self.action_orchestrator()
+            if response.monitor is not None:
+                self.query_one(TiledMonitor).show_snapshot(response.monitor, response.layout)
         self.query_one("#stream", Static).update("")
         log = self.query_one("#transcript", RichLog)
         if response.clear_transcript:
@@ -906,6 +954,7 @@ class CamolApp(App):
         self.in_box = False
         self.query_one("#transcript", RichLog).display = True
         self.query_one("#box-transcript", RichLog).display = False
+        self._sync_layout()
         self._render_dependency_rail()
         self.query_one("#prompt", PromptArea).focus()
 
@@ -938,6 +987,7 @@ class CamolApp(App):
         self.query_one("#transcript", RichLog).display = False
         log = self.query_one("#box-transcript", RichLog)
         log.display = True
+        self._sync_layout()
         if rendered != self._box_rendered:
             log.clear()
             log.write(rendered)
