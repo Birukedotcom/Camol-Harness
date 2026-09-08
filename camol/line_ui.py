@@ -7,6 +7,7 @@ from typing import Optional
 
 from .app import InteractiveController
 from .boot import compose_boot
+from .connections import ConnectionError
 
 
 def run_line_ui(workspace: Path, *, state_root: Optional[Path] = None, show_boot: bool = True) -> int:
@@ -44,7 +45,11 @@ def run_line_ui(workspace: Path, *, state_root: Optional[Path] = None, show_boot
                 print("Provider login could not start: {}".format(error))
                 continue
             print("provider login returned; verifying connection status")
-            controller.connections.probe_all()
+            try:
+                controller.connections.refresh(response.login_provider or "")
+            except (ConnectionError, OSError, ValueError):
+                print("Login status refresh failed; cached authentication is not a new confirmation.")
+                continue
             confirmation = controller.confirm_provider_connection(
                 response.login_provider or "",
                 login_returncode=completed.returncode,

@@ -19,7 +19,7 @@ from textual.worker import WorkerCancelled
 
 from .app import SLASH_COMMANDS, CommandResponse, InteractiveController, SlashCommand
 from .boot import compose_boot
-from .connections import ConnectionError
+from .connections import ConnectionError, observation_label
 from .probes import Redactor
 
 
@@ -118,7 +118,7 @@ class LoginProviderScreen(ModalScreen):
                     Option(
                         "{}  [{}]".format(
                             self.LABELS.get(provider, provider),
-                            "connected — reconnect" if self.statuses.get(provider) == "ready" else "sign in",
+                            "auth previously observed — reconnect" if self.statuses.get(provider) == "ready" else "sign in",
                         ),
                         id=provider,
                     )
@@ -284,7 +284,7 @@ class CamolApp(App):
     Screen { background: #030604; color: #e7eee9; }
     BootScreen { align: left top; padding: 1 1; }
     #boot-art { width: 100%; height: 100%; color: #68e892; }
-    #dependency-rail { height: 1; background: #07100a; color: #79d996; padding: 0 1; }
+    #dependency-rail { height: auto; max-height: 3; background: #07100a; color: #79d996; padding: 0 1; }
     #context { height: 1; background: #0b1710; color: #f1f7f3; padding: 0 1; }
     #transcript, #box-transcript {
         height: 1fr;
@@ -390,8 +390,8 @@ class CamolApp(App):
         await self._refresh_fleet()
         self.query_one("#prompt", PromptArea).focus()
         self.set_interval(1.0, self._refresh_fleet)
-        if self.discover_connections:
-            self._probe_connections()
+        # Startup is cached-only, including when legacy callers pass
+        # discover_connections=True. Refresh requires an explicit command/login.
         if self.show_boot:
             self.push_screen(BootScreen(self.boot_duration))
 
@@ -418,18 +418,17 @@ class CamolApp(App):
         records = {record["connection_id"]: record for record in self.controller.connections.load()}
         def provider(connection_id: str, binary: str) -> str:
             record = records.get(connection_id)
-            if record and record["status"] == "ready":
-                return "■ " + binary
-            if record and record["status"] in {"auth_required", "error"}:
-                return "□ " + binary
-            if not record and self.discover_connections and shutil.which(binary):
-                return "↻ " + binary
-            return ("□ " if shutil.which(binary) else "· ") + binary
+            if record:
+                return ("! " if record["status"] in {"auth_required", "error"} else "□ ") + binary + " " + observation_label(record)
+            return ("□ " + binary + " installed" if shutil.which(binary) else "· " + binary + " absent")
         parts = [
-            "■ git" if shutil.which("git") else "· git",
-            "■ docker" if shutil.which("docker") else "· docker",
+            "task unverified",
+            "□ git installed" if shutil.which("git") else "· git absent",
+            "□ docker installed; daemon?" if shutil.which("docker") else "· docker absent",
             provider("claude-cli", "claude"),
             provider("codex-cli", "codex"),
+            *(["□ local " + observation_label(records["local-openai"])] if "local-openai" in records else []),
+            *(["↻ explicit refresh"] if self.controller.connection_refresh_active.is_set() or self._connection_probe_lock.locked() else []),
             "model=" + self.controller.session["model"],
             "effort=" + self.controller.session["effort"],
         ]
@@ -442,8 +441,9 @@ class CamolApp(App):
         model = self.controller.session["model"]
         provider = model.partition(":")[0]
         connection_id = {"claude": "claude-cli", "codex": "codex-cli"}.get(provider)
-        connected = connection_id is not None and records.get(connection_id, {}).get("status") == "ready"
-        suffix = " · connected" if connected else ""
+        record = records.get(connection_id) if connection_id else None
+        suffix = " · " + observation_label(record) if record else " · connection unverified"
+        suffix += " · task unverified"
         self.query_one("#context", Static).update("ORCHESTRATOR — model={}{}".format(model, suffix))
 
     def _probe_connections(
@@ -452,25 +452,28 @@ class CamolApp(App):
         login_provider: Optional[str] = None,
         login_returncode: Optional[int] = None,
     ) -> None:
-        """Refresh account inventory without delaying boot or blocking input."""
+        """Refresh only an explicitly chosen login provider; never on startup."""
+        if login_provider not in {"claude", "codex"}:
+            return
         def probe() -> None:
-            # A disposable startup refresh may be skipped if another scan owns the
-            # lock. A post-login refresh is a state transition and must queue behind
-            # that scan rather than leaving the UI stuck at "verifying".
-            if not self._connection_probe_lock.acquire(blocking=login_provider is not None):
-                return
+            # Serialize explicit post-login observations rather than leaving a
+            # queued login in an indeterminate "verifying" state.
+            self._connection_probe_lock.acquire()
+            refreshed = False
             try:
                 try:
-                    self.controller.connections.probe_all()
+                    self.controller.connections.refresh(login_provider)
+                    refreshed = True
                 except (ConnectionError, OSError, ValueError):
-                    # Per-provider failures are normally recorded by probe_all. A
-                    # registry failure must not make the client itself unavailable.
+                    # A registry/probe failure must not make the client itself
+                    # unavailable or promote an older authentication observation.
                     pass
                 try:
                     self.call_from_thread(
                         self._finish_connection_probe,
                         login_provider,
                         login_returncode,
+                        refreshed,
                     )
                 except (ConnectionError, RuntimeError):
                     # The terminal is disposable. A detach may race this read-only
@@ -485,9 +488,13 @@ class CamolApp(App):
         self,
         login_provider: Optional[str],
         login_returncode: Optional[int],
+        refresh_succeeded: bool = True,
     ) -> None:
         self._render_dependency_rail()
         if login_provider is None:
+            return
+        if not refresh_succeeded:
+            self.query_one("#transcript", RichLog).write("camol > Login status refresh failed; cached authentication is not a new confirmation. Use /connections refresh " + login_provider)
             return
         log = self.query_one("#transcript", RichLog)
         response = self.controller.confirm_provider_connection(

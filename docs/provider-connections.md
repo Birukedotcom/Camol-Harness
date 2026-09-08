@@ -6,15 +6,39 @@ provider credential directories.
 
 ## Commands
 
-`/connections` is read-only. It checks executable/version and official status
-commands for Claude and Codex, checks only whether `OPENAI_API_KEY` is present, and
-queries `/models` on the loopback local endpoint. It stores no raw account identity;
+Startup and bare `/connections` inspect cached observations only. They make no
+provider, Docker, or HTTP call. `/connections refresh [all|claude|codex|local|openai]`
+explicitly refreshes the selected observations: executable/version and official
+status commands for Claude and Codex, only the presence of `OPENAI_API_KEY`, or
+`/models` on the configured numeric-loopback endpoint. It stores no raw account identity;
 when an identity is available, Camol stores only an HMAC-SHA256 fingerprint made with
 an owner-only local key.
 
 `/login claude` runs `claude auth login` in the real terminal. `/login codex` runs
-`codex login`. After it exits, use `/connections` again. An API key remains an
+`codex login`. After it exits, Camol refreshes only that provider's status. A failed
+refresh cannot reuse a cached success as a new login confirmation. An API key remains an
 environment or OS-credential-store concern; Product V0 never writes one.
+
+The rail distinguishes `installed`, `auth-observed`, `key-presence-observed`, and
+`catalog-observed`; saved observations show their age. Docker executable presence
+does not mean its daemon is connected. A catalog, including an empty catalog,
+does not prove a model is loaded, can infer, or fits the machine. The legacy persisted
+`ready` connection status remains readable for compatibility, but the terminal
+labels it by observation type, not as task readiness. The rail does not currently
+consume exact fresh kernel admission evidence, so it never displays a filled
+readiness indicator. It explicitly says `task unverified`.
+
+Each explicit CLI status/version command has a 10-second deadline and a 256 KiB
+combined output bound. The local catalog GET has a two-second absolute deadline
+and a 1 MiB response-body bound; it does not follow redirects, discover proxies,
+or resolve hostnames. TCP connect, TLS handshake, and HTTP reads share the deadline;
+slow peers are interrupted by shutting down the client-owned socket, and responses
+are closed. An aborted CLI probe kills its owned process group even if its leader
+already exited; this is not containment of a descendant that deliberately escapes
+that group. These are application-level
+bounds, not an on-wire bandwidth or server-computation guarantee. `/cancel` or
+Ctrl+C cancels an explicit refresh and prevents subsequent probes in that request.
+No refresh runs a model inference, download, Docker command, or paid preflight.
 
 `/model` selects the planning provider:
 

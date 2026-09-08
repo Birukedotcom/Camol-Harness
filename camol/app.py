@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
 
-from .connections import ConnectionError, ConnectionRegistry
+from .connections import ConnectionError, ConnectionRegistry, observation_label
 from . import draft_creation
 from .conversation import ConversationCancelled, ConversationError, converse, parse_selection, planning_history, require_tool_free_provider
 from .planning import (
@@ -69,7 +69,7 @@ SLASH_COMMANDS = (
     SlashCommand("/login", "Connect or reconnect Claude/Codex", run_from_palette=True),
     SlashCommand("/skills", "Show built-in Camol protocols", run_from_palette=True),
     SlashCommand("/help", "Show command reference", run_from_palette=True),
-    SlashCommand("/connections", "Refresh provider connection status", run_from_palette=True),
+    SlashCommand("/connections", "Inspect cached connection observations", run_from_palette=True),
     SlashCommand("/model", "Choose the planning model", takes_value=True),
     SlashCommand("/effort", "Set provider reasoning effort", takes_value=True),
     SlashCommand("/grill", "Turn a goal into a gated plan", takes_value=True),
@@ -137,7 +137,9 @@ HELP = """Commands
   /model SELECTION         manual | claude[:MODEL] | codex[:MODEL] | local:MODEL
   /effort LEVEL            low | medium | high | xhigh | max
   /login [claude|codex]    choose an account with arrows, or name it directly
-  /connections             read-only connection discovery (not task readiness)
+  /connections             cached observations; no probes or task-readiness claim
+  /connections refresh [all|claude|codex|local|openai]
+                            explicit bounded status/catalog refresh; no model call
   /skills                  show built-in planning/debug/evidence protocols
   /history                 show retained conversation history
   /usage [run]             planning usage or the current run's accounting report
@@ -358,6 +360,7 @@ class InteractiveController:
         self.preflight_fn = preflight_fn
         self._command_lock = threading.Lock()
         self._cancel_event = threading.Event()
+        self.connection_refresh_active = threading.Event()
         self._box_cache = {}
 
     def cancel_active(self) -> None:
@@ -390,7 +393,7 @@ class InteractiveController:
     def handle(self, raw: str, *, on_chunk: Optional[Callable[[str], None]] = None) -> CommandResponse:
         if raw.strip() == "/cancel":
             self.cancel_active()
-            return CommandResponse(messages=("Planning cancellation requested. Authoritative worker execution is unchanged.",))
+            return CommandResponse(messages=("Client request cancellation requested. Authoritative worker execution is unchanged.",))
         if not self._command_lock.acquire(blocking=False):
             return CommandResponse(messages=("A request is still running. Use /cancel, or wait before submitting another command.",))
         try:
@@ -581,7 +584,7 @@ class InteractiveController:
             self.session = self.store.update(self.session, effort=arguments[0])
             return self._respond("effort set to {}".format(arguments[0]))
         if command == "/connections":
-            return self._connections()
+            return self._connections(arguments, on_chunk=on_chunk)
         if command == "/skills":
             if arguments:
                 raise InteractiveError("usage: /skills")
@@ -1079,14 +1082,30 @@ class InteractiveController:
             )
         )
 
-    def _connections(self) -> CommandResponse:
-        records = self.connections.probe_all()
-        glyph = {"ready": "■", "auth_required": "□", "unavailable": "□", "unknown": "?", "error": "!"}
-        lines = ["CONNECTIONS — account/reachability only; not task readiness"]
+    def _connections(self, arguments=(), *, on_chunk=None) -> CommandResponse:
+        if arguments:
+            if (arguments[0] != "refresh" or len(arguments) > 2
+                    or (len(arguments) == 2 and arguments[1] not in {"all", "claude", "codex", "local", "openai"})):
+                raise InteractiveError("usage: /connections [refresh [all|claude|codex|local|openai]]")
+            self.connection_refresh_active.set()
+            notice = "Explicit connection refresh: bounded CLI version/auth status and/or loopback catalog only; no model or Docker call."
+            self._persist_message("system", notice, kind="notice")
+            if on_chunk:
+                on_chunk(notice + "\n")
+            try:
+                records = self.connections.refresh(arguments[1] if len(arguments) == 2 else "all", cancel_event=self._cancel_event)
+            finally:
+                self.connection_refresh_active.clear()
+        else:
+            records = self.connections.load()
+        lines = ["CONNECTION OBSERVATIONS — cached history, task readiness unverified; no filled readiness glyph without exact fresh kernel evidence."]
         for record in records:
             lines.append("{} {:<16} {:<14} {}".format(
-                glyph[record["status"]], record["connection_id"], record["status"], record["detail"]
+                "!" if record["status"] in {"error", "auth_required"} else "□", record["connection_id"], observation_label(record), record["detail"]
             ))
+        if not records:
+            lines.append("No saved observations. Startup and this inspection do not probe connections.")
+        lines.append("Use /connections refresh [TARGET] to observe again. Presence/authentication/catalog are separate from lease readiness.")
         return self._respond("\n".join(lines))
 
     def confirm_provider_connection(

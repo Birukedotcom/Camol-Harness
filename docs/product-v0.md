@@ -8,9 +8,10 @@ writer and keeps running.
 ## One lifecycle
 
 1. Run bare `camol` from the root of the Git repository you want Camol to work on.
-2. Wait for the top rail's `↻` connection scan to settle, then inspect
-   `/connections` for details. A filled connection glyph proves authentication or
-   reachability only. Run `/login`, choose Claude or Codex with the arrow keys, and
+2. Inspect the cached top rail and `/connections` for observation ages. Startup
+   makes no connection probes. Use `/connections refresh [TARGET]` for an explicit
+   bounded status/catalog check; neither inventory nor authentication is task
+   readiness. Run `/login`, choose Claude or Codex with the arrow keys, and
    press Enter if an account needs authentication.
 3. A successfully verified picker login selects that provider's planning model when
    no plan is frozen or running. `/model` remains the explicit selector; `manual` is
@@ -138,8 +139,13 @@ proposal.
 
 ## Connection versus readiness
 
-The dependency rail is an inventory. Git/Docker presence and provider login are not
-lease authority. `/connections` records only:
+The dependency rail is a passive inventory. Git/Docker executable presence is
+`installed`, not connected; Camol does not call Docker to inspect its daemon.
+Cached authentication, key presence, and local catalogs are labeled by observation
+type and age. The rail says `task unverified` and does not use a filled readiness
+glyph because it does not consume exact fresh task-admission evidence.
+Bare `/connections` only reads this cache. `/connections refresh
+[all|claude|codex|local|openai]` explicitly records:
 
 - provider and runtime names and versions;
 - authentication/reachability status;
@@ -149,15 +155,22 @@ lease authority. `/connections` records only:
 - capability labels and observation time.
 
 It does not read, copy, parse, or store provider credential caches. On startup, the
-TUI refreshes this inventory in a disposable background thread; `↻` means probing,
-not ready. `/login` opens a keyboard picker containing Claude Code and Codex CLI in
+TUI performs no provider or HTTP probe; `↻ explicit refresh` only appears while a
+requested refresh is active. `/login` opens a keyboard picker containing Claude Code and Codex CLI in
 V0. Every selection suspends the TUI and gives the terminal directly to
-`claude auth login` or `codex login`, even when an earlier discovery record is green,
+`claude auth login` or `codex login`, even when an earlier discovery record reported authentication,
 so the provider can print/open its own URL and own the browser session. Camol then
-runs the provider's status probe, writes the result to the orchestrator transcript,
-refreshes the filled connection glyph, and shows the active model in the top rail.
-A cancelled or failed native flow cannot reuse an older green record as a new login
+runs only the selected provider's status probe, writes the result to the orchestrator transcript,
+refreshes its observed-authentication label, and shows the active model in the top rail.
+A cancelled or failed native flow/status refresh cannot reuse an older success as a new login
 confirmation. A login never changes the model embedded in a frozen or running plan.
+
+Refreshes do not invoke a model or paid capability preflight. CLI status/version
+commands have individual deadline/output bounds. Local catalog requests use an
+absolute two-second deadline, a 1 MiB body bound, no redirects/proxies/DNS, and
+client-owned transport cleanup on timeout/cancellation. Cached legacy `ready`
+statuses remain compatible but never become task authority. See
+[connection observations](provider-connections.md) for exact limits.
 
 Normal messages are sent to the selected planning-only provider and streamed into
 the orchestrator pane. Camol retains real human/orchestrator dialogue for continuity,

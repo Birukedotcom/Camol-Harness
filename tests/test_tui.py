@@ -210,7 +210,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("abcdefghijklmnopqrstuvwxyz", rendered)
             self.assertIn("[REDACTED]", rendered)
 
-    async def test_connection_inventory_refreshes_in_background_on_startup(self):
+    async def test_startup_and_repeated_rail_render_are_cached_only_and_never_green(self):
         records = [
             _record(
                 "claude-cli",
@@ -221,20 +221,22 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 detail="Authenticated Claude CLI",
             )
         ]
-        original_probe = self.controller.connections.probe_all
-
-        def probe_all():
-            self.controller.connections.save(records)
-            return records
-
-        self.controller.connections.probe_all = Mock(side_effect=probe_all)
+        self.controller.connections.save(records)
+        self.controller.connections.probe_all = Mock(side_effect=AssertionError("startup probe"))
+        self.controller.connections.refresh = Mock(side_effect=AssertionError("startup refresh"))
         app = CamolApp(self.controller, show_boot=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(0.2)
+            with patch("camol.tui.shutil.which", return_value="/installed-only"):
+                app._render_dependency_rail()
             rail = str(app.query_one("#dependency-rail").render())
-            self.assertIn("■ claude", rail)
-            self.controller.connections.probe_all.assert_called_once_with()
-        self.controller.connections.probe_all = original_probe
+            self.assertIn("□ claude auth-observed", rail)
+            self.assertIn("□ docker installed; daemon?", rail)
+            self.assertIn("task unverified", rail)
+            self.assertNotIn("■", rail)
+            self.assertNotIn("↻", rail)
+            self.controller.connections.probe_all.assert_not_called()
+            self.controller.connections.refresh.assert_not_called()
 
     async def test_login_opens_keyboard_picker_and_enter_selects_provider(self):
         app = CamolApp(self.controller, show_boot=False, discover_connections=False)
@@ -331,10 +333,20 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             app._finish_connection_probe("claude", 0)
             await pilot.pause()
             self.assertEqual(self.controller.session["model"], "claude:fable")
-            self.assertIn("connected", str(app.query_one("#context").render()))
+            self.assertIn("auth-observed", str(app.query_one("#context").render()))
             rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
             self.assertIn("Claude connection confirmed", rendered)
             self.assertIn("model set to claude:fable", rendered)
+
+    async def test_failed_login_refresh_does_not_promote_cached_authentication(self):
+        self.controller.connections.save([_record("claude-cli", "anthropic", "cli", status="ready", runtime="claude")])
+        app = CamolApp(self.controller, show_boot=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._finish_connection_probe("claude", 0, False)
+            self.assertEqual(self.controller.session["model"], "manual")
+            rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+            self.assertIn("not a new confirmation", " ".join(rendered.split()))
 
     async def test_picker_reconnects_even_when_discovery_already_reports_connected(self):
         self.controller.connections.save([

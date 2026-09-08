@@ -97,6 +97,19 @@ class InteractiveControllerTests(unittest.TestCase):
         self.assertIsNone(response.login_argv)
         self.assertIn("Choose a provider", response.messages[0])
 
+    def test_connections_inspection_is_passive_and_refresh_is_explicit(self):
+        self.controller.connections.refresh = Mock(return_value=[_record("claude-cli", "anthropic", "cli", status="ready", runtime="claude")])
+        response = self.controller.handle("/connections")
+        self.assertIn("No saved observations", response.messages[0])
+        self.controller.connections.refresh.assert_not_called()
+        self.assertIn("denied", self.controller.handle("/connections implicit").messages[0])
+        self.controller.connections.refresh.assert_not_called()
+        response = self.controller.handle("/connections refresh claude")
+        self.controller.connections.refresh.assert_called_once_with("claude", cancel_event=self.controller._cancel_event)
+        self.assertIn("auth-observed", response.messages[0])
+        self.assertNotIn("■", response.messages[0])
+        self.assertFalse(self.controller.connection_refresh_active.is_set())
+
     def test_named_login_always_launches_native_provider_flow(self):
         self.controller.connections.save([
             _record(
