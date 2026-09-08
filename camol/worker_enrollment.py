@@ -256,3 +256,11 @@ class WorkerEnrollment:
         authorize_state(state, record["proposal"]["stream"], now=self.orchestrator._now())
         _, key = self._material(record["proposal"])
         return WorkerDelivery(root, record["proposal"]["stream"], key, role="producer", create=True)
+
+    def import_received(self, scope, *, by, request_id, limit=6):
+        from .worker_import import import_received
+        return import_received(self, scope, by=by, request_id=request_id, limit=limit)
+
+    def records(self, scope, *, after=0, limit=100):
+        from .worker_import import snapshot
+        return snapshot(self.orchestrator.state(self.run_id), scope, after=after, limit=limit)

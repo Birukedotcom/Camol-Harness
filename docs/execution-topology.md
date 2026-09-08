@@ -4,8 +4,10 @@ Status: specified; the local registered-worker subset is executable. A separate
 [durable worker evidence delivery primitive](worker-delivery.md) now provides
 lease-bound producer/receiver spools and authenticated acknowledgments.
 [Owner stream enrollment](worker-enrollment.md) adds exact review, revocation and
-controller-serialized receipt ingestion. Machine adoption, native remote transport,
-target-side launch and kernel promotion remain open.
+controller-serialized receipt ingestion. [Pinned TLS transport](worker-tls.md)
+and [owner capture into run history](worker-import.md) now cover encrypted evidence
+delivery and unverified report visibility. Machine adoption, target-side launch,
+automatic event pumping and trusted result promotion remain open.
 
 Camol's replaceable orchestration agent may propose as many boxes as a plan can
 justify within its approved resource envelope. The deterministic harness admits and

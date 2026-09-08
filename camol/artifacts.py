@@ -282,6 +282,10 @@ def artifact_refs(value: Any) -> Tuple[ArtifactRef, ...]:
     """Find strict artifact references recursively in an event payload."""
     found: List[ArtifactRef] = []
     if isinstance(value, dict):
+        if value.get("schema") == "camol.worker_import":
+            # This typed envelope captures unverified worker reports. A nested
+            # artifact-shaped claim is not a controller-owned blob reference.
+            return ()
         if value.get("schema") == ArtifactRef.SCHEMA:
             found.append(ArtifactRef.from_dict(value))
         else:

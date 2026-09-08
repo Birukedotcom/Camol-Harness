@@ -76,6 +76,12 @@ explicit CLI flush. Real socket and child-process tests do not prove distributed
 execution. Supervisor listener integration, durable transport telemetry, target
 admission/launch and kernel promotion remain open; see [TLS scope](worker-tls.md).
 
+The `codex/v0-worker-import` follow-up captures received worker reports into run
+history with an atomic page/cursor/request event and exact retry receipts. Box
+inspection, offline CLI and export can retain these reports without retaining
+private keys. They remain unverified, including artifact-shaped and billing claims;
+see [capture boundaries](worker-import.md). Trusted result promotion remains open.
+
 The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`

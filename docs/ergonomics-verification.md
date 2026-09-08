@@ -1707,3 +1707,51 @@ bounded to 2,400 seconds, not a system power-setting change. That assertion cann
 prevent lid closure, low-power shutdown or every external interruption. Only one
 new whole suite was started to avoid competing full-run timing load. Its result
 is pending; a subsequent minimum-Python whole gate is also still required.
+
+## Worker report import checkpoint — 2026-09-08
+
+Isolated branch `codex/v0-worker-import`, based on TLS documentation commit
+`c35e3e4a18b305726c70fe1c6e52a0e665b37115`. The preceding TLS product's full suite
+remains an independent running gate; no result is inferred from its progress.
+
+This adds explicit received-report capture into the run ledger, not trusted result
+promotion. Each page, source cursor and idempotent request receipt is one kernel
+event; a run-sequence compare-and-swap denies concurrent revocation/reassignment.
+Empty requests are also frozen. Lost responses after commit are recovered without
+importing newly arrived records under the same request. Historical receipt lookup
+works after key loss/revocation, while new imports require a fresh active lease.
+The [implementation boundary](worker-import.md) documents capture/source digests,
+redaction, byte/history ceilings, and the unfinished automatic execution reducer.
+
+Adversarial review found that the generic artifact walker would otherwise treat a
+nested artifact-shaped worker claim as a real blob reference. The typed worker-import
+envelope is now explicitly excluded from that traversal. A malformed nested reference
+passes through capture as a claim, box inspection does not preview it, and ordinary
+export/replay does not fetch it. Existing artifact/archive checks were run alongside
+the new cases; no artifact was promoted by this feature.
+
+- Initial import group: **7 tests in 6.090 seconds, Python 3.12, passed**.
+- Expanded import/enrollment/delivery/TLS/artifact/archive/box/usage groups:
+  **101 tests in 42.059 seconds on 3.12**, **101 in 42.269 seconds on modern 3.9**,
+  passed.
+- Final groups add an actual TLS delivery → kernel capture → listener shutdown →
+  offline reader test: **102 tests in 42.562 seconds on 3.12** and **102 in 43.227
+  seconds on modern 3.9**, passed. Logs:
+  `/tmp/camol-worker-import-final-py312.log` and `-py39.log`.
+
+Tests also cover append failure, a committed event with a lost response, concurrent
+revocation, worker authorship, stale leases, source gaps, changed replay bytes,
+request argument reuse, new-credential redaction without historical reinterpretation,
+private-key echoes in request IDs, and offline CLI inspection after key removal.
+Task steps, gates, lease renewals and provider accounting remain unchanged by import.
+These are controlled local fixtures, not a cross-host worker/model build.
+
+The source distribution was built into a wheel and installed into a fresh core-only
+Python 3.12 environment at `/tmp/camol-worker-import-package.PfOrxhom/venv`. Isolated
+imports from outside the checkout confirmed `site-packages` ownership and compared
+all seven changed product modules byte-for-byte with source before loading test
+fixtures. Textual, MCP and cryptography were absent. The same **102 tests passed in
+41.696 seconds**, recorded in `/tmp/camol-worker-import-installed.log`. The V1
+example validates and `git diff --check` passes. Main and the installed user product
+remain unchanged. A full-suite result for this new import code is still pending;
+the earlier TLS whole-suite run is not a substitute for it.

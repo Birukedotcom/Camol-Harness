@@ -128,6 +128,8 @@ Owner embeddings can additionally use [encrypted worker evidence delivery](docs/
 and explicit `camol worker-delivery flush` for an already-enrolled stream. This
 requires a TLS 1.3-capable runtime and reviewed endpoint/key material; it does not
 provision a machine, launch a remote worker or turn evidence into task success.
+`camol worker-enrollment import` explicitly captures received reports into run
+history; `records` reads them offline. See [capture and retry boundaries](docs/worker-import.md).
 `camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` inspects local
 content-free RPC counts, durations and byte measurements without connecting.
 These measurements include monitor reads, not provider billing. See

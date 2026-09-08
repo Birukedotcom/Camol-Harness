@@ -50,6 +50,12 @@ For local owner embeddings, `producer(scope, root, by=owner)` creates the matchi
 private producer spool. It does not transmit a key, change account login or bind a
 remote machine. Protect the object and its key from model process access.
 
+`import_received(scope, by=owner, request_id=..., limit=6)` explicitly captures a
+received page into the run ledger with a durable retry receipt. `records(scope)`
+reads the retained captures without a key. The CLI also exposes `import` and
+`records`; see [capture semantics and bounds](worker-import.md). This does not
+accept worker claims as executed tools, provider bills or completed tasks.
+
 ## Race and failure behavior
 
 Incoming batches are authenticated before requesting the kernel write lock, then

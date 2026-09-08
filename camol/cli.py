@@ -184,11 +184,15 @@ def command_worker_enrollment(args: argparse.Namespace) -> int:
     from .worker_delivery import DeliveryError
     try:
         inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
-        if args.action == "inspect":
+        if args.action in {"inspect", "records"}:
             state, _, _ = inspector._cut(args.run_id)
-            result = state.get("worker_streams", {}).get(args.scope)
-            if result is None:
-                raise DeliveryError("unknown enrolled worker stream")
+            if args.action == "records":
+                from .worker_import import snapshot
+                result = snapshot(state, args.scope, after=args.after, limit=args.limit)
+            else:
+                result = state.get("worker_streams", {}).get(args.scope)
+                if result is None:
+                    raise DeliveryError("unknown enrolled worker stream")
         else:
             with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
                 if harness.run_id != args.run_id:
@@ -198,6 +202,8 @@ def command_worker_enrollment(args: argparse.Namespace) -> int:
                     result = service.prepare(load_contract(args.stream, max_bytes=8192), by=args.by)
                 elif args.action == "approve":
                     result = service.approve(load_contract(args.proposal, max_bytes=16384), by=args.by, review_digest=args.review_digest)
+                elif args.action == "import":
+                    result = service.import_received(args.scope, by=args.by, request_id=args.request_id, limit=args.limit)
                 else:
                     result = service.revoke(args.scope, by=args.by, reason=args.reason)
         _write_json(result)
@@ -1017,12 +1023,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     enrollment = subparsers.add_parser("worker-enrollment", help="owner-review an exact lease-bound evidence stream; not machine adoption or execution")
     enrollment_actions = enrollment.add_subparsers(dest="action", required=True)
-    for name in ("prepare", "approve", "revoke", "inspect"):
+    for name in ("prepare", "approve", "revoke", "inspect", "import", "records"):
         operation = enrollment_actions.add_parser(name)
         operation.add_argument("--state-dir", required=True)
         operation.add_argument("--db")
         operation.add_argument("--run-id", required=True)
-        if name != "inspect":
+        if name not in {"inspect", "records"}:
             operation.add_argument("--workspace", required=True)
             operation.add_argument("--by", required=True)
         if name == "prepare":
@@ -1034,6 +1040,12 @@ def build_parser() -> argparse.ArgumentParser:
             operation.add_argument("--scope", required=True)
             if name == "revoke":
                 operation.add_argument("--reason", required=True)
+            elif name == "import":
+                operation.add_argument("--request-id", required=True)
+                operation.add_argument("--limit", type=int, default=6)
+            elif name == "records":
+                operation.add_argument("--after", type=int, default=0)
+                operation.add_argument("--limit", type=int, default=100)
         operation.set_defaults(handler=command_worker_enrollment)
 
     delivery = subparsers.add_parser("worker-delivery", help="inspect a private spool or explicitly flush one TLS evidence batch; never execute work")

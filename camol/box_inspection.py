@@ -83,7 +83,7 @@ def box_snapshot(run_id, runbook, state, events, box_id, *, after_seq=0, limit=2
         if event.get("type") in {"BOX_PEER_CALL_STARTED", "BOX_PEER_CALL_FINISHED"}:
             caller = payload.get("subject") or state.get("peer_tool_calls", {}).get(payload.get("call_id"), {}).get("start", {}).get("subject", {})
             associated = associated or (caller.get("run_id") == run_id and caller.get("box_id") == box_id)
-        if event.get("type") in {"WORKER_STREAM_ENROLLED", "WORKER_STREAM_REVOKED"}:
+        if event.get("type") in {"WORKER_STREAM_ENROLLED", "WORKER_STREAM_REVOKED", "WORKER_STREAM_IMPORTED"}:
             enrollment = payload.get("proposal") or state.get("worker_streams", {}).get(payload.get("scope"), {}).get("proposal", {})
             subject = enrollment.get("stream", {}).get("fence", {})
             associated = associated or (subject.get("run_id") == run_id and subject.get("box_id") == box_id)
