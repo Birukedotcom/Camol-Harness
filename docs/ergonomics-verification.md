@@ -851,3 +851,21 @@ One real detached successor build traverses exact revision approval, human task
 gates and final acceptance, leaves source unchanged and replays both linked runs.
 Existing full-suite gates are for the predecessor product, not this new feature;
 expanded and fresh installed-package results remain separate.
+
+The expanded predecessor-fixture group passed **57 tests in 123.878 seconds on
+Python 3.12** and **130.088 seconds on Python 3.9**. The final three preflight
+checks were added afterward and are covered by the 13-test result above, not
+included retroactively in 57. Product commit
+`af24c97a2e5db20022f4b2eaa1b1d346b6bc035f` was built sdist-to-wheel and installed
+with TUI/graph extras into a fresh environment. **19 installed-package tests
+passed in 46.648 seconds**, including the terminal proposal and real detached
+successor build. Both changed product modules match the installed files byte for
+byte; no existing user installation was upgraded.
+
+An additional final-journal fault test passed separately on Python 3.12 in
+**1.181 seconds** and Python 3.9 in **1.264 seconds**. If the final proposal-journal
+write fails after the review was published, the UI reports the error, retains
+observed planning usage, leaves the parent approved and unchanged, and `/revise`
+recovers the exact review without another model call or implicit approval. This
+extra test is not included in the earlier 13/19-test counts. The final journal
+may lack its completion receipt; recovery does not fabricate that receipt.

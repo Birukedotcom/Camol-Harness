@@ -167,6 +167,23 @@ class DelegationProposalTests(unittest.TestCase):
         restarted.spawn_fn.assert_not_called()
         restarted.converse_fn.assert_not_called()
 
+    def test_journal_failure_after_publication_leaves_recoverable_unapproved_review(self):
+        original = self.controller.store.append_proposal_event
+        def write(event):
+            if event["type"] == "PROPOSAL_FINISHED":
+                raise OSError("fixture final-journal failure")
+            original(event)
+        with patch.object(self.controller.store, "append_proposal_event", write):
+            response = self.controller.handle(self.command)
+        self.assertIn("denied", response.messages[0])
+        review = RevisionUI(self.controller.store).inspect(self.controller.session)
+        self.assertEqual(self.controller.session["run_id"], "original")
+        self.assertIn(review["review_digest"], self.controller.handle("/revise").messages[0])
+        self.provider.assert_called_once()
+        self.controller.spawn_fn.assert_not_called()
+        self.assertEqual(self.controller.store.planning_calls()[-1]["input_tokens"], 11)
+        self.assertFalse(any(event["type"] == "RUN_SUPERSEDED" for event in self.events()))
+
     def test_real_detached_successor_requires_exact_revision_task_and_final_gates(self):
         from camol.supervisor import spawn_supervisor
         from camol.debug_execution import source_identity
