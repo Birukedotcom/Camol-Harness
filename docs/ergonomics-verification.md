@@ -1536,3 +1536,16 @@ seconds on Python 3.12 and 52.940 seconds on Python 3.9**. Exact results are in
 `/tmp/camol-worker-delivery-key-fixed-py312.log` and
 `/tmp/camol-worker-delivery-key-fixed-py39.log`. No actual remote host, model account,
 cloud provisioning or user installation was used. Main remains unchanged.
+
+Product `0ba54c5d406cd35d81be2115b5d25a04c3651555` is committed and pushed under
+the owner's Git identity on `codex/v0-worker-delivery`. The fresh installed wheel
+passed the same **46 tests in 47.388 seconds on Python 3.12**, without Textual, MCP
+or cryptography installed. Both changed product modules were byte-compared with
+source before loading test fixtures; imports came from `site-packages` while
+running outside the repository. The log is `/tmp/camol-worker-delivery-installed.log`.
+
+Full suites for this frozen product have started in
+`/tmp/camol-worker-delivery-full-py312.log` and
+`/tmp/camol-worker-delivery-full-py39.log`; results remain pending. The earlier VCS
+observation full suites are separate live processes and have not been restarted.
+Main was rechecked clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`.
