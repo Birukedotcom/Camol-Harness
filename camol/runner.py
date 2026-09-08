@@ -790,8 +790,14 @@ class HarnessRunner:
                 self._pause_assignment(run_id, assignment, "CAPACITY_EXHAUSTED", str(error))
                 return
             except ProviderBudgetPending as error:
-                if await self._wait_for_provider_budget(run_id, assignment, error):
-                    continue
+                try:
+                    if getattr(adapter, "hosted_invocation_id", None) is not None:
+                        raise CapacityError("budget wait occurred after an invocation intent; reconciliation required")
+                    if await self._wait_for_provider_budget(run_id, assignment, error):
+                        continue
+                except CapacityError as capacity_error:
+                    self._pause_assignment(run_id, assignment, "OPERATOR_ATTENTION", str(capacity_error))
+                    return
                 self._pause_assignment(run_id, assignment, "OPERATOR_ATTENTION",
                     "outstanding provider reservations are not owned live invocations in this runner; reconciliation required")
                 return
@@ -1111,6 +1117,8 @@ class HarnessRunner:
         self.orchestrator._emit(run_id, "PROVIDER_BUDGET_WAITING", payload)
         reason = "settlement_recheck"
         try:
+            if getattr(self, "capacity", None) is not None:
+                self.capacity.defer_unlaunched(run_id, assignment, error.unlaunched_binding)
             # No model turn, lease reissue or payment intent is created while
             # waiting. The outer assignment loop continues readiness heartbeats.
             while owned():

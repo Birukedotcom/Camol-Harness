@@ -233,3 +233,51 @@ adapter after reservation; merely matching a logical turn after a restart does
 not establish ownership. Unknown, unowned, busy-lock and exhausted cases remain
 operator attention. V6 renewal of an expired rate debit for a proven-unlaunched
 call remains a documented integration gap and must not be called completed.
+
+## Completed predecessor suites and rate-deferral successor
+
+Frozen pane-organization checkpoint `9c88a9d82cd721fccd168d79ea1a171924bb0326`
+passed **856 tests** on Python 3.12 (**651.788 seconds**) and Python 3.9
+(**623.388 seconds**). Its previously recorded fresh installed-package/PTY checks
+also passed. The `codex/v0-next` installation branch was fast-forwarded to this
+checkpoint; no user-installed environment was modified.
+
+Frozen budget-wake checkpoint `ac9f2b0b20317d6cbcea1d030e63b7bd9ab4e00e`
+passed **863 tests** on Python 3.12 (**582.402 seconds**). Its Python 3.9 full
+suite remains a separate running check. Neither predecessor proves the successor.
+
+The isolated `codex/v0-rate-deferral` successor closes the documented V6
+pre-intent budget-wait/rate-window interaction with a new audited debit identity,
+not a refund or automatic extension. The **71-test** budget/capacity/native
+adapter/usage group passed on Python 3.12 (**76.413 seconds**) and Python 3.9
+(**80.680 seconds**). After the final explicit budget-wait-code guard and binding
+assertion, all **16 budget-wait/capacity-runtime tests** passed again on Python
+3.12 (**62.834 seconds**) and Python 3.9 (**66.072 seconds**).
+
+The new real local V6 N-box fixture holds budget past the old rate window,
+completes at the human final-acceptance gate with one attempt per task, preserves
+every debit and exactly replays deferrals. Negative replays reject removed
+deferrals, foreign IDs, stale leases, boolean turns and changed wait digests.
+A controlled-clock test proves that the old debit is not refunded before expiry,
+unready supply still blocks replacement, and a broker commit followed by local
+publication loss recovers exactly one replacement receipt after coordinator
+reconstruction. Missing admission bindings and duplicate deferrals are denied.
+
+Initial test development exposed fixture mistakes: its nested process wrapper
+authorized twice rather than once like the native adapter, and the V6 gate model
+needed a larger frozen packet envelope than the V4 demo. Those fixture inputs were
+corrected before approval; no runtime evaluator or budget enforcement was bypassed.
+The test's logical clock also now advances before publishing a changed supply
+observation, preserving the broker's immutable observation identity rule.
+
+A fresh source distribution was rebuilt into a wheel and installed with TUI/graph
+extras in an independent virtual environment. **28 installed-package tests passed
+in 62.445 seconds**, covering budget waits, all capacity-runtime tests and atomic
+provider admission. The launcher asserted that Camol was imported from the
+installed `site-packages`, not the source checkout; `camol --help` also passed.
+No live provider credentials, paid requests, model weights or remote hosts were
+used. Full-suite checks of this successor remain pending.
+
+These remain local protocol/execution proofs. Actual hosted-model behavior, paid
+benchmarks, complete box messaging/tiling, and public-release acceptance remain
+open; the full goal is not complete.

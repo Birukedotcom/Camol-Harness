@@ -25,9 +25,12 @@ class ProviderBudgetError(AdapterError):
 class ProviderBudgetPending(ProviderBudgetError):
     """Potentially recoverable only while these exact invocations are owned/live."""
 
-    def __init__(self, pending):
+    def __init__(self, pending, *, unlaunched_binding=None):
         super().__init__("shared provider budget is exhausted by outstanding invocations; settlement may free capacity")
         self.pending = tuple(dict(item) for item in pending)
+        # Supplied only at the atomic admission boundary, after checking that
+        # this exact invocation has no durable intent and before any launch.
+        self.unlaunched_binding = dict(unlaunched_binding) if unlaunched_binding is not None else None
 
 
 def budget_baseline(state):
@@ -227,7 +230,7 @@ def reserve_hosted(journal, *, state_dir, profile, plan_digest, requested_cents,
                 (profile.max_run_usd_cents * 10000 - total + pending_total) // 10000,
                 (profile.max_task_usd_cents * 10000 - task_total + pending_task_total) // 10000)
             if pending and possible > 0:
-                raise ProviderBudgetPending(pending)
+                raise ProviderBudgetPending(pending, unlaunched_binding=journal.binding)
             raise ProviderBudgetError("shared provider budget is exhausted or held by outstanding invocations")
         evidence = evidence_factory(ceiling)
         reserved = _receipt(journal._payload(evidence), run_id)

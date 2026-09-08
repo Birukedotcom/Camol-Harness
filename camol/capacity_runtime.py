@@ -7,7 +7,17 @@ from .capacity import CapacityBroker, CapacityError, TARGET_RESOURCES, validate_
 from .schema import canonical_digest, parse_timestamp, require_digest, require_identifier
 
 
-CAPACITY_EVENTS = frozenset({"GLOBAL_CAPACITY_RESERVED", "GLOBAL_CAPACITY_RENEWED", "GLOBAL_CAPACITY_RELEASED", "GLOBAL_CAPACITY_WAITING", "CAPACITY_CALL_RESERVED"})
+CAPACITY_EVENTS = frozenset({"GLOBAL_CAPACITY_RESERVED", "GLOBAL_CAPACITY_RENEWED", "GLOBAL_CAPACITY_RELEASED", "GLOBAL_CAPACITY_WAITING", "CAPACITY_CALL_RESERVED", "CAPACITY_CALL_DEFERRED"})
+
+
+def _base_call_id(controller_id, run_id, lease_id, turn_number):
+    return "call-" + canonical_digest(dict(controller_id=controller_id, run_id=run_id,
+                                         lease_id=lease_id, turn=turn_number)).split(":")[1]
+
+
+def _current_call_id(state, controller_id, lease_id, turn_number):
+    base = _base_call_id(controller_id, state["run_id"], lease_id, turn_number)
+    return state.get("capacity_call_heads", {}).get(base, base)
 
 
 def default_capacity_path():
@@ -125,11 +135,37 @@ def apply_capacity_event(state, event):
         if payload["task_id"] not in state["tasks"] or payload["decision"].get("status") not in {"waiting", "denied"}:
             raise CapacityError("invalid capacity waiting decision")
         state.setdefault("capacity_waits", {})[payload["task_id"]] = deepcopy(payload["decision"])
+    elif kind == "CAPACITY_CALL_DEFERRED":
+        _fields(payload, {"task_id", "agent_id", "lease_id", "fence_digest", "turn_number", "call_id",
+                          "next_call_id", "wait_digest", "invocation_binding_digest"}, "capacity call deferral")
+        task = state["tasks"][payload["task_id"]]
+        if (task["status"] != "running" or type(payload["turn_number"]) is not int
+                or payload["turn_number"] != task["turn_count"] + 1
+                or any(task[name] != payload[name] for name in ("agent_id", "lease_id", "fence_digest"))
+                or task.get("runtime_wait", {}).get("code") != "BUDGET_RESERVED"
+                or task.get("runtime_wait", {}).get("wait_digest") != payload["wait_digest"]):
+            raise CapacityError("capacity deferral requires the exact live budget wait and worker turn")
+        require_digest(payload["wait_digest"], "budget wait digest")
+        require_digest(payload["invocation_binding_digest"], "unlaunched invocation binding")
+        receipt = capacity_for_task(state, task["id"], task["agent_id"], now=event["occurred_at"])
+        controller = receipt["request"]["controller_id"]
+        old = state.get("capacity_calls", {}).get(payload["call_id"])
+        if (payload["call_id"] != _current_call_id(state, controller, payload["lease_id"], payload["turn_number"])
+                or not old or any(old[name] != payload[name] for name in
+                    ("task_id", "agent_id", "lease_id", "fence_digest", "turn_number"))
+                or old["call"]["reservation_id"] != receipt["reservation_id"]):
+            raise CapacityError("capacity deferral requires the current exact reserved call")
+        expected = "call-" + canonical_digest({name: value for name, value in payload.items() if name != "next_call_id"}).split(":")[1]
+        if payload["next_call_id"] != expected or expected in state.get("capacity_calls", {}):
+            raise CapacityError("capacity deferral successor identity is invalid")
+        state.setdefault("capacity_call_deferrals", {})[payload["call_id"]] = deepcopy(payload)
+        base = _base_call_id(controller, state["run_id"], payload["lease_id"], payload["turn_number"])
+        state.setdefault("capacity_call_heads", {})[base] = expected
     elif kind == "CAPACITY_CALL_RESERVED":
         _fields(payload, {"task_id", "agent_id", "lease_id", "fence_digest", "turn_number", "call"}, "capacity call event")
         task = state["tasks"][payload["task_id"]]
         if (task["status"] != "running" or (task["agent_id"], task["lease_id"], task["fence_digest"]) != (payload["agent_id"], payload["lease_id"], payload["fence_digest"])
-                or payload["turn_number"] != task["turn_count"] + 1):
+                or type(payload["turn_number"]) is not int or payload["turn_number"] != task["turn_count"] + 1):
             raise CapacityError("capacity call must bind the exact next worker turn")
         receipt = capacity_for_task(state, task["id"], task["agent_id"], now=event["occurred_at"])
         call = payload["call"]
@@ -153,10 +189,13 @@ def apply_capacity_event(state, event):
                 or call["max_requests"] > rate["max_requests"] or call["max_tokens"] > rate["max_tokens"]):
             raise CapacityError("capacity call exceeds its exact rolling-window envelope")
         identity = require_identifier(call["call_id"], "capacity call identity")
+        if identity != _current_call_id(state, receipt["request"]["controller_id"], payload["lease_id"], payload["turn_number"]):
+            raise CapacityError("capacity call is not the current invocation generation")
         calls = state.setdefault("capacity_calls", {})
         if identity in calls and calls[identity] != payload:
             raise CapacityError("capacity call identity has conflicting receipts")
         calls[identity] = deepcopy(payload)
+        state.setdefault("capacity_waits", {}).pop(payload["task_id"], None)
 
 
 class CapacityCoordinator:
@@ -228,7 +267,7 @@ class CapacityCoordinator:
         receipt = capacity_for_task(state, assignment["task_id"], assignment["agent_id"], now=self.orchestrator._now())
         if not any(need["kind"] == "provider" for need in receipt["request"]["needs"]):
             return {"status": "granted", "call": None, "wake_at": None}
-        call_id = "call-" + canonical_digest({"controller_id": self.controller_id, "run_id": run_id, "lease_id": assignment["lease_id"], "turn": turn_number}).split(":")[1]
+        call_id = _current_call_id(state, self.controller_id, assignment["lease_id"], turn_number)
         decision = self._broker().reserve_call(receipt["reservation_id"], call_id=call_id, max_requests=1,
                                              max_tokens=state["runbook"]["run"]["token_policy"]["max_tokens_per_turn"], scope=receipt["request"]["policy"]["rate_scope"])
         if decision["status"] == "granted":
@@ -239,6 +278,31 @@ class CapacityCoordinator:
         else:
             self._waiting(run_id, assignment["task_id"], decision)
         return decision
+
+    def defer_unlaunched(self, run_id, assignment, binding):
+        """Record the trusted budget-admission boundary, never refund a debit.
+
+        Only the runner catching a pre-intent ProviderBudgetPending calls this.
+        The next invocation gets a distinct, durable identity and must pass the
+        broker's complete supply/window assessment, even before the old expires.
+        """
+        state = self.orchestrator.state(run_id)
+        if not enabled(state):
+            return
+        receipt = capacity_for_task(state, assignment["task_id"], assignment["agent_id"], now=self.orchestrator._now())
+        if not any(need["kind"] == "provider" for need in receipt["request"]["needs"]):
+            return
+        task = state["tasks"][assignment["task_id"]]
+        turn = task["turn_count"] + 1
+        expected = dict(run_id=run_id, turn_number=turn,
+                        **{name: assignment[name] for name in ("task_id", "agent_id", "lease_id", "fence_digest")})
+        if not isinstance(binding, dict) or type(binding.get("turn_number")) is not int or any(binding.get(name) != value for name, value in expected.items()):
+            raise CapacityError("rate deferral lacks exact pre-intent budget admission evidence")
+        payload = {name: assignment[name] for name in ("task_id", "agent_id", "lease_id", "fence_digest")}
+        payload.update(turn_number=turn, call_id=_current_call_id(state, self.controller_id, assignment["lease_id"], turn),
+                       wait_digest=task.get("runtime_wait", {}).get("wait_digest"), invocation_binding_digest=canonical_digest(binding))
+        payload["next_call_id"] = "call-" + canonical_digest(payload).split(":")[1]
+        self._record(run_id, "CAPACITY_CALL_DEFERRED", payload)
 
     def renew_assignment(self, run_id, assignment, *, verification_reconciled=False):
         state = self.orchestrator.state(run_id)

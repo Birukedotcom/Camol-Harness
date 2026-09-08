@@ -86,11 +86,24 @@ its intent; matching only run/task/lease/turn after a restart is insufficient.
 Cancellation clears the wait annotation, not the financial reservation. A resumed
 task clears the previous annotation and rechecks; it does not inherit prior live
 ownership. Busy-lock retry and unified reservation inspection remain separate gaps.
-For V6 provider-rate capacity, an already reserved call ID can expire during a
-long budget wait. Its recheck deliberately denies reuse rather than inventing a
-new debit; automatic renewal of a proven-unlaunched call remains an integration
-gap. The current automatic wake fixture covers the V4 execution loop, not that
-V6 long-window case or live hosted-model behavior.
+For V6 provider-rate capacity, the atomic budget denial carries the exact
+pre-intent invocation binding. While the runner owns the blocking invocations,
+it records `CAPACITY_CALL_DEFERRED`, binding the old rate debit, active budget
+wait, task/worker/lease/fence/turn and a deterministic successor ID. The next
+admission uses that new ID and reassesses supply and the rolling window. The old
+debit is retained even if its window has not expired; this is deliberately
+conservative and can cause an additional rate wait. A successful rate reservation
+clears its capacity-wait annotation. This is a new admission, not a refund or an
+extension of a receipt whose invocation might already have launched.
+
+An expired ID without that recorded deferral still fails closed. The trusted
+runner/adapter admission boundary supplies the no-intent evidence; this is not
+an independent observation of a remote provider. A marker showing that an intent
+already exists denies automatic deferral. Publication of the successor debit is
+idempotent if the broker commits before the run event; a crash before the deferral
+itself is durable does not invent the missing proof and may require reconciliation.
+Local fixtures cover V4 wake-up and a V6 wait crossing the old rate window, not
+live hosted-model behavior.
 There is no automatic refund, unknown-charge reconciliation or journal deletion.
 Retain the `packets` tree and budget lock with the run's recovery state.
 

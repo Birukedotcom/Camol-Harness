@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from camol.adapter import ProcessAgentAdapter
@@ -72,6 +73,8 @@ class BudgetWaitTests(unittest.TestCase):
         with self.assertRaises(ProviderBudgetPending) as caught:
             case.reserve(case.invocation("third"))
         self.assertEqual({item["task_id"] for item in caught.exception.pending}, {"first", "second"})
+        self.assertEqual(caught.exception.unlaunched_binding["task_id"], "third")
+        self.assertFalse(case.invocation("third")[0].path.exists())
         first[0].record_outcome(first[1](20, 310000))
         with self.assertRaises(ProviderBudgetError) as exhausted:
             case.reserve(case.invocation("fourth"))
@@ -122,6 +125,12 @@ class BudgetWaitTests(unittest.TestCase):
         asyncio.run(scenario())
 
     def test_real_n_box_run_wakes_on_settlement_without_new_attempts(self):
+        self._run_budgeted_boxes()
+
+    def test_v6_budget_wait_outlives_rate_window_and_gets_a_new_debit(self):
+        self._run_budgeted_boxes(v6=True)
+
+    def _run_budgeted_boxes(self, *, v6=False):
         with tempfile.TemporaryDirectory() as temporary:
             workspace, state_dir, store = test_runner.RunnerTests()._workspace_and_store(temporary)
             runner = None
@@ -148,20 +157,62 @@ class BudgetWaitTests(unittest.TestCase):
                         plan_digest=packet["run"]["plan_digest"], requested_cents=30, evidence_factory=evidence)
                     self.hosted_invocation_id = invocation_id
                     calls.append(invocation_id)
-                    await asyncio.sleep(0.15)
-                    result = await super().execute_turn(agent, assignment, packet, turn_number, **kwargs)
+                    await asyncio.sleep(1.15 if v6 and len(calls) == 1 else 0.15)
+                    # Model adapters authorize once, immediately before budget
+                    # admission. The nested process fixture would authorize a
+                    # second time after its simulated in-flight latency.
+                    authorization = self.before_launch
+                    self.before_launch = None
+                    try:
+                        result = await super().execute_turn(agent, assignment, packet, turn_number, **kwargs)
+                    finally:
+                        self.before_launch = authorization
                     observed = evidence(ceiling, 0)
                     journal.record_outcome(observed)
                     result.setdefault("_camol_observed_evidence", []).extend(observed)
                     return result
             try:
                 orchestrator = Orchestrator(store)
-                state = orchestrator.initialize(load_runbook(Path(test_runner.ROOT) / "examples/local-n-box-runbook.json"))
+                plan = load_runbook(Path(test_runner.ROOT) / "examples/local-n-box-runbook.json")
+                broker = None
+                if v6:
+                    from camol.capacity import CapacityBroker
+                    from camol.gates import GatePolicy, Invariant, Obligation
+                    from tests.test_capacity import policy, supply
+                    plan["schema_version"] = 6
+                    # V6 packets additionally carry the explicit gate model;
+                    # freeze an envelope sized for that fixture before approval.
+                    plan["run"]["token_policy"].update(max_tokens_per_turn=8000, max_total_tokens=60000)
+                    plan["run"]["capacity_policy"] = policy()
+                    plan["state_model"] = dict(invariants=[], obligations=[], gates=[], final_acceptance="human")
+                    for task in plan["tasks"]:
+                        identity = task["id"]
+                        invariant = Invariant(identity + "-correct", 1, "owner", "task:" + identity, "eventually",
+                            "Declared fixture output passes its frozen command", (), ("fixture output",), "normal",
+                            ("wrong-output mutation",), ("test_result",), True, "preauthorized")
+                        obligation = Obligation(identity + "-accepted", "owner", "ACCEPTED", (invariant.invariant_id,), (identity,))
+                        plan["state_model"]["invariants"].append(invariant.to_dict())
+                        plan["state_model"]["obligations"].append(obligation.to_dict())
+                        plan["state_model"]["gates"].append(dict(task_id=identity, policy=GatePolicy.compile(identity + "-gate", "basic").to_dict(),
+                            invariant_ids=[invariant.invariant_id], obligation_ids=[obligation.obligation_id],
+                            evaluators=[dict(verification_index=index, family="deterministic", invariant_ids=[invariant.invariant_id]) for index in range(len(task["verification"]))]))
+                        task["resource_requirements"] = dict(cpu_millis=100, memory_bytes=100, gpu_millis=0, vram_bytes=0, disk_bytes=100, placement={})
+                    for agent in plan["agents"]:
+                        agent["capacity_pools"] = dict(target="target", runtime="runtime", provider="provider")
+                    broker = CapacityBroker(state_dir / "capacity.sqlite3")
+                    self.addCleanup(broker.close)
+                    capabilities = sorted({cap for agent in plan["agents"] for cap in agent["capabilities"]})
+                    for kind in ("target", "runtime", "provider"):
+                        item = supply(kind, kind, now=datetime.now(timezone.utc), slots=3, capabilities=capabilities)
+                        if kind == "provider":
+                            item["rate_limit"].update(window_seconds=1, max_requests=10, max_tokens=80000)
+                        broker.publish(item)
+                state = orchestrator.initialize(plan)
                 orchestrator.approve_plan(state["run_id"], "owner", state["plan_digest"])
-                runner = HarnessRunner(orchestrator, workspace, state_dir=state_dir)
+                runner = HarnessRunner(orchestrator, workspace, state_dir=state_dir, capacity_broker=broker)
                 with patch("camol.runner.create_agent_adapter", side_effect=lambda kind, *args, **kwargs: BudgetedProcess(*args, **kwargs)):
                     final = asyncio.run(runner.run_until_terminal(state["run_id"]))
-                self.assertEqual(final["status"], "completed", (final.get("terminal"), {key: value.get("waiting") for key, value in final["tasks"].items()}))
+                self.assertEqual(final["status"], "awaiting_acceptance" if v6 else "completed", (final.get("terminal"), {key: (value.get("waiting"), value.get("blocker")) for key, value in final["tasks"].items()}))
                 events = store.read(state["run_id"])
                 waits = [event for event in events if event["type"] == "PROVIDER_BUDGET_WAITING"]
                 self.assertTrue(waits)
@@ -175,6 +226,29 @@ class BudgetWaitTests(unittest.TestCase):
                 self.assertTrue(all(task["attempts"] == 1 for task in final["tasks"].values()))
                 self.assertEqual(len(calls), len(set(calls)))
                 self.assertEqual(project(events), final)
+                if v6:
+                    from camol.capacity import CapacityError
+                    from camol.schema import parse_timestamp
+                    deferred = [event for event in events if event["type"] == "CAPACITY_CALL_DEFERRED"]
+                    self.assertTrue(deferred)
+                    crossed = False
+                    for event in deferred:
+                        payload = event["payload"]
+                        old = final["capacity_calls"][payload["call_id"]]["call"]
+                        new = final["capacity_calls"][payload["next_call_id"]]["call"]
+                        self.assertNotEqual(old["call_id"], new["call_id"])
+                        crossed |= parse_timestamp(new["reserved_at"], "new") >= parse_timestamp(old["expires_at"], "old")
+                    self.assertTrue(crossed, "fixture never crossed the old rate window")
+                    self.assertEqual(broker.connection.execute("SELECT count(*) FROM capacity_calls").fetchone()[0], len(final["capacity_calls"]))
+                    for field, value in (("call_id", "foreign"), ("next_call_id", "foreign"), ("turn_number", True),
+                                         ("lease_id", "stale"), ("wait_digest", "sha256:" + "0" * 64), ("extra", True)):
+                        forged = copy.deepcopy(events)
+                        target = next(event for event in forged if event["type"] == "CAPACITY_CALL_DEFERRED")
+                        target["payload"][field] = value
+                        with self.subTest(field=field), self.assertRaises((CapacityError, ValueError)):
+                            project(forged)
+                    with self.assertRaises((CapacityError, ValueError)):
+                        project([event for event in events if event["type"] != "CAPACITY_CALL_DEFERRED"])
             finally:
                 if runner:
                     runner.close()

@@ -290,6 +290,18 @@ adapters until a request-observing execution/proxy adapter exists. Likewise CPU,
 memory, and GPU values are admission reservations, not a claim of OS/cgroup resource
 enforcement. Strong resource isolation requires an appropriate execution backend.
 
+A financial budget denial before an invocation intent can defer a reserved rate
+call. `CAPACITY_CALL_DEFERRED` binds its exact running lease/turn, live budget
+wait and pre-intent binding digest to a new deterministic call ID. Every retry
+still passes supply and rolling-window checks; the old debit is never deleted or
+refunded. It therefore cannot reuse an expired receipt, silently reset accounting,
+or treat an unknown/launched invocation as unlaunched. Even an unexpired deferred
+debit stays charged until expiry, so a replacement can temporarily wait for rate
+capacity. Broker-committed replacement receipts are recovered by the same ID if
+local event publication was interrupted. Missing durable deferral evidence is
+not reconstructed from the absence of a PID. See [usage accounting](usage-accounting.md)
+for trust and restart boundaries.
+
 The broker provides finite, shared accounting and suitability/fairness checks. It
 does not yet supply automatic historical-performance ranking, dynamic model loading,
 cloud provisioning, or an authenticated cross-host broker transport. These remain

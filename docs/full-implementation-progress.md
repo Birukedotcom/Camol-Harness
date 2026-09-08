@@ -167,8 +167,11 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   Temporary budget holds now wake automatically only for exact invocations still
   owned by the same runner, without another attempt or payment intent. Unknown,
   stale, exhausted or busy-lock cases remain explicit operator attention.
-  V6 automatic renewal of an expired rate debit for a proven-unlaunched waiting
-  call remains open; the existing rate check fails closed instead of reusing it.
+  V6 pre-intent budget deferrals now bind a distinct successor rate debit in the
+  ledger and recheck the complete broker policy without refunding the old debit.
+  Expired calls without that proof still fail closed. Long-window local execution
+  and broker/local-ledger publication recovery are covered by focused tests;
+  whole-suite integration and live provider proof remain separate gates.
   `/revise` now reviews, applies and recovers a stopped source-bound ProductV3/V4/V5
   session through the kernel revision service, with independent execution approval
   and real detached successor build/final-acceptance tests. Legacy ProductV1/V2

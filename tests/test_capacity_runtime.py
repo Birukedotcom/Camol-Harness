@@ -1,9 +1,12 @@
 import asyncio
 import copy
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from camol.capacity import CapacityBroker, CapacityError
+from camol.capacity_runtime import CapacityCoordinator, apply_capacity_event
+from camol.schema import canonical_digest
 from camol.orchestrator import Orchestrator
 from camol.runner import HarnessRunner
 from camol.state import project
@@ -160,7 +163,7 @@ class CapacityRuntimeTests(unittest.TestCase):
         self.assertEqual(final["tasks"]["change"]["agent_id"], "other-worker")
         self.assertFalse(broker.connection.execute("SELECT 1 FROM capacity_queue WHERE status='waiting'").fetchone())
 
-    def test_rate_reservation_is_bound_and_replayable_without_a_paid_provider_call(self):
+    def _rate_assignment(self):
         broker = CapacityBroker(self.state / "shared-capacity.sqlite3")
         self.addCleanup(broker.close)
         now = datetime.now(timezone.utc)
@@ -183,6 +186,10 @@ class CapacityRuntimeTests(unittest.TestCase):
         runner._ensure_admissions("capacity-run")
         assignment = orchestrator.lease_ready_tasks("capacity-run")[0]
         self.assertTrue(orchestrator.start_task("capacity-run", assignment))
+        return runner, orchestrator, store, broker, assignment
+
+    def test_rate_reservation_is_bound_and_replayable_without_a_paid_provider_call(self):
+        runner, orchestrator, store, broker, assignment = self._rate_assignment()
         first = runner.capacity.before_turn("capacity-run", assignment, 1)
         second = runner.capacity.before_turn("capacity-run", assignment, 1)
         self.assertEqual(first, second)
@@ -196,3 +203,62 @@ class CapacityRuntimeTests(unittest.TestCase):
         with self.assertRaises(CapacityError):
             project(forged)
         runner.force_interrupt("capacity-run", requested_by="human-owner")
+
+    def test_deferral_reassesses_without_refund_and_recovers_unpublished_debit(self):
+        runner, orchestrator, store, broker, assignment = self._rate_assignment()
+        first = runner.capacity.before_turn("capacity-run", assignment, 1)
+        state = orchestrator.state("capacity-run")
+        now = datetime.now(timezone.utc)
+        broker.clock = lambda: now
+        # Unit control-plane projection: the end-to-end budget-wait test covers
+        # creation/replay of the actual preceding PROVIDER_BUDGET_WAITING event.
+        class Control:
+            def state(self, run_id):
+                return copy.deepcopy(state)
+            def _now(self):
+                return now.isoformat(timespec="microseconds")
+            def _emit(self, run_id, kind, payload, **kwargs):
+                apply_capacity_event(state, dict(type=kind, payload=payload, actor_id="capacity-broker", occurred_at=self._now()))
+        coordinator = CapacityCoordinator(Control(), self.state, broker=broker)
+        binding = dict(run_id="capacity-run", turn_number=1,
+                       **{name: assignment[name] for name in ("task_id", "agent_id", "lease_id", "fence_digest")})
+        for invalid in (None, dict(binding, lease_id="stale"), dict(binding, turn_number=True)):
+            with self.assertRaises(CapacityError):
+                coordinator.defer_unlaunched("capacity-run", assignment, invalid)
+        with self.assertRaises(CapacityError):
+            coordinator.defer_unlaunched("capacity-run", assignment, binding)
+        state["tasks"]["change"]["runtime_wait"] = dict(code="BUDGET_RESERVED", wait_digest=canonical_digest("unit budget wait"))
+        coordinator.defer_unlaunched("capacity-run", assignment, binding)
+        with self.assertRaises(CapacityError):
+            coordinator.defer_unlaunched("capacity-run", assignment, binding)
+        waiting = coordinator.before_turn("capacity-run", assignment, 1)
+        self.assertEqual(waiting["status"], "waiting")
+        self.assertEqual(waiting["reasons"][0]["reason"], "RATE_WINDOW_EXHAUSTED")
+        self.assertEqual(broker.connection.execute("SELECT count(*) FROM capacity_calls").fetchone()[0], 1)
+        now += timedelta(seconds=61)
+        # The original ID remains expired; it cannot silently become a new call.
+        old = first["call"]
+        self.assertEqual(broker.reserve_call(old["reservation_id"], call_id=old["call_id"], max_requests=1,
+                         max_tokens=old["max_tokens"], scope=old["scope"])["status"], "denied")
+        unavailable = capacity_fixture.supply("provider", "provider", now=now, status="unknown")
+        unavailable["rate_limit"]["max_tokens"] = 10000
+        broker.publish(unavailable)
+        self.assertEqual(coordinator.before_turn("capacity-run", assignment, 1)["status"], "waiting")
+        now += timedelta(seconds=1)
+        unavailable["observed_at"] = now.isoformat()
+        unavailable["status"] = "ready"
+        broker.publish(unavailable)
+        # Simulate broker commit succeeding but the local event publication
+        # failing, then reconstruct the coordinator from the durable projection.
+        with patch.object(coordinator, "_record", side_effect=OSError("injected ledger publication loss")):
+            with self.assertRaises(OSError):
+                coordinator.before_turn("capacity-run", assignment, 1)
+        self.assertEqual(broker.connection.execute("SELECT count(*) FROM capacity_calls").fetchone()[0], 2)
+        recovered = CapacityCoordinator(Control(), self.state, broker=broker)
+        second = recovered.before_turn("capacity-run", assignment, 1)
+        self.assertEqual(second["status"], "granted")
+        self.assertNotEqual(first["call"]["call_id"], second["call"]["call_id"])
+        self.assertEqual(second, recovered.before_turn("capacity-run", assignment, 1))
+        self.assertEqual(len(state["capacity_calls"]), 2)
+        self.assertNotIn("change", state["capacity_waits"])
+        self.assertEqual(broker.connection.execute("SELECT count(*) FROM capacity_calls").fetchone()[0], 2)
