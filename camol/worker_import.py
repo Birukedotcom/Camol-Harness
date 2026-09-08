@@ -39,9 +39,12 @@ def apply(state, event):
     if event["run_id"] != state["run_id"]:
         raise DeliveryError("worker import belongs to another run")
     value = event["payload"]
-    _fields(value, {"schema", "schema_version", "request_id", "scope", "proposal_digest", "limit",
-                    "base_cursor", "base_digest", "source_count", "records", "meaning"})
-    if value["schema"] != "camol.worker_import" or type(value["schema_version"]) is not int or value["schema_version"] != 1:
+    fields = {"schema", "schema_version", "request_id", "scope", "proposal_digest", "limit",
+              "base_cursor", "base_digest", "source_count", "records", "meaning"}
+    if isinstance(value, dict) and value.get("schema_version") == 2:
+        fields.add("gateway_policy_digest")
+    _fields(value, fields)
+    if value["schema"] != "camol.worker_import" or type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2}:
         raise DeliveryError("invalid worker import schema")
     require_identifier(value["request_id"], "worker import request")
     if value["meaning"] != MEANING or type(value["limit"]) is not int or not 1 <= value["limit"] <= MAX_BATCH:
@@ -50,6 +53,14 @@ def apply(state, event):
     if enrollment["status"] != "active" or value["proposal_digest"] != enrollment["proposal"]["digest"]:
         raise DeliveryError("worker import requires the current active enrollment")
     authorize_state(state, enrollment["proposal"]["stream"], now=event["occurred_at"])
+    if value["schema_version"] == 2:
+        require_digest(value["gateway_policy_digest"], "worker import gateway policy")
+        gateway = state.get("worker_gateway", {})
+        configured = gateway.get("configurations", {}).get(gateway.get("active_id"))
+        if (configured is None or not configured["enabled"] or configured["policy_digest"] != value["gateway_policy_digest"]
+                or value["scope"] not in configured["policy"]["scopes"]
+                or parse_timestamp(configured["policy"]["expires_at"], "gateway expiry") <= parse_timestamp(event["occurred_at"], "gateway capture time")):
+            raise DeliveryError("worker capture gateway authority is absent, changed or expired")
     imports = state.get("worker_imports", dict(count=0, bytes=0, streams={}, requests={}))
     if value["request_id"] in imports["requests"] or len(imports["requests"]) >= MAX_RECORDS:
         raise DeliveryError("worker import request was reused or history is full")
@@ -93,9 +104,11 @@ def apply(state, event):
         limit=value["limit"], base_cursor=value["base_cursor"], cursor=cursor, imported_count=len(records),
         more=cursor < source_count, batch_digest=canonical_digest(value), kernel_seq=event["seq"],
         captured_at=event["occurred_at"], meaning=MEANING, verified=False, execution_authority=False)
+    if value["schema_version"] == 2:
+        imports["requests"][value["request_id"]]["gateway_policy_digest"] = value["gateway_policy_digest"]
 
 
-def import_received(service, scope, *, by, request_id, limit=MAX_BATCH):
+def import_received(service, scope, *, by, request_id, limit=MAX_BATCH, gateway_policy_digest=None):
     """Capture one immutable owner request; retry returns its original receipt."""
     from .state import apply_event
     state = service.orchestrator.state(service.run_id)
@@ -106,7 +119,8 @@ def import_received(service, scope, *, by, request_id, limit=MAX_BATCH):
     enrollment = _stream(state, scope)
     prior = state.get("worker_imports", {}).get("requests", {}).get(request_id)
     if prior is not None:
-        if prior["scope"] != scope or prior["limit"] != limit:
+        if (prior["scope"] != scope or prior["limit"] != limit
+                or (gateway_policy_digest is not None and gateway_policy_digest != prior.get("gateway_policy_digest"))):
             raise DeliveryError("worker import request is bound to different arguments")
         return deepcopy(prior)  # No new import, even after expiry/revocation/key loss.
     if enrollment["status"] != "active":
@@ -122,6 +136,8 @@ def import_received(service, scope, *, by, request_id, limit=MAX_BATCH):
     value = dict(schema="camol.worker_import", schema_version=1, scope=scope, request_id=request_id,
         proposal_digest=enrollment["proposal"]["digest"], limit=limit, base_cursor=previous["cursor"],
         base_digest=previous["digest"], source_count=page["count"], records=rows, meaning=MEANING)
+    if gateway_policy_digest is not None:
+        value.update(schema_version=2, gateway_policy_digest=gateway_policy_digest)
     event = new_event(service.run_id, EVENT, by, value, occurred_at=service.orchestrator._now())
     expected = apply_event(state, dict(event, seq=state["last_seq"] + 1))
     # The source spool is immutable input. Cursor + captured records + request

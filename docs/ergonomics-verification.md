@@ -1761,3 +1761,43 @@ The frozen import product is `9de2bc49fb5d4f139fe0730462267cb3ace6f26c`, pushed 
 coauthor. The TLS predecessor's exact full-suite process was confirmed still live
 after this commit; no second concurrent full suite was started. Import-product
 whole gates and the remaining distributed execution work remain open.
+
+## Worker gateway checkpoint — 2026-09-08
+
+The previously pending TLS predecessor whole suite has completed: frozen product
+`22df69bff708f4a50095dd86f71420b9c6060a9c` passed **1,171 tests in 1,353.044
+seconds on Python 3.12**. The exact process exited successfully; the log is
+`/tmp/camol-worker-tls-full-py312.log`. This does not constitute a whole-suite gate
+for the later import or gateway changes, or erase older recorded failures.
+
+The isolated `codex/v0-worker-gateway` branch adds an optional supervisor-owned
+TLS listener and bounded automatic capture of unverified worker reports. Default
+supervisors create no gateway polling task or listener. Configuration requires exact
+owner/run/plan/policy approval. Live enrollment controls now reach the existing
+supervisor rather than opening a second kernel owner. Automated capture is separately
+versioned and bound to the active gateway policy; it cannot silently fall back to
+manual owner authority when the policy expires.
+
+Adversarial checks cover changed owner/plan/database bindings, duplicate control
+JSON keys, expiry while waiting for the kernel lock, expiry during certificate
+preparation and capture, revoked/stopped policy, restored public history without
+private enrollment material, dead-listener recovery, replay forgery and empty-poll
+event suppression. A real loopback TLS exchange is captured by a running supervisor
+and read through child CLI processes. These fixtures do not execute a remote model.
+
+The final focused gateway/import/TLS/enrollment/supervisor/watch groups passed:
+**61 tests in 47.010 seconds on Python 3.12**, and **61 tests in 46.958 seconds on
+modern Python 3.9 with TLS 1.3**. Logs are
+`/tmp/camol-worker-gateway-fixed-py312.log` and `-py39.log`.
+Apple's older LibreSSL runtime is not a TLS 1.3 compatibility claim.
+
+The sdist was built into a wheel and installed without dependencies into a fresh
+Python 3.12 environment at `/tmp/camol-worker-gateway-package.I4J3mDc4/venv`.
+Isolated imports from outside the checkout verified `site-packages` ownership and
+byte-for-byte equality of all seven changed product modules before loading test
+fixtures. Textual, MCP and cryptography were absent. The same **61 tests passed in
+57.024 seconds**, including child CLI checks; log:
+`/tmp/camol-worker-gateway-installed.log`. The V1 example validates and
+`git diff --check` passes. Current-product whole-suite verification remains pending.
+Main is still clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; the user's
+installed Camol has not been updated.

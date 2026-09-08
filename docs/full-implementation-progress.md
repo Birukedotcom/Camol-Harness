@@ -82,6 +82,12 @@ inspection, offline CLI and export can retain these reports without retaining
 private keys. They remain unverified, including artifact-shaped and billing claims;
 see [capture boundaries](worker-import.md). Trusted result promotion remains open.
 
+The `codex/v0-worker-gateway` follow-up adds optional supervisor-owned TLS listening
+and bounded report pumping under an exact owner-approved policy. Live local control,
+expiry/revocation checks, restart material validation and V2 gateway-bound capture
+are implemented; no listener/poll task runs by default. See [gateway scope](worker-gateway.md).
+Remote target execution, provisioning and trusted result reduction remain open.
+
 The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`

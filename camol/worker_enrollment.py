@@ -221,7 +221,9 @@ class WorkerEnrollment:
                 connection.rollback()
             connection.execute("PRAGMA busy_timeout={}".format(previous))
 
-    def receive(self, scope, raw):
+    def receive(self, scope, raw, *, additional_guard=None):
+        if additional_guard is not None and not callable(additional_guard):
+            raise DeliveryError("additional receipt guard must be callable")
         require_digest(scope, "worker scope")
         record = self.inspect(scope)
         if record["status"] != "active":
@@ -244,6 +246,8 @@ class WorkerEnrollment:
             _, current_key = self._material(value)
             if current_key != key:
                 raise DeliveryError("worker enrollment material changed before ingestion")
+            if additional_guard is not None and additional_guard() is not True:
+                raise DeliveryError("additional receipt policy denied ingestion")
             return receiver.accept(raw, authorize=guard)
 
     def producer(self, scope, root, *, by):
@@ -257,9 +261,9 @@ class WorkerEnrollment:
         _, key = self._material(record["proposal"])
         return WorkerDelivery(root, record["proposal"]["stream"], key, role="producer", create=True)
 
-    def import_received(self, scope, *, by, request_id, limit=6):
+    def import_received(self, scope, *, by, request_id, limit=6, gateway_policy_digest=None):
         from .worker_import import import_received
-        return import_received(self, scope, by=by, request_id=request_id, limit=limit)
+        return import_received(self, scope, by=by, request_id=request_id, limit=limit, gateway_policy_digest=gateway_policy_digest)
 
     def records(self, scope, *, after=0, limit=100):
         from .worker_import import snapshot

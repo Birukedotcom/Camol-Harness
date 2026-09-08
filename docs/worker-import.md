@@ -92,7 +92,8 @@ result reducer remain separate work.
 
 ## Remaining execution integration
 
-No automatic supervisor import pump is enabled yet. Target-side readiness and
+An [owner-approved supervisor gateway](worker-gateway.md) now optionally pumps
+allowlisted streams; it remains off by default. Target-side readiness and
 launch, validated source/artifact transfer, provider-originated usage receipts,
 worker turn protocol binding, cancellation/salvage and evaluator-driven task
 completion remain required for distributed execution. Neither an encrypted packet

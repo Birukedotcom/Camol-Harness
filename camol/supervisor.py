@@ -24,13 +24,16 @@ from .runner import HarnessRunner, summary
 from .runbook import load_runbook
 from .sandbox import SandboxError, process_start_fingerprint, validate_process_invocation
 from .schema import SchemaError, reject_unknown_fields, parse_timestamp, canonical_digest
-from .store import SQLiteEventStore
+from .store import SQLiteEventStore, ConcurrentAppendError
+from .json_contracts import decode_contract
 from .workspace import WorkspaceManager
 from .watchers import Watcher, WatcherError, WatchSpec
 from .watch_runtime import WatchRuntime
 from .source_binding import SourceBindingError, make_binding, load_binding, persist_binding, assert_source
 from .runbook import runbook_digest
 from .mailbox import MailboxError
+from .worker_delivery import DeliveryError
+from .worker_gateway import WorkerGateway
 
 
 class SupervisorError(RuntimeError):
@@ -217,6 +220,8 @@ class Supervisor:
         self._watch_task = None
         self.watch_runtime = None
         self.watch_error = None
+        self.worker_gateway = None
+        self._worker_task = None
         self._force_task = None
         self.orphans = []
         self.last_error = None
@@ -302,7 +307,7 @@ class Supervisor:
 
     def status(self) -> Dict[str, Any]:
         state = self.orchestrator.state(self.run_id)
-        return {
+        result = {
             "schema": "camol.supervisor_status",
             "schema_version": 1,
             "pid": os.getpid(),
@@ -322,6 +327,9 @@ class Supervisor:
             ],
             **self._boxes(),
         }
+        if state.get("worker_gateway") and self.worker_gateway is not None:
+            result["worker_gateway"] = self.worker_gateway.status()
+        return result
 
     def _plan(self) -> Dict[str, Any]:
         state = self.orchestrator.state(self.run_id)
@@ -374,6 +382,20 @@ class Supervisor:
                     self.watch_error = None
                 except Exception as error:
                     self.watch_error = self.orchestrator.redactor.text("{}: {}".format(type(error).__name__, error))
+            try:
+                await asyncio.wait_for(self._shutdown.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _worker_driver(self):
+        while not self._shutdown.is_set():
+            try:
+                await self.worker_gateway.tick()
+            except (OSError, ValueError, RuntimeError) as error:
+                self.worker_gateway.error = type(error).__name__
+                await self.worker_gateway.close()
+            if self.worker_gateway._active()[1] is None:
+                return
             try:
                 await asyncio.wait_for(self._shutdown.wait(), timeout=1.0)
             except asyncio.TimeoutError:
@@ -573,6 +595,50 @@ class Supervisor:
         if version in {2, 3} and command == "plan":
             reject_unknown_fields(params, (), "control plan params")
             return {"ok": True, "result": self._plan()}
+        if version in {2, 3} and command.startswith("worker-"):
+            params = dict(params)
+            for name, expected in (("expected_workspace", str(self.workspace)), ("expected_database", str(self.paths.database))):
+                if name in params and params.pop(name) != expected:
+                    raise SupervisorError("worker control expected workspace or database differs from this supervisor")
+            contracts = {
+                "worker-gateway-status": set(),
+                "worker-gateway-configure": {"policy", "approval_digest", "approved_by"},
+                "worker-gateway-stop": {"configuration_id", "policy_digest", "approved_by"},
+                "worker-stream-prepare": {"stream", "approved_by"},
+                "worker-stream-approve": {"proposal", "review_digest", "approved_by"},
+                "worker-stream-revoke": {"scope", "reason", "approved_by"},
+                "worker-stream-inspect": {"scope"},
+                "worker-stream-records": {"scope", "after", "limit"},
+                "worker-stream-import": {"scope", "request_id", "limit", "approved_by"},
+            }
+            if command not in contracts or set(params) != contracts[command]:
+                raise SupervisorError("invalid worker gateway command or fields")
+            if "approved_by" in params and params["approved_by"] != request.get("requested_by"):
+                raise SupervisorError("worker approval identity differs from the control actor")
+            gateway = self.worker_gateway
+            if gateway is None:
+                raise SupervisorError("worker gateway runtime is unavailable")
+            if command == "worker-gateway-status":
+                result = gateway.status()
+            elif command == "worker-gateway-configure":
+                result = gateway.configure(params["policy"], by=params["approved_by"], approval_digest=params["approval_digest"])
+                if self._worker_task is None or self._worker_task.done():
+                    self._worker_task = asyncio.create_task(self._worker_driver())
+            elif command == "worker-gateway-stop":
+                result = gateway.stop(by=params["approved_by"], configuration_id=params["configuration_id"], policy_digest=params["policy_digest"])
+            elif command == "worker-stream-prepare":
+                result = gateway.streams.prepare(params["stream"], by=params["approved_by"])
+            elif command == "worker-stream-approve":
+                result = gateway.streams.approve(params["proposal"], by=params["approved_by"], review_digest=params["review_digest"])
+            elif command == "worker-stream-revoke":
+                result = gateway.streams.revoke(params["scope"], by=params["approved_by"], reason=params["reason"])
+            elif command == "worker-stream-records":
+                result = gateway.streams.records(params["scope"], after=params["after"], limit=params["limit"])
+            elif command == "worker-stream-import":
+                result = gateway.streams.import_received(params["scope"], by=params["approved_by"], request_id=params["request_id"], limit=params["limit"])
+            else:
+                result = gateway.streams.inspect(params["scope"])
+            return {"ok": True, "result": result}
         if version in {2, 3} and command.startswith("watch-"):
             fields = {
                 "watch-inspect": set(),
@@ -701,11 +767,11 @@ class Supervisor:
             raw = await reader.readline()
             if not raw or len(raw) > self.MAX_REQUEST_BYTES:
                 raise SupervisorError("control request is empty or too large")
-            request = json.loads(raw)
+            request = decode_contract(raw, max_bytes=self.MAX_REQUEST_BYTES)
             if not isinstance(request, dict):
                 raise SupervisorError("control request must be an object")
             response = await self._dispatch(request)
-        except (json.JSONDecodeError, SupervisorError, StateTransitionError, SchemaError, WatcherError, OSError, MailboxError) as error:
+        except (json.JSONDecodeError, SupervisorError, StateTransitionError, SchemaError, WatcherError, OSError, MailboxError, DeliveryError, ConcurrentAppendError) as error:
             response = {"ok": False, "error": str(error)}
         writer.write((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
         await writer.drain()
@@ -752,12 +818,15 @@ class Supervisor:
                 self.orchestrator.mark_interrupted_effects_unknown(self.run_id)
             self.runner = HarnessRunner(self.orchestrator, self.workspace, state_dir=self.paths.state_dir)
             self.watch_runtime = WatchRuntime(self.orchestrator, self.run_id)
+            self.worker_gateway = WorkerGateway(self.orchestrator, self.run_id, self.paths.state_dir)
             self.orphans = self._scan_invocations()
             self.server = await asyncio.start_unix_server(self._handle_client, path=str(self.paths.socket))
             os.chmod(self.paths.socket, 0o600)
             self._write_pid()
             self._driver_task = asyncio.create_task(self._driver())
             self._watch_task = asyncio.create_task(self._watch_driver())
+            if state.get("worker_gateway", {}).get("active_id") is not None:
+                self._worker_task = asyncio.create_task(self._worker_driver())
             loop = asyncio.get_running_loop()
             for caught in (signal.SIGINT, signal.SIGTERM):
                 try:
@@ -767,6 +836,11 @@ class Supervisor:
             async with self.server:
                 await self._shutdown.wait()
         finally:
+            if self._worker_task is not None:
+                self._worker_task.cancel()
+                await asyncio.gather(self._worker_task, return_exceptions=True)
+            if self.worker_gateway is not None:
+                await self.worker_gateway.close()
             if self._watch_task is not None and not self._watch_task.done():
                 self._watch_task.cancel()
                 try:
@@ -831,8 +905,16 @@ async def send_control_v2(
     requested_by: str = "operator",
     params: Optional[Dict[str, Any]] = None,
     timeout: float = 35,
+    expected_run_id: Optional[str] = None,
+    expected_plan_digest: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send a typed V2 request while preserving the public V1 control client."""
+    if (expected_run_id is None) != (expected_plan_digest is None):
+        raise SupervisorError("bound control requires both run and plan identity")
+    if expected_run_id is not None:
+        from .schema import require_identifier, require_digest
+        require_identifier(expected_run_id, "control run")
+        require_digest(expected_plan_digest, "control plan")
     paths = SupervisorPaths.under(state_dir)
     token = _read_control_token(paths.token)
     if not paths.socket.exists() or paths.socket.is_symlink():
@@ -850,6 +932,8 @@ async def send_control_v2(
         "requested_by": requested_by,
         "params": dict(params or {}),
     }
+    if expected_run_id is not None:
+        request.update(schema_version=3, expected_run_id=expected_run_id, expected_plan_digest=expected_plan_digest)
     try:
         writer.write((json.dumps(request, sort_keys=True) + "\n").encode("utf-8"))
         await writer.drain()

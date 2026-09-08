@@ -183,6 +183,32 @@ def command_overview(args: argparse.Namespace) -> int:
 def command_worker_enrollment(args: argparse.Namespace) -> int:
     from .worker_delivery import DeliveryError
     try:
+        if getattr(args, "live", False):
+            if not args.plan_digest:
+                raise DeliveryError("live worker control requires the exact --plan-digest")
+            params = {}
+            if args.action not in {"inspect", "records"}:
+                params["approved_by"] = args.by
+                params["expected_workspace"] = str(Path(args.workspace).resolve())
+            if args.db is not None:
+                params["expected_database"] = str(Path(args.db).resolve())
+            if args.action == "prepare":
+                params["stream"] = load_contract(args.stream, max_bytes=8192)
+            elif args.action == "approve":
+                params.update(proposal=load_contract(args.proposal, max_bytes=16384), review_digest=args.review_digest)
+            else:
+                params["scope"] = args.scope
+                if args.action == "revoke":
+                    params["reason"] = args.reason
+                elif args.action == "import":
+                    params.update(request_id=args.request_id, limit=args.limit)
+                elif args.action == "records":
+                    params.update(after=args.after, limit=args.limit)
+            result = asyncio.run(send_control_v2(Path(args.state_dir), "worker-stream-" + args.action,
+                requested_by=getattr(args, "by", "operator"), params=params,
+                expected_run_id=args.run_id, expected_plan_digest=args.plan_digest))
+            _write_json(result["result"])
+            return 0
         inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
         if args.action in {"inspect", "records"}:
             state, _, _ = inspector._cut(args.run_id)
@@ -227,6 +253,18 @@ def command_worker_delivery(args: argparse.Namespace) -> int:
             _write_json(delivery.inspect(after=args.after, limit=args.limit))
     except DeliveryError as error:
         raise SchemaError(str(error)) from error
+    return 0
+
+
+def command_worker_gateway(args: argparse.Namespace) -> int:
+    params = {}
+    if args.action == "configure":
+        params = dict(policy=load_contract(args.policy, max_bytes=32768), approval_digest=args.approval_digest, approved_by=args.by)
+    elif args.action == "stop":
+        params = dict(configuration_id=args.configuration_id, policy_digest=args.policy_digest, approved_by=args.by)
+    response = asyncio.run(send_control_v2(Path(args.state_dir), "worker-gateway-" + args.action,
+        requested_by=args.by, params=params, expected_run_id=args.run_id, expected_plan_digest=args.plan_digest))
+    _write_json(response["result"])
     return 0
 
 
@@ -1028,6 +1066,8 @@ def build_parser() -> argparse.ArgumentParser:
         operation.add_argument("--state-dir", required=True)
         operation.add_argument("--db")
         operation.add_argument("--run-id", required=True)
+        operation.add_argument("--live", action="store_true", help="use the existing supervisor instead of taking ownership")
+        operation.add_argument("--plan-digest", help="required exact plan binding for --live")
         if name not in {"inspect", "records"}:
             operation.add_argument("--workspace", required=True)
             operation.add_argument("--by", required=True)
@@ -1047,6 +1087,22 @@ def build_parser() -> argparse.ArgumentParser:
                 operation.add_argument("--after", type=int, default=0)
                 operation.add_argument("--limit", type=int, default=100)
         operation.set_defaults(handler=command_worker_enrollment)
+
+    gateway = subparsers.add_parser("worker-gateway", help="owner-control the supervisor's optional TLS evidence listener and capture pump")
+    gateway_actions = gateway.add_subparsers(dest="action", required=True)
+    for name in ("status", "configure", "stop"):
+        operation = gateway_actions.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--run-id", required=True)
+        operation.add_argument("--plan-digest", required=True)
+        operation.add_argument("--by", default="operator")
+        if name == "configure":
+            operation.add_argument("--policy", required=True)
+            operation.add_argument("--approval-digest", required=True)
+        elif name == "stop":
+            operation.add_argument("--configuration-id", required=True)
+            operation.add_argument("--policy-digest", required=True)
+        operation.set_defaults(handler=command_worker_gateway)
 
     delivery = subparsers.add_parser("worker-delivery", help="inspect a private spool or explicitly flush one TLS evidence batch; never execute work")
     delivery.add_argument("action", choices=["inspect", "flush"])

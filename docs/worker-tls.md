@@ -116,7 +116,8 @@ approved kernel lease, durable spools and a separate CLI process. They cover los
 and forged receipts, cancellation, timeout, oversized/truncated/extra frames,
 certificate/name rejection, revocation and pre-handshake connection limits.
 This is transport verification, not a cross-host model build or distributed
-executor acceptance. Supervisor listener lifecycle, enrollment material transfer,
+executor acceptance. An optional [supervisor gateway](worker-gateway.md) now owns
+listener lifecycle and approved report pumping. Enrollment material transfer,
 remote target admission/launch/cancellation, trusted result promotion, durable
 transport telemetry and operational key/spool recovery remain open.
 

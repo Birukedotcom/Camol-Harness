@@ -41,10 +41,11 @@ after revocation and is associated with the box's retained event view.
 The native CLI provides `camol worker-enrollment prepare|approve|revoke|inspect`;
 each subcommand's `--help` gives its required paths and review parameters. Mutations
 take `--workspace`, `--state-dir`, `--run-id`, `--by` and the same leader lock as
-other synchronous owner commands. They cannot run against a currently owned daemon;
-use the controller-side embedding for a live run. Inspection uses the bounded,
+other synchronous owner commands. To address an already-owned daemon, explicitly
+use `--live --plan-digest DIGEST` or the controller-side embedding. Inspection uses the bounded,
 noncreating exact-run reader and needs no raw key. This command does not add a
-remote-supervisor or public network endpoint.
+public network endpoint; the optional [worker gateway](worker-gateway.md) has its
+own exact owner-reviewed listener policy.
 
 For local owner embeddings, `producer(scope, root, by=owner)` creates the matching
 private producer spool. It does not transmit a key, change account login or bind a

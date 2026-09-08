@@ -130,6 +130,9 @@ requires a TLS 1.3-capable runtime and reviewed endpoint/key material; it does n
 provision a machine, launch a remote worker or turn evidence into task success.
 `camol worker-enrollment import` explicitly captures received reports into run
 history; `records` reads them offline. See [capture and retry boundaries](docs/worker-import.md).
+An optional [worker gateway](docs/worker-gateway.md) lets the existing supervisor
+own TLS reception and bounded capture. It is off by default and requires exact
+owner-reviewed run/plan/listener policy; it does not launch remote workers.
 `camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` inspects local
 content-free RPC counts, durations and byte measurements without connecting.
 These measurements include monitor reads, not provider billing. See
