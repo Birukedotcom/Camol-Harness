@@ -123,7 +123,7 @@ class ArchiveRoot:
                 os.close(descriptor)
             os.close(parent)
 
-    def write(self, relative, content):
+    def write(self, relative, content, *, executable=False):
         parts = self._parts(relative)
         parent = self._directory(parts[:-1], create=True)
         try:
@@ -132,8 +132,21 @@ class ArchiveRoot:
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(content)
                 handle.flush()
+                if executable:
+                    os.fchmod(handle.fileno(), 0o700)
                 os.fsync(handle.fileno())
                 self.files[relative] = _identity(os.fstat(handle.fileno()))
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+
+    def symlink(self, relative, target):
+        """Preserve a link as data, never traverse it to write another member."""
+        parts = self._parts(relative)
+        parent = self._directory(parts[:-1], create=True)
+        try:
+            os.symlink(target, parts[-1], dir_fd=parent)
+            self.files[relative] = _identity(os.stat(parts[-1], dir_fd=parent, follow_symlinks=False))
             os.fsync(parent)
         finally:
             os.close(parent)

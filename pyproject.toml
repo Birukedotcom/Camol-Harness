@@ -17,6 +17,7 @@ Issues = "https://github.com/Birukedotcom/Camol-Harness/issues"
 [project.optional-dependencies]
 tui = ["textual>=8.0,<9"]
 graph = ["tomli>=2,<3; python_version < '3.11'"]
+recovery = ["cryptography>=44"]
 
 [project.scripts]
 camol = "camol.cli:main"

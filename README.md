@@ -591,6 +591,7 @@ real hosted-agent run.
   experiments, evidence, and eval promotion.
 - [Embedding](docs/embedding.md): Python harness ownership, execution, approvals and exports.
 - [Archive boundary](docs/archive-boundary.md): private, bounded ledger exports and what they do not recover or authorize.
+- [Workspace recovery](docs/workspace-recovery.md): explicit encrypted Git/salvage backup and independent reconstruction, without resume or cleanup authority.
 - [Usage and logging](docs/usage-accounting.md): observed versus reserved spend, profiling,
   metadata log sinks and incomplete measurement coverage.
 - [Durable observers](docs/durable-observers.md): bounded approved polling, normalized

@@ -142,3 +142,9 @@ teardown receipt. A later archive slice must independently restore pinned Git an
 salvage bytes; a later purge slice needs kernel sealing, shared-reference release,
 preserved accounting/unknown-operation guards, explicit authority and durable
 archive/tombstone semantics. None of those capabilities are asserted here.
+
+[Encrypted workspace recovery](workspace-recovery.md) now independently reconstructs
+one explicitly selected captured workspace's Git history and salvage bytes. It is
+not attached as a complete run backup or teardown grant: v1 salvage coverage gaps,
+shared state/accounting and remote effects remain held. Inventory inspection does
+not automatically invoke or approve that export.

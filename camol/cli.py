@@ -43,6 +43,7 @@ from .source_binding import SourceBindingError
 from .retention import RetentionError, RetentionPolicy, inspect_retention
 from .overview import fleet_overview, render_overview
 from .box_inspection import BoxInspector, BoxInspectionError
+from .recovery import RecoveryError
 
 
 def _write_json(value: Any) -> None:
@@ -776,6 +777,28 @@ def command_interactive(args: argparse.Namespace) -> int:
     return run_line_ui(workspace, state_root=state_root, show_boot=not args.no_boot)
 
 
+def command_recovery(args: argparse.Namespace) -> int:
+    from .recovery import (export_workspace_recovery, generate_recovery_key,
+                           load_recovery_key, restore_workspace_recovery, verify_workspace_recovery)
+    from .workspace import SalvageReceipt
+
+    if args.recovery_action == "keygen":
+        result = generate_recovery_key(output=Path(args.output))
+    else:
+        key = load_recovery_key(path=Path(args.key_file))
+        if args.recovery_action == "export":
+            result = export_workspace_recovery(
+                source=Path(args.source), state_dir=Path(args.state_dir),
+                salvage=SalvageReceipt.from_dict(load_contract(Path(args.salvage))),
+                policy=load_contract(Path(args.policy)), key=key, output=Path(args.output))
+        elif args.recovery_action == "restore":
+            result = restore_workspace_recovery(archive=Path(args.archive), key=key, output=Path(args.output))
+        else:
+            result = verify_workspace_recovery(archive=Path(args.archive), key=key)
+    _write_json(result)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="camol", description="Persistent plan-driven agent orchestration harness"
@@ -1101,6 +1124,25 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("--by")
     revise.add_argument("--digest", help="exact revision proposal digest being approved")
     revise.set_defaults(handler=command_revise)
+    recovery = subparsers.add_parser("recovery", help="explicit encrypted workspace backup and reconstruction; never resume or purge authority")
+    recovery_actions = recovery.add_subparsers(dest="recovery_action", required=True)
+    keygen = recovery_actions.add_parser("keygen", help="create a private key directory; never display key bytes")
+    keygen.add_argument("--output", required=True)
+    keygen.set_defaults(handler=command_recovery)
+    for action in ("export", "verify", "restore"):
+        descriptions = {"export": "encrypt exact captured salvage and Git history under an explicit policy",
+                        "verify": "decrypt and reconstruct in private scratch storage, then remove the scratch copy",
+                        "restore": "decrypt into a new private plaintext repository; do not execute or resume it"}
+        command = recovery_actions.add_parser(action, help=descriptions[action])
+        command.add_argument("--key-file", required=True)
+        if action == "export":
+            for name in ("source", "state-dir", "salvage", "policy", "output"):
+                command.add_argument("--" + name, required=True)
+        else:
+            command.add_argument("--archive", required=True)
+            if action == "restore":
+                command.add_argument("--output", required=True)
+        command.set_defaults(handler=command_recovery)
     return parser
 
 
@@ -1114,7 +1156,7 @@ def main(argv: Any = None) -> int:
                          request_id=error.request_id, outcome=error.outcome))
         return 2
     except (
-        ArtifactError, RunbookError, SchemaError, StateTransitionError, SourceBindingError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
+        ArtifactError, RecoveryError, RunbookError, SchemaError, StateTransitionError, SourceBindingError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
         WorkspaceError, ProviderError, SupervisorError, BenchmarkError, OSError, json.JSONDecodeError,
         ConnectionError, ConversationError, SessionError, InteractiveError, RetentionError, BoxInspectionError,
     ) as error:
