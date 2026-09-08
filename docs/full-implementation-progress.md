@@ -46,6 +46,12 @@ per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
+The `codex/v0-target-ssh-runtime` follow-up adds explicit owner-approved SSH
+observation through the pinned bridge into an existing remote supervisor. Python,
+offline/live CLI, replay and inspection bind the measured runtime to the adopted
+generation. [SSH runtime scope](target-ssh-runtime.md) separates endpoint
+authentication from provider attestation, readiness and distributed execution.
+
 The `codex/v0-admission-liveness` follow-up addresses a reproduced control-plane
 stall during initial readiness probes. Per-box preparation now uses a tracked local
 child; pause/terminal state and the exact subject are rechecked before publication

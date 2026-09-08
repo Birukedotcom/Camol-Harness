@@ -190,7 +190,9 @@ class Redactor:
     def __init__(self, env: Optional[Mapping[str, str]] = None, minimum_length: int = 6):
         source = os.environ if env is None else env
         self._values = sorted(
-            {value for name, value in source.items() if _SECRET_NAME.search(name) and len(value) >= minimum_length},
+            {value for name, value in source.items()
+             if name not in {"PWD", "OLDPWD"}  # Reserved shell directory context, not password variables.
+             and _SECRET_NAME.search(name) and len(value) >= minimum_length},
             key=len,
             reverse=True,
         )

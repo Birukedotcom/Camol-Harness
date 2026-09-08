@@ -631,6 +631,7 @@ class Supervisor:
                 "target-adopt": {"proposal", "approval_digest", "approved_by"},
                 "target-retire": {"generation", "adoption_digest", "reason", "approved_by"},
                 "target-observe-local": {"generation", "adoption_digest", "request_id", "ttl_seconds", "approved_by"},
+                "target-observe-ssh": {"generation", "adoption_digest", "request_id", "ttl_seconds", "approved_by", "ssh_profile", "allow_network"},
             }
             if command not in contracts or set(params) != contracts[command]:
                 raise SupervisorError("invalid target command or fields")
@@ -647,6 +648,19 @@ class Supervisor:
                 result = registry.propose(params["descriptor"], by=params["approved_by"], expires_at=params["expires_at"])
             elif command == "target-adopt":
                 result = registry.adopt(params["proposal"], by=params["approved_by"], approval_digest=params["approval_digest"])
+            elif command == "target-observe-ssh":
+                if getattr(self, "_target_ssh_busy", False):
+                    raise TargetError("an SSH runtime observation is already in progress")
+                self._target_ssh_busy = True
+                bound_run, bound_plan = self.run_id, self.orchestrator.state(self.run_id)["plan_digest"]
+                try:
+                    result = await registry.observe_ssh(params["generation"], by=params["approved_by"],
+                        adoption_digest=params["adoption_digest"], request_id=params["request_id"],
+                        ttl_seconds=params["ttl_seconds"], ssh_profile=params["ssh_profile"],
+                        state_dir=self.paths.state_dir, allow_network=params["allow_network"],
+                        before_publish=lambda: self._target_measurement_scope(bound_run, bound_plan))
+                finally:
+                    self._target_ssh_busy = False
             elif command == "target-observe-local":
                 from .target_runtime import prepare_local, finish_local
                 prepared = prepare_local(registry, params["generation"], by=params["approved_by"], adoption_digest=params["adoption_digest"],

@@ -139,6 +139,9 @@ supervisor control. Adoption is not a readiness, execution or deletion grant.
 `camol target local-profile` and `observe-local` add
 [measured local runtime reports](docs/target-runtime.md), including a live
 supervisor path. These reports do not grant task readiness or reserved capacity.
+`camol target observe-ssh` adds an explicitly approved, pinned
+[remote supervisor runtime observation](docs/target-ssh-runtime.md). It records
+endpoint/runtime evidence, not provider ownership or distributed worker readiness.
 `camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` inspects local
 content-free RPC counts, durations and byte measurements without connecting.
 These measurements include monitor reads, not provider billing. See

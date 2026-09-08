@@ -73,5 +73,6 @@ recorder revalidates the current owner/adoption and compares the freshly read ru
 cursor at append. Unrelated run progress is allowed; retirement, plan changes and
 concurrent mutation after final validation are not. This keeps observation from
 starving under ordinary heartbeat activity while preserving atomic admission of the
-report. Remote authenticated runtime observation, target-side launch and trusted
-result reduction remain separate unfinished distributed-worker requirements.
+report. An explicit [SSH runtime observation](target-ssh-runtime.md) now covers a
+pinned bridge to an existing remote supervisor. Target-side worker launch and
+trusted result reduction remain separate unfinished distributed-worker requirements.

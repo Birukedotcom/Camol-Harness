@@ -16,6 +16,10 @@ authenticated machine adoption or execution-backed readiness.
 An [offline provider inventory decoder](target-inventory.md) supplies compatible
 provider identities from GCP dumps while exposing rejected rows, pagination and
 schema drift. Its unauthenticated imported claims do not create targets or leases.
+[SSH runtime observation](target-ssh-runtime.md) now measures an existing remote
+supervisor through an explicitly permitted pinned bridge, with exact adoption and
+response bindings. It does not repurpose that supervisor as a worker endpoint or
+establish provider ownership, task readiness or distributed execution.
 
 Camol's replaceable orchestration agent may propose as many boxes as a plan can
 justify within its approved resource envelope. The deterministic harness admits and

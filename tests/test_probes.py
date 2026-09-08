@@ -101,6 +101,12 @@ def make_context(repo: Path, state_dir: Path, runbook=None, **overrides) -> Prob
 
 
 class RedactorTests(unittest.TestCase):
+    def test_shell_pwd_is_context_but_service_pwd_remains_a_secret(self):
+        redactor = Redactor({"PWD": "/private/tmp", "OLDPWD": "/previous/path", "SERVICE_PWD": "ordinary-password-secret"})
+        self.assertEqual(redactor.text("/private/tmp/owned/key-reference"), "/private/tmp/owned/key-reference")
+        self.assertEqual(redactor.text("ordinary-password-secret"), "[REDACTED]")
+        self.assertNotIn("ordinary-password-secret", redactor.text("pwd=ordinary-password-secret"))
+
     def setUp(self):
         self.redactor = Redactor(HOSTILE_ENV)
 

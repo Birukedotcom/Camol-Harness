@@ -2120,3 +2120,60 @@ observed to completion, not restarted on observation timeouts. This result cover
 the usage activity and offline inventory additions, but **not** the subsequent
 target identity or initial-admission liveness repairs. It remains local/fixture
 verification, not live native-provider, GCP or distributed-worker acceptance.
+
+## Adopted SSH runtime observation — 2026-09-08
+
+The isolated `codex/v0-target-ssh-runtime` follow-up adds an explicitly allowed
+remote runtime read through the existing pinned SSH bridge. An exact adopted
+generation, local/remote run and plan, client profile, bridge/daemon software and
+response digest bind the owner-recorded observation. Python and offline/live CLI
+entry points preserve historical retry, expiry, redaction, interruption and final
+kernel fencing. No worker execution, source transfer or provider-resource
+attestation is claimed; see [the complete boundary](target-ssh-runtime.md).
+
+The first six tests exposed a missing registration in `events.py`: three errored
+before the new observation could be appended. After registration, the expanded
+49-test group passed in 34.010 seconds; subsequent product refinements were still
+in progress, so this is intermediate evidence. The real bridge/live CLI group
+passed seven tests in 4.681 seconds, including responsive controls, a concurrent
+request denial and a historical CLI retry without another SSH request.
+
+The first final source group passed **61 tests in 53.158 seconds on Python 3.12**
+and **61 in 42.096 seconds on modern Python 3.9**. The child-path fixture was then
+changed to load the selected runtime for both bridge and CLI children, rather than
+implicitly importing the checkout during installed-wheel tests. The focused
+SSH/RPC/CLI group passed **21 tests in 13.744 seconds on Python 3.12** and **21 in
+8.329 seconds on modern Python 3.9**. Logs use the
+`/tmp/camol-target-ssh-runtime-final-*` and `-cli-*` prefixes.
+
+The first installed wheel passed module-identity checks but failed **6 of 61 tests**
+in 64.436 seconds. It exposed a real availability bug: the redactor interpreted the
+shell's reserved `PWD` directory context as a password, causing approved file
+references under an outside `/tmp` working directory to be rejected. A separate
+regression failed before the repair (`/tmp/camol-target-ssh-runtime-pwd-red.log`).
+Exact reserved `PWD`/`OLDPWD` environment names are now excluded from credential
+value collection; service password variables and password-shaped fields remain
+redacted. No credential-pattern, field or service-variable exemption was added.
+The failed package log remains `/tmp/camol-target-ssh-runtime-installed.log`.
+
+After the redaction repair, final groups passed **111 tests in 69.268 seconds on
+Python 3.12** and **111 in 53.763 seconds on modern Python 3.9**. Logs:
+`/tmp/camol-target-ssh-runtime-checked-py312.log` and `-py39.log`. These include
+runtime/adoption, SSH transport/identity, public CLI, probe/redaction, RPC accounting
+and remote CLI coverage. The eight new SSH observation tests use no external host.
+
+A rebuilt sdist/wheel installed without dependencies into
+`/tmp/camol-target-ssh-runtime-fixed.eNGImfFI/venv`. Before adding fixture paths,
+isolated imports outside the checkout confirmed site-packages ownership and byte
+equality for all **115 product modules**, with Textual/MCP/cryptography absent.
+The new fixture explicitly uses that installed runtime for bridge and CLI children.
+The installed group passed **111 tests in 68.111 seconds**; log:
+`/tmp/camol-target-ssh-runtime-installed-fixed.log`. Installed command help, V1
+example validation and `git diff --check` pass. Main remains clean at `cca1b4b`;
+no global installation, provider account or external SSH host was used.
+
+The single full modern-Python-3.9 suite at frozen
+`7c0ea4674943da57b15a5fb1f2fb93a88db48970` remains in flight in
+`/tmp/camol-admission-liveness-full-py39.log`. It was polled at the same live handle,
+not restarted, and does not include this SSH runtime/redaction follow-up. No
+latest whole-suite or distributed-execution acceptance is claimed here.

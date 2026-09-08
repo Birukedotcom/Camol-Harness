@@ -221,9 +221,11 @@ def command_target(args: argparse.Namespace) -> int:
                     params.update(descriptor=load_contract(args.descriptor, max_bytes=8192), expires_at=args.expires_at)
                 elif args.action == "adopt":
                     params.update(proposal=load_contract(args.proposal, max_bytes=16384), approval_digest=args.approval_digest)
-                elif args.action == "observe-local":
+                elif args.action in {"observe-local", "observe-ssh"}:
                     params.update(generation=args.generation, adoption_digest=args.adoption_digest,
                                   request_id=args.request_id, ttl_seconds=args.ttl_seconds)
+                    if args.action == "observe-ssh":
+                        params.update(ssh_profile=load_contract(args.ssh_profile, max_bytes=16384), allow_network=args.allow_network)
                 else:
                     params.update(generation=args.generation, adoption_digest=args.adoption_digest, reason=args.reason)
             response = asyncio.run(send_control_v2(Path(args.state_dir), "target-" + args.action,
@@ -248,6 +250,10 @@ def command_target(args: argparse.Namespace) -> int:
                 elif args.action == "observe-local":
                     result = harness.targets.observe_local(args.generation, by=args.by, adoption_digest=args.adoption_digest,
                                                           request_id=args.request_id, ttl_seconds=args.ttl_seconds)
+                elif args.action == "observe-ssh":
+                    result = asyncio.run(harness.targets.observe_ssh(args.generation, by=args.by, adoption_digest=args.adoption_digest,
+                        request_id=args.request_id, ttl_seconds=args.ttl_seconds, state_dir=harness.paths.state_dir,
+                        ssh_profile=load_contract(args.ssh_profile, max_bytes=16384), allow_network=args.allow_network))
                 else:
                     result = harness.targets.retire(args.generation, by=args.by, adoption_digest=args.adoption_digest, reason=args.reason)
         _write_json(result)
@@ -1176,7 +1182,7 @@ def build_parser() -> argparse.ArgumentParser:
     inventory.add_argument("--account", required=True, help="declared non-secret account scope, not a credential")
     inventory.add_argument("--project", required=True)
     inventory.set_defaults(handler=command_target_inventory)
-    for name in ("inspect", "propose", "adopt", "retire", "local-profile", "observe-local"):
+    for name in ("inspect", "propose", "adopt", "retire", "local-profile", "observe-local", "observe-ssh"):
         operation = target_actions.add_parser(name)
         operation.add_argument("--state-dir", required=name != "local-profile")
         operation.add_argument("--db")
@@ -1200,9 +1206,12 @@ def build_parser() -> argparse.ArgumentParser:
             else:
                 operation.add_argument("--generation", required=True)
                 operation.add_argument("--adoption-digest", required=True)
-                if name == "observe-local":
+                if name in {"observe-local", "observe-ssh"}:
                     operation.add_argument("--request-id", required=True)
                     operation.add_argument("--ttl-seconds", type=int, default=300)
+                    if name == "observe-ssh":
+                        operation.add_argument("--ssh-profile", required=True)
+                        operation.add_argument("--allow-network", action="store_true")
                 else:
                     operation.add_argument("--reason", required=True)
         operation.set_defaults(handler=command_target)

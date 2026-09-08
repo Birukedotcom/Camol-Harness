@@ -17,7 +17,7 @@ from .json_contracts import decode_contract
 REQUEST_LIMIT = 60 * 1024
 RESPONSE_LIMIT = 8 * 1024 * 1024
 DEFAULT_READ_COMMANDS = frozenset({"ping", "status", "boxes", "box", "plan", "events", "acceptance", "watch-inspect"})
-READ_COMMANDS = DEFAULT_READ_COMMANDS | {"box-observe", "box-inbox"}
+READ_COMMANDS = DEFAULT_READ_COMMANDS | {"box-observe", "box-inbox", "target-local-profile"}
 MUTATING_COMMANDS = frozenset({"approve", "drain", "resume", "stop", "force-stop", "accept", "gate-approve", "watch-create", "watch-schedule", "watch-stop", "watch-reopen", "box-message"})
 ALL_COMMANDS = READ_COMMANDS | MUTATING_COMMANDS
 REMOTE_COMMAND = "camol-ssh-bridge"

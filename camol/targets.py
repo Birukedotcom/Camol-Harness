@@ -141,6 +141,9 @@ def snapshot(state, *, offset=0, limit=50):
         request_id = target.get("latest_runtime_observation")
         if request_id is not None:
             target["runtime_observation"] = deepcopy(state["target_runtime_observations"][request_id])
+        ssh_request = target.get("latest_ssh_runtime_observation")
+        if ssh_request is not None:
+            target["ssh_runtime_observation"] = deepcopy(state["target_ssh_runtime_observations"][ssh_request])
     # Inspection can redact newly protected values without rewriting historical approval.
     result = Redactor().value(result)
     result["snapshot_digest"] = canonical_digest(result)
@@ -208,3 +211,7 @@ class TargetRegistry:
     def observe_local(self, generation, **kwargs):
         from .target_runtime import observe_local
         return observe_local(self, generation, **kwargs)
+
+    async def observe_ssh(self, generation, **kwargs):
+        from .target_ssh_runtime import observe_ssh
+        return await observe_ssh(self, generation, **kwargs)
