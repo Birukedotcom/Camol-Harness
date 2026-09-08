@@ -1308,3 +1308,21 @@ finished both full suites: **1,077 tests in 924.594 seconds on Python 3.12**, an
 **1,010.792 seconds on Python 3.9** with three optional skips. Those are earlier
 checkpoint results, not proof for the later monitor or mailbox additions. Final
 source, installed-package and composed full-suite gates follow this checkpoint.
+
+The final source group passed **53 tests in 85.054 seconds on Python 3.12** and
+**85.262 seconds on Python 3.9**. Product
+`a48cf63e7a4ffaa8aac9819227093f91324152f9` is pushed on
+`codex/v0-remote-mailbox` under the owner's identity. A clean dependency-free
+wheel import and CLI parser check also passed without loading Textual. The full
+Python 3.12/3.9 suites for this composed monitor/mailbox product have started;
+their exact terminal results and the installed integration group remain separate
+gates. Main remains clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`, and the
+user's installation and account configuration remain unchanged.
+
+The fresh sdist-to-wheel installation with TUI/graph/recovery extras subsequently
+passed the same **53-test integration group in 85.557 seconds on Python 3.12**.
+Camol was imported from `site-packages` outside the source repository, and the
+remote-mailbox, SSH protocol, monitor and orchestrator modules were byte-compared
+with source before adding test fixtures. The two composed whole-suite processes
+remain active and unclaimed; their later terminal results are the outstanding
+local integration gate for this exact product.
