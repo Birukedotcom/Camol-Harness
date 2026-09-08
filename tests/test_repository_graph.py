@@ -3,6 +3,8 @@ import subprocess
 import tempfile
 import unittest
 import sys
+import importlib
+from unittest.mock import patch
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -146,11 +148,31 @@ class RepositoryGraphTests(unittest.TestCase):
             self.write(parser + ".py", "from pathlib import Path\nPath({!r}).write_text('bad')\n".format(str(sentinel)))
         sys.path.insert(0, str(self.repo))
         try:
-            snapshot = crawl_repository(self.repo)
+            # Exercise cold resolution even if an earlier test imported the
+            # trusted stdlib parser. A cached trusted parser is safe to reuse.
+            with patch.dict(sys.modules):
+                sys.modules.pop("tomllib", None)
+                sys.modules.pop("tomli", None)
+                snapshot = crawl_repository(self.repo)
         finally:
             sys.path.pop(0)
         self.assertFalse(sentinel.exists())
         self.assertEqual(snapshot.data["status"], "OBSERVATION_INCOMPLETE")
+
+    @unittest.skipUnless(sys.version_info >= (3, 11), "stdlib TOML parser requires Python 3.11")
+    def test_preloaded_trusted_parser_ignores_repository_shadow_without_executing_it(self):
+        parser = importlib.import_module("tomllib")
+        sentinel = self.root / "parser-executed"
+        self.write("pyproject.toml", '[project]\nname="fixture"\n')
+        self.write("tomllib.py", "from pathlib import Path\nPath({!r}).write_text('bad')\n".format(str(sentinel)))
+        sys.path.insert(0, str(self.repo))
+        try:
+            snapshot = crawl_repository(self.repo)
+        finally:
+            sys.path.pop(0)
+        self.assertFalse(sentinel.exists())
+        self.assertIs(sys.modules["tomllib"], parser)
+        self.assertEqual(snapshot.data["status"], "STATIC_OBSERVED")
 
 
 if __name__ == "__main__":

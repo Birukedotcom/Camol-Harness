@@ -682,3 +682,20 @@ explicit. No product permission or receipt validation was weakened.
 This extra fixture was added after full-suite discovery and is verified separately;
 do not include it in the already-running full-suite test count.
 The same fixture also passed against the installed wheel in **2.354 seconds**.
+
+### Complete native checkpoint results and parser-fixture correction
+
+The native product checkpoint completed **951 tests on Python 3.9 in 787.093
+seconds, OK with two skips** (optional installed-Codex parser and MCP SDK).
+Python 3.12 completed **951 tests in 732.062 seconds with one failure**. This is
+not a passing Python 3.12 gate. The failed repository-graph fixture assumed the
+stdlib TOML parser had not previously been imported. Native configuration tests
+had imported the trusted parser; Python correctly reused it without executing
+the repository's shadow module. The trap sentinel remained absent.
+
+The cold-parser attack fixture now explicitly isolates the two parser cache
+entries, and an additional warm-parser fixture requires safe reuse of the trusted
+stdlib parser with no sentinel execution. Graph product code is unchanged. The
+corrected **9-test graph group passed on Python 3.12 in 1.686 seconds** and on
+**Python 3.9 in 1.660 seconds with one stdlib-version skip**. The full Python 3.12
+gate must be rerun; these focused results do not erase the earlier failure.
