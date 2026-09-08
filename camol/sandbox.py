@@ -32,6 +32,10 @@ class SandboxError(RuntimeError):
     """A process could not be launched under the requested sandbox policy."""
 
 
+class SandboxInputError(SandboxError):
+    """An owner-supplied staged input protocol refused further input."""
+
+
 def process_start_fingerprint(pid: int) -> str:
     """Return a stable-enough OS birth marker used to reject PID reuse."""
     executable = "/bin/ps" if Path("/bin/ps").is_file() else shutil.which("ps")
@@ -252,14 +256,18 @@ class SandboxBackend:
     max_capture_bytes = 1 << 20
     invocation_root = None
 
-    async def _drain(self, stream: asyncio.StreamReader) -> Tuple[bytes, str, int, bool]:
+    async def _drain(self, stream: asyncio.StreamReader, *, observer=None) -> Tuple[bytes, str, int, bool]:
         retained = bytearray()
         digest = hashlib.sha256()
         total = 0
         while True:
             chunk = await stream.read(65536)
             if not chunk:
+                if observer is not None:
+                    observer.eof()
                 break
+            if observer is not None:
+                observer.feed(chunk)
             digest.update(chunk)
             total += len(chunk)
             if len(retained) < self.max_capture_bytes:
@@ -276,6 +284,7 @@ class SandboxBackend:
         environment: Optional[Mapping[str, str]] = None,
         stdin_bytes: Optional[bytes] = None,
         invocation_record: Optional[Path] = None,
+        input_protocol=None,
     ) -> SandboxResult:
         raise NotImplementedError
 
@@ -290,7 +299,10 @@ class SandboxBackend:
         environment: Optional[Mapping[str, str]],
         stdin_bytes: Optional[bytes],
         invocation_record: Optional[Path],
+        input_protocol=None,
     ) -> SandboxResult:
+        if input_protocol is not None and stdin_bytes is not None:
+            raise SandboxError("staged input and eager stdin bytes are mutually exclusive")
         resolved_cwd = Path(_real(str(cwd)))
         try:
             resolved_cwd.relative_to(Path(policy.workspace))
@@ -302,7 +314,7 @@ class SandboxBackend:
                 *effective_argv,
                 cwd=str(resolved_cwd),
                 env=policy.environment(environment),
-                stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE if stdin_bytes is not None or input_protocol is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -346,11 +358,20 @@ class SandboxBackend:
                         pass
                     await process.wait()
                     raise
-            stdout_task = asyncio.create_task(self._drain(process.stdout))
+            stdout_task = asyncio.create_task(self._drain(process.stdout, observer=input_protocol) if input_protocol is not None else self._drain(process.stdout))
             stderr_task = asyncio.create_task(self._drain(process.stderr))
 
             async def communicate_bounded():
-                if stdin_bytes is not None:
+                if input_protocol is not None:
+                    try:
+                        await input_protocol.write(process.stdin)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        raise SandboxInputError("staged input protocol refused further input") from error
+                    finally:
+                        process.stdin.close()
+                elif stdin_bytes is not None:
                     try:
                         process.stdin.write(stdin_bytes)
                         await process.stdin.drain()
@@ -371,22 +392,60 @@ class SandboxBackend:
                     except (BrokenPipeError, ConnectionResetError):
                         pass
 
+            async def settle_staged_process():
+                # asyncio's process wait may itself wait for inherited pipe
+                # EOF. Bound the entire settlement, not just the final drain.
+                async def capture():
+                    await process.wait()
+                    await finish_stdin()
+                    return await asyncio.gather(stdout_task, stderr_task)
+                try:
+                    return await asyncio.wait_for(capture(), timeout=2)
+                except asyncio.TimeoutError:
+                    stdout_task.cancel()
+                    stderr_task.cancel()
+                    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                    return None
+
             try:
                 stdout_capture, stderr_capture = await asyncio.wait_for(
                     communicate_bounded(), timeout=timeout_seconds
                 )
+            except SandboxInputError:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                captures = await settle_staged_process()
+                if captures is None:
+                    if invocation_record is not None:
+                        self._finish_invocation(invocation_record, "terminated", process.returncode)
+                    raise SandboxError("startup failed and output pipes did not close")
+                stdout_capture, stderr_capture = captures
             except asyncio.TimeoutError as error:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                await process.wait()
-                await finish_stdin()
-                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                if input_protocol is not None:
+                    await settle_staged_process()
+                else:
+                    await process.wait()
+                    await finish_stdin()
+                    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
                 if invocation_record is not None:
                     self._finish_invocation(invocation_record, "timed_out", process.returncode)
                 raise SandboxError("sandboxed process timed out") from error
             except asyncio.CancelledError:
+                if input_protocol is not None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    await settle_staged_process()
+                    if invocation_record is not None:
+                        self._finish_invocation(invocation_record, "terminated", process.returncode)
+                    raise
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
                 except ProcessLookupError:
@@ -498,13 +557,14 @@ class DeveloperTrustedBackend(SandboxBackend):
 
     name = "developer_trusted"
 
-    async def run(self, argv, *, cwd, policy, timeout_seconds, environment=None, stdin_bytes=None, invocation_record=None):
+    async def run(self, argv, *, cwd, policy, timeout_seconds, environment=None, stdin_bytes=None, invocation_record=None, input_protocol=None):
         if policy.trust_tier != "developer_trusted":
             raise SandboxError("unsandboxed backend cannot satisfy a sandboxed trust tier")
         return await self._spawn(
             argv, argv, cwd=cwd, policy=policy, timeout_seconds=timeout_seconds, environment=environment,
             stdin_bytes=stdin_bytes,
             invocation_record=invocation_record,
+            input_protocol=input_protocol,
         )
 
 
@@ -565,7 +625,7 @@ class MacOSSandboxBackend(SandboxBackend):
             rules.append("(allow network*)")
         return " ".join(rules)
 
-    async def run(self, argv, *, cwd, policy, timeout_seconds, environment=None, stdin_bytes=None, invocation_record=None):
+    async def run(self, argv, *, cwd, policy, timeout_seconds, environment=None, stdin_bytes=None, invocation_record=None, input_protocol=None):
         if not self.available():
             raise SandboxError("macOS sandbox-exec is unavailable")
         if policy.trust_tier == "developer_trusted":
@@ -575,6 +635,7 @@ class MacOSSandboxBackend(SandboxBackend):
             effective, argv, cwd=cwd, policy=policy, timeout_seconds=timeout_seconds, environment=environment,
             stdin_bytes=stdin_bytes,
             invocation_record=invocation_record,
+            input_protocol=input_protocol,
         )
 
 

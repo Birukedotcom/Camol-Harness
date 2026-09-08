@@ -104,7 +104,7 @@ class ClaudePeerBuildTests(unittest.TestCase):
     setUp = test_evaluation.EvaluationLoopTests.setUp
     tearDown = test_evaluation.EvaluationLoopTests.tearDown
 
-    def execute_build(self, *, sandboxed=False, no_handshake=False, cleanup_fail=False, missing_flag=False):
+    def execute_build(self, *, sandboxed=False, no_handshake=False, cleanup_fail=False, missing_flag=False, startup_denied=False):
         binary = self.root / "bin"
         binary.mkdir()
         executable = binary / "fake-claude"
@@ -134,7 +134,24 @@ class ClaudePeerBuildTests(unittest.TestCase):
             self.assertEqual(contexts, [])
             return
         try:
-            if no_handshake or cleanup_fail:
+            if startup_denied:
+                self.assertNotEqual(final["status"], "awaiting_acceptance")
+                self.assertEqual(len(contexts), 1)
+                snapshots = []
+                def visit(value):
+                    if isinstance(value, dict):
+                        if value.get("protocol") == "claude-stream-startup-v1":
+                            snapshots.append(value)
+                        for item in value.values():
+                            visit(item)
+                    elif isinstance(value, list):
+                        for item in value:
+                            visit(item)
+                visit(events)
+                self.assertTrue(snapshots)
+                self.assertTrue(all(item["failure"] and not item["prompt_dispatch_started"] and not item["prompt_sent"] for item in snapshots))
+                self.assertIn('"provenance": "unknown"', json.dumps(events))
+            elif no_handshake or cleanup_fail:
                 self.assertNotEqual(final["status"], "awaiting_acceptance")
                 self.assertIn('"input_tokens": 12', json.dumps(events))
                 self.assertIn('"cost_usd_micros": 30000', json.dumps(events))

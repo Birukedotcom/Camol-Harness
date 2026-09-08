@@ -179,7 +179,8 @@ class ModelProfile:
             if self.adapter_kind == "claude_cli":
                 from .claude_peer_policy import validate
                 validate(self)
-            result.update(schema_version=4 if self.adapter_kind == "claude_cli" else 3,
+            version = (5 if self.execution_policy["peer_startup"] == "initialized_before_prompt" else 4) if self.adapter_kind == "claude_cli" else 3
+            result.update(schema_version=version,
                 peer_policy=json.loads(json.dumps(self.peer_policy)))
         return result
 
@@ -191,8 +192,8 @@ class ModelProfile:
         if not isinstance(payload, dict):
             raise ProviderError("model profile must be an object")
         version = payload.get("schema_version")
-        if type(version) is not int or version not in {1, 2, 3, 4}:
-            raise ProviderError("model profile schema_version must be 1, 2, 3 or 4")
+        if type(version) is not int or version not in {1, 2, 3, 4, 5}:
+            raise ProviderError("model profile schema_version must be 1, 2, 3, 4 or 5")
         require_schema_header(payload, cls.SCHEMA, version, "model profile")
         fields = set(cls.FIELDS) | ({"execution_policy", "local_provider", "local_endpoint"} if version >= 2 else set())
         if version >= 3:
@@ -206,9 +207,13 @@ class ModelProfile:
             raise ProviderError("schema2 execution_policy cannot be null")
         if version >= 3 and payload["peer_policy"] is None:
             raise ProviderError("schema3 peer_policy cannot be null")
-        if ((version == 4 and payload["adapter_kind"] != "claude_cli")
+        if ((version >= 4 and payload["adapter_kind"] != "claude_cli")
                 or (version == 3 and payload["adapter_kind"] == "claude_cli")):
-            raise ProviderError("Claude peer execution requires schema4; Codex peer execution requires schema3")
+            raise ProviderError("Claude peer execution requires schema4 or schema5; Codex peer execution requires schema3")
+        if version >= 4:
+            from .claude_peer_policy import execution_policy
+            if payload["execution_policy"] != execution_policy(strict_startup=version == 5):
+                raise ProviderError("Claude startup policy must match the exact profile schema version")
         for name in (
             "allowed_resolved_models", "allowed_tools", "network_destinations",
             "credential_refs", "credential_read_paths",

@@ -268,8 +268,9 @@ for replayable peer observations and read-before-send. Opt-in schema3 Codex work
 profiles now register scoped peer tools with frozen admission and per-turn cleanup;
 existing profiles keep them disabled. Fake-CLI/sandbox builds are tested, but
 actual native model/tool acceptance and remote peers remain separate gates.
-[Schema4 Claude profiles](docs/claude-peer-integration.md) add a separately reviewed
-restricted-mode peer tier, with explicit environment/startup limitations.
+[Schema4/5 Claude profiles](docs/claude-peer-integration.md) add a separately reviewed
+restricted-mode peer tier. Schema5 withholds the task prompt until bounded startup
+and owner-side checks pass; native compatibility and billing remain unverified.
 See the profile fragments and limitations in the linked guides.
 Peer-tool attempts, failures, retries and unknown completions are visible in
 `camol profile --db PATH --run-id RUN`, without storing message prose in the

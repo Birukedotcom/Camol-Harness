@@ -53,9 +53,9 @@ and standalone command now expose boxes, task dependencies and attention. The
 current-run searchable switcher is now implemented with grouped metadata, paginated
 keyboard selection and stale-plan rejection. Exact-run offline box inspection and
 persistent current-plan pins/groups are implemented. Focus/split/paginated-grid
-metadata monitoring is implemented; the automatic peer-tool bridge remains an
-implementation gate. The new turn-scoped Python peer-tool interface supports
-explicit embedding adapters with replayable reads; native transport is not enabled.
+metadata monitoring is implemented; live native peer-tool acceptance remains a
+gate. The turn-scoped Python peer-tool interface supports explicit embedding
+adapters with replayable reads; native transport is opt-in, not enabled by default.
 Admitted peer calls also have content-free start/finish telemetry, replay-bound
 results, explicit unknown outcomes and per-task/operation timing profiles.
 An explicit per-turn Unix endpoint and bounded MCP stdio relay now exercise
@@ -63,7 +63,10 @@ cross-process peer communication. Schema3 Codex profiles now opt into exact
 admitted runtime/socket/environment access and per-turn registration/cleanup;
 real fake-CLI builds pass. Schema4 Claude profiles now have a separately explicit
 restricted-mode peer tier, including worker-visible capability and pre-completion
-(not pre-inference) handshake limits. Native live acceptance remains pending.
+(not pre-inference) handshake limits. Schema5 adds bounded streaming startup,
+owned-handshake/status checks and launch reauthorization before prompt dispatch;
+controlled protocol/build tests are not native compatibility or billing proof.
+Native live acceptance remains pending.
 Existing profiles keep peer tools disabled.
 The `/delegate` view exposes declared compatibility without readiness claims;
 new-work review reuses the exact stopped-owner revision approval and separate

@@ -737,3 +737,36 @@ recovery, three-relay routing, the independent MCP SDK, and cold/warm parser
 shadowing checks. Both parent and child selected the installed package. The full
 Claude-successor Python 3.9 suite is running; the full Python 3.12 native-predecessor
 rerun is a separate process. Neither unfinished gate is reported as passing.
+
+The Claude predecessor full Python 3.9 run subsequently passed **960 tests in
+833.316 seconds with three skips**. The native predecessor Python 3.12 rerun
+stalled during Textual timer shutdown in the revision-handoff UI test; after
+read-only process sampling, it was interrupted with SIGINT (exit 130). It is not
+a passing full gate. The isolated revision-handoff test passed in 1.311 seconds;
+that does not dismiss the shutdown race. Follow-up inspection found Textual's
+worker wait converts cancellation of its caller into `WorkerCancelled`, which
+the view refresh catches as ordinary supersession. A dedicated repair and
+regression are required before claiming this full gate.
+
+## Schema5 staged-startup checkpoint
+
+The isolated `codex/v0-startup-gate` branch adds owner-controlled initialize/status
+exchange before task-prompt dispatch, without changing schema4 semantics. Strict
+profile/version matching, independent owned relay authentication, immediate launch
+reauthorization and content-free phase/input-attempt evidence are implemented.
+See [the policy and limitations](claude-peer-integration.md).
+
+The initial 37-test startup/peer/sandbox group passed on Python 3.12 in 27.110
+seconds and Python 3.9 in 29.721 seconds. Additional lifecycle tests then passed
+15 tests in 11.652/12.926 seconds. The first detached-pipe regression passed on
+both runtimes and exposed why process wait must be bounded together with pipe
+drain. After extending that protection to staged cancellation and outer timeout,
+the 38-test startup/sandbox group passed in **23.801 seconds on Python 3.12** and
+**26.310 seconds on Python 3.9**. A subsequent owner-revocation test and the final
+expanded/installed/full gates are separate from these counts.
+
+An expanded command mistakenly named nonexistent `tests.test_profiles`; its
+90-test runs ended with a loader error on both runtimes and are not passing gates.
+The corrected group selects `tests.test_providers`, plus launch/probe contracts.
+Fixture providers, local relay calls and OS sandbox tests do not establish real
+Claude protocol compatibility, account readiness, hosted billing or live tools.

@@ -239,12 +239,20 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
             packet_sha256=packet_sha256, profile_digest=profile.digest(), assignment=assignment,
             run_id=self.run_id, turn_number=turn_number, workspace=self.workspace)
         await self._authorize_launch(assignment, turn_number)
+        startup = None
         async with self._peer_invocation(profile, assignment, turn_number) as peer:
             environment = self.execution_environment
             if peer is not None:
                 argv.remove("--safe-mode")
                 argv.extend(peer.argv)
                 environment = dict(environment or {}, **peer.environment)
+                if profile.execution_policy["peer_startup"] == "initialized_before_prompt":
+                    from .claude_startup import ClaudeStartup
+                    def peer_ready():
+                        peer.tools._check()
+                        return not peer.endpoint.snapshot()["closed"] and peer.endpoint.snapshot()["counts"].get("authenticated_handshakes", 0) > 0
+                    startup = ClaudeStartup(prompt, authorize=lambda: self._authorize_launch(assignment, turn_number), peer_ready=peer_ready)
+                    argv[argv.index("--input-format") + 1] = "stream-json"
             from .provider_budget import reserve_hosted
             def reservation_evidence(allocated):
                 nonlocal ceiling
@@ -262,15 +270,20 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
                     policy=self.sandbox_policy,
                     timeout_seconds=agent["adapter"]["timeout_seconds"],
                     environment=environment,
-                    stdin_bytes=prompt,
+                    stdin_bytes=None if startup is not None else prompt,
                     invocation_record=packet_dir / "turn-{:03d}.invocation.json".format(turn_number),
+                    **({"input_protocol": startup} if startup is not None else {}),
                 )
             except asyncio.CancelledError as error:
                 error.observed_evidence = [usage_evidence(outcome="cancelled")]
+                if startup is not None:
+                    error.observed_evidence.append(dict(kind="command", epistemic_status="OBSERVED", producer="adapter", artifact_refs=[], data=startup.snapshot()))
                 journal.record_outcome(error.observed_evidence)
                 raise
             except (SandboxError, OSError) as error:
                 observed = [usage_evidence()]
+                if startup is not None:
+                    observed.append(dict(kind="command", epistemic_status="OBSERVED", producer="adapter", artifact_refs=[], data=startup.snapshot()))
                 journal.record_outcome(observed)
                 raise AdapterError(str(error), observed_evidence=observed) from error
         references = []
@@ -318,6 +331,10 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
                 cleanup="incomplete" if peer.cleanup_incomplete else "complete",
                 authenticated_handshakes=peer.endpoint.snapshot()["counts"].get("authenticated_handshakes", 0),
                 provider_tool_use_proven=False, peer_capability_exposure="worker_environment")
+        if startup is not None:
+            command_evidence["data"]["startup"] = startup.snapshot()
+            command_evidence["data"]["stdin_sha256"] = startup.snapshot()["stdin_attempted_sha256"]
+            command_evidence["data"]["stdin_evidence"] = "attempted_stream_not_delivery"
         final = None
         events = []
         try:
@@ -351,12 +368,16 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
             self.validate_result(result, packet_sha256)
             if peer is not None and (peer.cleanup_incomplete or not command_evidence["data"]["peer_endpoint"]["authenticated_handshakes"]):
                 raise AdapterError("Claude peer endpoint was not initialized or cleanup requires owner inspection; observed usage retained")
+            if startup is not None and (startup.failure or not startup.prompt_sent):
+                raise AdapterError("Claude startup did not authorize and send the task prompt")
         except (AdapterError, ProviderError, ValueError) as error:
             observed = [command_evidence, usage_evidence(final, outcome="error", start=sandboxed.started_at, finished_at=sandboxed.finished_at)]
             for activity in _tool_activity(events):
                 observed.append({"kind": "tool_call", "epistemic_status": "EXECUTED", "producer": "adapter",
                                  "artifact_refs": [], "data": self.redactor.value(dict(activity, invocation_id=invocation_id))})
             journal.record_outcome(self.redactor.value(observed))
+            if startup is not None and startup.failure:
+                raise AdapterError("Claude startup refused the task prompt: " + startup.failure, observed_evidence=observed) from error
             raise AdapterError(str(error), observed_evidence=observed) from error
         result = self.redactor.value(result)
         observed: List[Dict[str, Any]] = [
