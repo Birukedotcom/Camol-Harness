@@ -542,3 +542,10 @@ established. The successful fresh-environment result above supersedes that faile
 focused check; the older running full suite is not silently treated as a passing
 gate. Complete telemetry and delegation suites remain separate checkpoints.
 No paid provider request, real login, model-weight download or remote host was used.
+
+The older peer-tools Python 3.9 full run subsequently finished **906 tests in
+750.942 seconds with 33 errors**. Every reported error was a missing
+`textual.drivers.linux_driver` import from the damaged temporary environment.
+It is a failed gate, not a passing compatibility claim. Telemetry's full Python
+3.9 suite is running in the fresh environment; delegation has the successful
+focused fresh-environment and installed checks recorded above.
