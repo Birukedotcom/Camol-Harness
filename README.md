@@ -142,6 +142,8 @@ supervisor path. These reports do not grant task readiness or reserved capacity.
 `camol target observe-ssh` adds an explicitly approved, pinned
 [remote supervisor runtime observation](docs/target-ssh-runtime.md). It records
 endpoint/runtime evidence, not provider ownership or distributed worker readiness.
+Process turns use [durable launch intents](docs/process-turn-intents.md): a lost
+result requires reconciliation rather than silently repeating the command.
 `camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` inspects local
 content-free RPC counts, durations and byte measurements without connecting.
 These measurements include monitor reads, not provider billing. See

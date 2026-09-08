@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from .admission import AdmissionBundle, AdmissionController, AdmissionError
 from .execution_placement import ExecutionPlacementError, require_local_placement
-from .adapter import AdapterError, create_agent_adapter
+from .adapter import AdapterError, ProcessTurnUncertain, create_agent_adapter
 from .artifacts import ArtifactError, ArtifactRef, ArtifactStore
 from .evaluation import (
     CandidateRecord,
@@ -822,6 +822,11 @@ class HarnessRunner:
             except ProviderBudgetError as error:
                 self._pause_assignment(run_id, assignment, "OPERATOR_ATTENTION", str(error))
                 return
+            except ProcessTurnUncertain as error:
+                for observed in getattr(error, "observed_evidence", ()):
+                    self._record_observed(run_id, assignment, observed)
+                self._pause_assignment(run_id, assignment, "EFFECT_UNKNOWN", str(error))
+                return
             except (AdapterError, SandboxError, ArtifactError, ProviderError, OSError) as error:
                 for observed in getattr(error, "observed_evidence", ()):
                     self._record_observed(run_id, assignment, observed)
@@ -1028,6 +1033,15 @@ class HarnessRunner:
         for task in tasks:
             if remaining == 0:
                 break
+            if self.state_dir is not None:
+                intent = self.state_dir / "packets" / run_id / task["id"] / "turn-{:03d}.process-intent.json".format(task["turn_count"] + 1)
+                if intent.exists() or intent.is_symlink():
+                    self.orchestrator.wait_task(run_id, task["id"], WaitingReason(
+                        code="EFFECT_UNKNOWN", detail="retained process allocation has no accepted turn; reconcile before another lease",
+                        wake_condition="owner reconciles retained result and effects before authorizing further work",
+                        task_id=task["id"],
+                    ))
+                    continue
             already = []
             for agent in idle_agents:
                 payload = state["admissions"].get("{}:{}".format(task["id"], agent["id"]))

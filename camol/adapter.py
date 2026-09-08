@@ -21,6 +21,10 @@ class AdapterError(RuntimeError):
         self.observed_evidence = list(observed_evidence or ())
 
 
+class ProcessTurnUncertain(AdapterError):
+    """An allocated process turn cannot be silently dispatched a second time."""
+
+
 def _substitute(argv: List[str], values: Dict[str, str]) -> List[str]:
     rendered = []
     for argument in argv:
@@ -70,7 +74,25 @@ class ProcessAgentAdapter:
         if self.before_launch is not None:
             await self.before_launch(assignment, turn_number)
 
-    async def execute_turn(
+    async def execute_turn(self, agent, assignment, packet, turn_number, *, cost_budget_cents=None):
+        if getattr(self, "_turn_busy", False):
+            raise ProcessTurnUncertain("another call already owns this process adapter")
+        self._turn_busy, self._process_intent = True, None
+        try:
+            from .process_intents import turn_lock
+            with turn_lock(self.state_dir, self.run_id, assignment["task_id"], turn_number):
+                return await self._execute_turn(agent, assignment, packet, turn_number, cost_budget_cents=cost_budget_cents)
+        except asyncio.CancelledError:
+            raise  # The durable intent survives cancellation; never convert cancellation to success.
+        except Exception as error:
+            if self._process_intent is not None and not isinstance(error, ProcessTurnUncertain):
+                raise ProcessTurnUncertain("process turn has no recoverable validated result; reconcile retained work before retry",
+                    observed_evidence=getattr(error, "observed_evidence", ())) from error
+            raise
+        finally:
+            self._turn_busy, self._process_intent = False, None
+
+    async def _execute_turn(
         self,
         agent: Dict[str, Any],
         assignment: Dict[str, str],
@@ -79,6 +101,8 @@ class ProcessAgentAdapter:
         *,
         cost_budget_cents: Optional[int] = None,
     ) -> Dict[str, Any]:
+        if type(turn_number) is not int or turn_number < 1:
+            raise AdapterError("process turn number must be a positive integer")
         box = self._inside_workspace(agent["box"])
         packet_dir = self.state_dir / "packets" / self.run_id / assignment["task_id"]
         try:
@@ -92,28 +116,39 @@ class ProcessAgentAdapter:
         worker_dir = packet_dir / "worker-output"
         worker_dir.mkdir(parents=True, exist_ok=True)
         worker_result_path = worker_dir / "turn-{:03d}.result.json".format(turn_number)
+        from .process_intents import ProcessTurnIntent
+        intent = ProcessTurnIntent(packet_dir / "turn-{:03d}.process-intent.json".format(turn_number),
+            agent=agent, assignment=assignment, run_id=self.run_id, turn_number=turn_number,
+            workspace=self.workspace, sandbox_policy=self.sandbox_policy)
+        intent.check_subject()  # Never overwrite a different lease's packet/result first.
         desired_packet_bytes = (json.dumps(packet, indent=2, sort_keys=True) + "\n").encode("utf-8")
         packet_bytes = desired_packet_bytes
-        if packet_path.exists():
+        packet_existed = packet_path.exists()
+        known_unlaunched = False
+        if packet_existed:
             try:
                 existing_packet_bytes = packet_path.read_bytes()
                 existing_packet = json.loads(existing_packet_bytes)
+                if not isinstance(existing_packet, dict):
+                    raise ProcessTurnUncertain("existing process packet is not an object")
                 if (
                     existing_packet.get("run", {}).get("id") == self.run_id
                     and existing_packet.get("lease") == packet.get("lease")
                 ):
                     packet_bytes = existing_packet_bytes
                 else:
+                    known_unlaunched = intent.proves_unlaunched(hashlib.sha256(existing_packet_bytes).hexdigest())
+                    if not known_unlaunched or result_path.exists():
+                        raise ProcessTurnUncertain("prior lease packet cannot be replaced without proof it was not launched")
                     packet_path.write_bytes(desired_packet_bytes)
                     if result_path.exists():
                         result_path.unlink()
-            except (OSError, json.JSONDecodeError):
-                packet_path.write_bytes(desired_packet_bytes)
-                if result_path.exists():
-                    result_path.unlink()
+            except (OSError, json.JSONDecodeError) as error:
+                raise ProcessTurnUncertain("existing process packet is unreadable; retain it for reconciliation") from error
         else:
             packet_path.write_bytes(packet_bytes)
         packet_sha256 = hashlib.sha256(packet_bytes).hexdigest()
+        intent.bind_packet(packet_sha256)
         if result_path.exists():
             try:
                 recovered = json.loads(result_path.read_text(encoding="utf-8"))
@@ -153,10 +188,21 @@ class ProcessAgentAdapter:
                     )
                 recovered["_camol_observed_evidence"] = observed
                 return recovered
-            except (AdapterError, json.JSONDecodeError):
-                result_path.unlink()
+            except (AdapterError, json.JSONDecodeError) as error:
+                raise ProcessTurnUncertain("cached process result is invalid; retain it for reconciliation") from error
 
-        await self._authorize_launch(assignment, turn_number)
+        if (packet_dir / "turn-{:03d}.invocation.json".format(turn_number)).exists() and not intent.exists():
+            raise ProcessTurnUncertain("legacy process invocation has no validated result; reconcile before migration")
+        if packet_existed and not intent.exists() and not known_unlaunched and not intent.proves_unlaunched(packet_sha256):
+            raise ProcessTurnUncertain("unjournaled process packet has no validated result; reconcile before migration")
+        try:
+            await self._authorize_launch(assignment, turn_number)
+        except BaseException:
+            try:
+                intent.record_unlaunched()
+            except Exception:
+                pass  # Without this receipt, a later retry conservatively requires reconciliation.
+            raise
         argv = _substitute(
             agent["adapter"]["argv"],
             {
@@ -170,6 +216,8 @@ class ProcessAgentAdapter:
             },
         )
         invocation_id = str(uuid4())
+        intent.reserve()
+        self._process_intent = intent
         if self.sandbox_backend is not None:
             sandboxed = await self.sandbox_backend.run(
                 argv,

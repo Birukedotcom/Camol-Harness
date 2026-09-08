@@ -46,6 +46,12 @@ per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
+The `codex/v0-process-intents` review reproduced duplicate process effects after a
+lost result. A durable turn allocation and cross-process packet lock now prevent
+silent redispatch, with explicit pre-launch denial proof, cached-result recovery
+and `EFFECT_UNKNOWN` in the runner. [Process intent semantics](process-turn-intents.md)
+distinguish this execution prerequisite from unfinished distributed dispatch.
+
 The `codex/v0-target-ssh-runtime` follow-up adds explicit owner-approved SSH
 observation through the pinned bridge into an existing remote supervisor. Python,
 offline/live CLI, replay and inspection bind the measured runtime to the adopted

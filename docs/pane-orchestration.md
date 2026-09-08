@@ -55,6 +55,31 @@ and project/target folding remain separate unfinished features.
 
 ## Camol identity and authority
 
+### Using these ideas without requiring either multiplexer
+
+The terminal hosting Camol may itself be inside tmux, tmax, smux, SSH, or a plain
+terminal on a VM. None is a required execution backend. Keep the outer terminal's
+session navigation distinct from Camol's inner task/box navigation:
+
+| Reference interaction | Camol interaction |
+| --- | --- |
+| tmax session switcher and grouped activity | `/switch`, pins/groups, `/overview --attention` |
+| tmax selected-session preview | `/layout split` or `/layout grid` metadata monitoring |
+| smux named pane list/read/resolve | `camol box list`, `resolve`, `read` with exact run/box identities |
+| smux cross-pane prompts | Explicit lease-scoped `/message` and worker peer tools |
+| Multiplexer create/split/close | Client presentation only; not task approval, worker allocation or cancellation |
+
+For users already running those tools, tmax documents `prefix + Space` for its
+switcher and `prefix + s` for its session tree; smux documents `tmux-bridge list`
+and `tmux-bridge read TARGET 20` for external pane inspection. These are commands
+of those separately installed tools, not Camol aliases. Do not invoke their
+installers, alter terminal configuration, or read unrelated panes implicitly.
+
+The orchestrator should delegate reviewed task contracts through Camol's scheduler
+and mailbox, not infer successful delivery from text typed into a shell. An
+eventual external-pane adapter is an optional explicit integration, with the
+identity and input-authority constraints below.
+
 A **task** is a frozen unit of work. A **box** is its admitted worker execution
 context. A **pane** is a disposable client view into that context. One box can
 have several panes (tools, diff, evidence); hiding a pane does not stop its task.

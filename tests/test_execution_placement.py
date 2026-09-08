@@ -75,10 +75,19 @@ class ExecutionPlacementTests(unittest.TestCase):
 
     def test_legacy_admission_without_placement_probe_is_inspectable_but_cannot_launch(self):
         runner, _, store, broker = self.harness({"locality": "local"})
+        runner._ensure_evaluator("capacity-run")
+        runner.orchestrator.start("capacity-run")
         # Produce the pre-fix admission shape, keeping the actual frozen task.
         # The runtime must refuse it even though old readiness allows a lease.
         with patch("camol.admission.required_placement", return_value={}):
-            final = asyncio.run(runner.run_until_terminal("capacity-run"))
+            # Persist the historical receipt explicitly: async preparation runs
+            # in a child process and cannot inherit a parent-only mock.
+            runner._ensure_admissions("capacity-run")
+        admission = next(iter(runner.orchestrator.state("capacity-run")["admissions"].values()))
+        self.assertNotIn("execution.placement", [
+            probe.probe_id for probe in AdmissionBundle.from_dict(admission).probe_policy.required_probes
+        ])
+        final = asyncio.run(runner.run_until_terminal("capacity-run"))
         self.assertEqual(final["tasks"]["change"]["attempts"], 0)
         self.assertEqual(final["tasks"]["change"]["turn_count"], 0)
         self.assertEqual(final["total_tokens"], 0)

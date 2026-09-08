@@ -2177,3 +2177,82 @@ The single full modern-Python-3.9 suite at frozen
 `/tmp/camol-admission-liveness-full-py39.log`. It was polled at the same live handle,
 not restarted, and does not include this SSH runtime/redaction follow-up. No
 latest whole-suite or distributed-execution acceptance is claimed here.
+
+## Process-turn uncertainty and duplicate dispatch — 2026-09-08
+
+The isolated `codex/v0-process-intents` follow-up reproduced duplicate effects at
+`c9ed583b6eb27557e4bb106bb013c9766e44a20d`: a process wrote a counter and exited
+without a result, and a second adapter call repeated the write. The original
+regression failed in `/tmp/camol-process-intents-red.log`.
+
+Process turns now take a nonblocking cross-process lock before packet preparation
+and publish a durable allocation before launch. The intent binds the turn, lease,
+packet and configuration. Missing/invalid results do not authorize another process;
+the runner records available evidence and exposes `EFFECT_UNKNOWN`. Validated cache
+recovery and explicit pre-launch failure proofs remain distinct. See
+[scope, migration and reconciliation limits](process-turn-intents.md).
+
+The initial regression plus runner group passed **6 tests in 79.903 seconds**;
+product refinements were still in progress, so this is intermediate evidence.
+The first five focused cases passed in 0.148 seconds. The extended eight-test group
+then exposed two fixture mistakes: its supposedly complete result lacked the
+required summary, and its full-run fixture used a path-form interpreter, which
+correctly remained unproven at readiness. Adding the required result field and
+using the existing example's allowlisted bare `python3` fixed the fixtures without
+weakening readiness. The corrected eight tests passed in 3.796 seconds, and the
+lock-enabled group passed in 3.795 seconds.
+
+The final focused group includes a separate-process controller race, cancellation,
+legacy/corrupt packet retention, changed lease/configuration rejection, cache loss,
+known pre-launch denial, and an actual admitted run followed by reopen. An assertion
+was corrected to name the real `TASK_RETRY_SCHEDULED` event, rather than a nonexistent
+event name. This reviewed group passed **9 tests in 4.140 seconds on Python 3.12**
+and **9 in 4.085 seconds on modern Python 3.9**. Logs:
+`/tmp/camol-process-intents-reviewed-py312.log` and `-py39.log`.
+
+An additional reopen assertion exposed a second issue: dispatch was denied but
+readmission still consumed another lease/attempt. The regression failed in
+`/tmp/camol-process-intents-readmission-red.log`. Checking retained allocations
+before preparation/reservation/lease now preserves the original attempt count.
+The final source runtime group passed **76 tests in 229.726 seconds on Python
+3.12** and **76 in 228.652 seconds on modern Python 3.9**; logs:
+`/tmp/camol-process-intents-final-py312.log` and `-py39.log`.
+
+A rebuilt sdist/wheel installed into the isolated core-only environment
+`/tmp/camol-process-intents-final.8VmBFD3Q/venv`. Imports outside the checkout
+verified site-packages ownership, byte equality of all **116 product modules**,
+and absence of Textual/MCP/cryptography before fixtures were added to the import
+path. The installed runtime group passed **76 tests in 230.362 seconds**;
+log: `/tmp/camol-process-intents-installed-final.log`. The earlier, pre-readmission
+repair package passed 76 tests in 233.071 seconds but is intermediate evidence only.
+V1 example validation and `git diff --check` pass. No native account, paid provider,
+external SSH endpoint, global installation or main-branch change was used.
+
+### Earlier full-suite failure retained
+
+The single full modern-Python-3.9 run at frozen `7c0ea467` has now finished:
+**1,247 tests in 1,740.421 seconds, three failures, two skips**. Its log remains
+`/tmp/camol-admission-liveness-full-py39.log`. An unchanged three-test recheck
+finished in 52.126 seconds with two failures. The natural-goal acceptance test
+passed that recheck; this does not establish the cause of its earlier 40-second
+deadline failure or waive the failed full-suite gate.
+
+The legacy-placement test patched only the parent, but admission now executes in
+a child. Its fixture now explicitly persists and asserts the legacy receipt before
+running the real driver. The first fixture repair omitted run startup and errored;
+it now prepares the evaluator and starts the run before admission. The mailbox CLI
+test repeatedly missed its two-second startup window. It now waits for a real
+worker-ready marker and holds the worker through the child CLI calls with a bounded
+release gate, instead of relying on a five-second sleep. Its focused test passed
+in 6.127 seconds. No production timeout or authority policy was relaxed.
+
+The corrected execution-placement/mailbox groups passed **20 tests in 83.801
+seconds on modern Python 3.9** and **20 in 83.963 seconds on Python 3.12**; logs:
+`/tmp/camol-process-intents-fixtures-py39.log` and `-py312.log`. These focused
+results do not replace the outstanding full-suite rerun.
+
+The user-supplied tmax/smux mapping is documented in `pane-orchestration.md`,
+without installing either multiplexer or treating raw terminal input as delegated
+authority. The pane/overview/organization/switcher/delegation/box-inspection group
+passed **61 tests in 87.863 seconds on Python 3.12**; log:
+`/tmp/camol-process-intents-pane-review.log`.

@@ -249,7 +249,20 @@ class MailboxCLITests(unittest.IsolatedAsyncioTestCase):
         from tests.test_evaluation import git
         from camol.supervisor import send_control
         script = self.source / "examples/fake_agent.py"
-        script.write_text("import time\ntime.sleep(5)\n" + script.read_text())
+        ready = Path(self.temporary.name) / "mailbox-worker-ready"
+        release = Path(self.temporary.name) / "mailbox-worker-release"
+        # Hold a real worker across all child CLI calls, rather than racing a
+        # fixed five-second sleep against admission and interpreter startup.
+        script.write_text(
+            "import time\nfrom pathlib import Path\n"
+            "Path({!r}).touch()\n"
+            "_mailbox_deadline = time.monotonic() + 60\n"
+            "while not Path({!r}).exists():\n"
+            "    if time.monotonic() >= _mailbox_deadline:\n"
+            "        raise RuntimeError('mailbox fixture release timed out')\n"
+            "    time.sleep(0.02)\n".format(str(ready), str(release))
+            + script.read_text()
+        )
         git(self.source, "add", ".")
         git(self.source, "commit", "-qm", "slow mailbox CLI fixture")
         supervisor = Supervisor(test_runner.ROOT / "examples/local-n-box-runbook.json", self.source, self.state, approve_by="owner")
@@ -262,13 +275,18 @@ class MailboxCLITests(unittest.IsolatedAsyncioTestCase):
             return process.returncode, stdout, stderr
         try:
             await self._wait_for(supervisor.paths.socket)
-            for _ in range(100):
+            deadline = asyncio.get_running_loop().time() + 30
+            tasks = []
+            while asyncio.get_running_loop().time() < deadline:
                 state = supervisor.orchestrator.state(supervisor.run_id)
                 tasks = [task for task in state["tasks"].values() if task["status"] == "running"]
-                if tasks:
+                if tasks and ready.exists():
                     break
+                if serving.done():
+                    await serving
+                    self.fail("supervisor stopped before the mailbox fixture was ready")
                 await asyncio.sleep(0.02)
-            self.assertTrue(tasks)
+            self.assertTrue(tasks and ready.exists(), state)
             box = tasks[0]["agent_id"]
             common = (box, "--state-dir", str(self.state), "--run-id", state["run_id"], "--plan-digest", state["plan_digest"])
             code, raw, error = await cli("observe", *common)
@@ -289,6 +307,7 @@ class MailboxCLITests(unittest.IsolatedAsyncioTestCase):
             code, _, _ = await cli(*args)
             self.assertEqual(code, 2, "disconnected controller must not queue a new delivery")
         finally:
+            release.touch()
             if not serving.done():
                 serving.cancel()
                 try:
