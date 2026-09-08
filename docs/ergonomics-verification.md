@@ -1925,3 +1925,11 @@ and tomli 2.4.1 for a fuller minimum-Python regression gate. This changed only t
 temporary test runtime, not the user installation or global interpreter selection.
 The latest code still requires its own whole-suite results on both supported
 runtime lines. No second full suite was started while the gateway process was live.
+
+The latest verification checkpoint is `f284e131cf3f283f90d2dc4b16d92b0dbe94659a`,
+pushed on `codex/v0-native-example` under the user's Git identity. Its modern Python
+3.9 whole suite is now running in `/tmp/camol-native-example-full-py39.log`, with
+Textual/recovery/TLS coverage enabled and the billable Claude live opt-in explicitly
+disabled. A process-scoped idle-sleep assertion lasts at most 2,400 seconds. The
+result is pending, not green; observe the same process to completion. A subsequent
+Python 3.12 whole gate for these latest target changes is also still required.
