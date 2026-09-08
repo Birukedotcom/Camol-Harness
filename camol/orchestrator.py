@@ -24,6 +24,7 @@ from .gate_runtime import GateOrchestratorMixin, acceptance_digest, require_inte
 from .revisions import RevisionOrchestratorMixin, prior_effect_reuse
 from .capacity import CapacityError
 from .capacity_runtime import capacity_for_task
+from .projection_copy import clone_projection
 
 
 class StateTransitionError(RuntimeError):
@@ -69,7 +70,7 @@ class Orchestrator(GateOrchestratorMixin, RevisionOrchestratorMixin):
         self._projections[run_id] = current
         # Callers may assemble packets from the projection. They cannot mutate
         # durable truth by retaining and editing a previously returned mapping.
-        return deepcopy(current)
+        return clone_projection(current)
 
     def _emit(
         self,

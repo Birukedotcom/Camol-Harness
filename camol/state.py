@@ -18,6 +18,7 @@ from .leases import validate_authorization
 from .schema import reject_unknown_fields, require_digest, require_string, parse_timestamp, canonical_digest
 from .workspace import SalvageReceipt
 from .source_binding import apply_source_binding, require_source_admission
+from .projection_copy import clone_projection
 
 
 def empty_state() -> Dict[str, Any]:
@@ -57,7 +58,7 @@ def empty_state() -> Dict[str, Any]:
 
 
 def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
-    next_state = deepcopy(state)
+    next_state = clone_projection(state)
     payload = event["payload"]
     event_type = event["type"]
     if state["status"] == "superseded":
