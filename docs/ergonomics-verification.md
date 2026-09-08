@@ -607,3 +607,11 @@ The fixture passed on Python 3.12 in **2.458 seconds** and Python 3.9 in **2.981
 seconds**. This is not a Linux enforcement result, and it does not grant networking
 to any existing frozen profile. The native profile/admission/runner integration
 sequence is recorded in [peer tools](peer-tools.md).
+
+The installed-wheel OS-boundary check also passed in **2.232 seconds**. Transport
+commit `3cb1c97b94bd3c0d92f2ae6f3c1bb89a3fd68ff2` subsequently passed the complete
+**939-test suite on Python 3.12 in 738.745 seconds**, including the independent
+MCP SDK, and **939 tests on Python 3.9 in 795.326 seconds, OK with one SDK-only
+skip**. The sandbox follow-up adds only the separately verified test and docs;
+its product code is identical to that full-suite checkpoint. These results do
+not cover the newer uncommitted native-provider integration.
