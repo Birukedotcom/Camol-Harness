@@ -74,6 +74,12 @@ for selection; it does not pretend to offer a graphical picker.
 
 ## Retained box inspection
 
+For an already-running remote supervisor, `camol remote monitor --target PROFILE
+--state-dir LOCAL_JOURNAL` provides a read-only terminal overview and box selector
+through the pinned SSH bridge. It never reuses local project state as remote truth,
+and it marks retained observations stale after a failed refresh. See
+[remote monitor setup and limits](ssh-control.md#remote-terminal-monitor).
+
 `camol box list --state-dir STATE_DIR --run-id RUN_ID` lists the exact run's
 workers. `camol box resolve BOX_ID --state-dir STATE_DIR --run-id RUN_ID` resolves
 one exact worker identity; prefixes, display labels and pane numbers are rejected.

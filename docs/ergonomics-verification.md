@@ -1224,3 +1224,34 @@ passed gate. The predecessor managed-source product subsequently finished its
 Python 3.9 full suite: **1,070 tests in 1,009.943 seconds, three optional skips**.
 Main remains clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; neither the
 main checkout nor the user's installed application was upgraded in this pass.
+
+## Remote-control-plane terminal inspection (2026-09-08)
+
+The isolated `codex/v0-remote-monitor` branch adds `camol remote monitor` through
+the existing pinned SSH bridge. This is an executable thin remote inspection
+client, not distributed worker execution. The local orchestrator UI remains
+separate, so its project state and mutating commands cannot become accidental
+fallbacks for remote truth. The remote monitor has no generic mutation entry point.
+
+Twelve new tests cover exact status/box scope, snapshot tampering, target drift,
+oversize responses, read-only dispatch, actual local SSH bridge plus supervisor,
+serialized reads and cancellation, CLI option rejection, keyboard paging/filtering,
+literal spaces, stale retention, first-connection failure, rapid selection and
+Ctrl+C detach. The fixture bridge changes no remote ledger events. No real remote
+host, key, model, account login, cloud service or provider quota was contacted.
+
+The initial ten-test group passed. Rendered SVG/PNG inspection then found a
+legitimate numeric usage count hidden by the `tokens:` label's secret-redaction
+rule. Changing the display wording preserves the number without weakening the
+redactor; the test now asserts that count. Final styling removes default blue/
+orange focus accents, keeps matrix green/gray, and wraps narrow box details instead
+of forcing horizontal overflow. Both overview and box view were visually inspected;
+the final overview also confirms the palette and displayed count. NO_COLOR remains
+respected in ordinary environments; color was enabled only in the screenshot fixture.
+
+The final 30-test monitor/SSH/identity group passed in **21.206 seconds on Python
+3.12** and **14.899 seconds on Python 3.9**. This includes the existing transport
+host-policy, malformed-frame, timeout/unknown-outcome, descendant-pipe cleanup and
+public-identity boundary cases. Installed-package and whole-suite results follow
+this source checkpoint. The predecessor placement full suites remain running;
+they are neither restarted nor claimed as proof for this later monitor feature.

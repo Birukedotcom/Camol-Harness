@@ -239,6 +239,10 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   placement, separately from pool matching, and rechecks before launch. A remote
   label cannot silently execute a remote-required task locally; region stays
   unproven. This closes a reproduced admission defect, not remote distribution.
+  A separate read-only remote terminal monitor now inspects an already-running
+  supervisor through the pinned SSH bridge, with overview, paginated box selection,
+  bounded evidence and explicit stale-state handling. Local bridge and keyboard
+  tests back this inspection path; actual remote-host acceptance remains open.
 - Recorded completed-run evidence/code recovery does not close operational restore
   or retention. Independent archive reconstruction cannot authorize reuse of old
   leases, credentials, budgets, remote effects, or removal of the original stores.

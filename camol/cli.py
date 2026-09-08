@@ -719,6 +719,17 @@ def command_remote(args: argparse.Namespace) -> int:
         return 0
     if not args.state_dir:
         raise SSHTransportError("POLICY_DENIED", "remote operation requires a private --state-dir for dispatch receipts")
+    if args.remote_action == "monitor":
+        if any((args.remote_command, args.params, args.by, args.allow_mutation, args.request_id, args.reason)):
+            raise SSHTransportError("POLICY_DENIED", "remote monitor is read-only; request and mutation options are not accepted")
+        from .remote_monitor import RemoteMonitor
+        try:
+            from .remote_tui import RemoteMonitorApp
+        except ImportError as error:
+            raise SSHTransportError("DEPENDENCY_MISSING", "remote monitor requires the camol-harness[tui] extra") from error
+        client = SSHControlClient(target, state_dir=Path(args.state_dir), ssh_binary=args.ssh_binary, timeout=args.timeout)
+        RemoteMonitorApp(RemoteMonitor(client), interval=args.interval).run()
+        return 0
     if args.remote_action == "request":
         if not args.remote_command:
             raise SSHTransportError("POLICY_DENIED", "remote request requires --command")
@@ -1124,7 +1135,7 @@ def build_parser() -> argparse.ArgumentParser:
     inference.set_defaults(handler=command_model_inference)
 
     remote = subparsers.add_parser("remote", help="explicit authenticated SSH control-plane connection; never worker provisioning")
-    remote.add_argument("remote_action", choices=("validate", "identity", "request", "receipts", "acknowledge-unknown"))
+    remote.add_argument("remote_action", choices=("validate", "identity", "request", "receipts", "acknowledge-unknown", "monitor"))
     remote.add_argument("--target", help="strict pinned SSH target profile JSON")
     remote.add_argument("--state-dir", help="private local dispatch journal, separate from the remote run state")
     remote.add_argument("--command", dest="remote_command", choices=sorted(SSH_COMMANDS))
@@ -1135,6 +1146,7 @@ def build_parser() -> argparse.ArgumentParser:
     remote.add_argument("--reason", help="owner acknowledgment reason; not proof that a remote effect succeeded")
     remote.add_argument("--ssh-binary", default="/usr/bin/ssh", help="explicit local OpenSSH executable")
     remote.add_argument("--timeout", type=float, default=45)
+    remote.add_argument("--interval", type=float, default=5, help="read-only monitor refresh interval in seconds (2..300)")
     remote.set_defaults(handler=command_remote)
 
     revise = subparsers.add_parser("revise", help="review or apply an immutable successor plan (execution must be stopped before apply)")

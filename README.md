@@ -116,6 +116,11 @@ Nonempty placement also requires execution-backed local observations, not just
 matching pool labels. Remote locality or an unproven region cannot authorize a
 local worker. See [execution placement](docs/capacity-and-provider-model.md#execution-backed-local-placement).
 
+`camol remote monitor --target PROFILE --state-dir LOCAL_JOURNAL` opens a read-only
+terminal overview and box selector for an already-running, pinned SSH supervisor.
+Use your actual profile/journal paths; it does not provision or launch remote work.
+See [remote monitor setup](docs/ssh-control.md#remote-terminal-monitor).
+
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference
 readiness. `camol watch` supports approved durable polling of a normalized local

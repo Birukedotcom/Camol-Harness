@@ -123,3 +123,46 @@ Tests use local process bridges and fake SSH executables, including broken frame
 policy drift, retained descendant pipes, backpressure and uncertain mutations.
 No live SSH host, production key, remote provisioning or paid provider has been
 tested by this checkpoint.
+
+## Remote terminal monitor
+
+`camol remote monitor --target /absolute/target.json --state-dir /absolute/local-journal`
+opens a separate, read-only terminal monitor (`[tui]` extra required). Use an
+existing pinned target configured as above; both the profile and remote bridge
+policy must permit `status` and `box`. It does not discover a host, create a
+supervisor, authorize a worker, forward an account or start a model invocation.
+
+The left pane lists registered workers, including dormant ones, 50 per page.
+Arrow keys and Enter select an exact box; the filter accepts literal words and
+spaces. Ctrl+N / Ctrl+P page through matches. Escape returns to the overview;
+`r` refreshes when not editing the filter. Ctrl+C always detaches; `q` also
+detaches outside text input. The remote run is unchanged when the monitor exits.
+
+The overview shows run/plan identity, reported state and model-token usage. Box
+details contain the latest 100 matching ledger events and the existing bounded
+artifact previews, with their snapshot digest. These are retained observations,
+not a mirrored PTY, interactive shell, agent chat or worker-readiness proof.
+Supervisor status and box detail are successive reads, not one atomic event cut.
+Each read is nevertheless bound to the same pinned target, run and plan; box
+detail additionally binds the exact box ID and content digest.
+
+Polling defaults to five seconds (`--interval 2..300`). Only one refresh is active
+at a time; a refresh performs one status request and, when selected, one box read.
+Each uses the existing bounded one-request SSH process and timeout. Late responses
+from an earlier selection cannot replace the current pane. Failures retain only
+the last in-memory observation, labeled `STALE` with its time and actual selected
+box; an initial failure says `UNAVAILABLE` and has no local-project fallback.
+Reopening requires the target again and starts without a cached healthy state.
+
+The monitor exposes no mutating dispatch method and rejects CLI mutation/request
+options, even if the supplied profile permits them. Remote strings render literally
+with credential redaction, terminal-control escaping and a 64,000-character display
+ceiling. Inventory is capped at 10,000 boxes and transport frames remain capped at
+8 MiB; overflow fails explicitly. The owner's local dispatch directory may be
+created, but read-only requests do not append mutation receipts. Remote SSH access
+is still an authenticated host self-report, not hardware attestation.
+
+Local-process SSH bridge/supervisor tests and headless terminal keyboard tests cover
+the monitor. Actual SSH-host acceptance remains a separate live gate. This feature
+implements the remote-control-plane *inspection* topology, not distributed workers,
+provisioning, remote mailbox control or a local scheduler launching on another host.
