@@ -3,7 +3,7 @@ import asyncio
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from textual.widgets import Input, OptionList
 
@@ -106,6 +106,72 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await app.query_one("#fleet").remove()
             await app._refresh_fleet()
+
+    async def test_cancelled_refresh_on_detach_or_supersession_is_not_an_app_failure(self):
+        from textual.worker import WorkerCancelled
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            cancelled = Mock(wait=AsyncMock(side_effect=WorkerCancelled("fixture detach")))
+            with patch.object(app, "run_worker", return_value=cancelled):
+                await app._refresh_fleet()
+            app.selected = "fixture-box"
+            with patch.object(app, "run_worker", side_effect=[Mock(wait=AsyncMock(return_value=[])), cancelled]):
+                await app._refresh_fleet()
+
+    async def test_natural_goal_creation_questions_review_and_approval_in_composer(self):
+        import json
+        from camol.conversation import ConversationReply
+        from camol.schema import canonical_digest
+        from tests.test_draft_creation import DraftCreationTests, model_candidate
+        fixture = DraftCreationTests()
+        fixture.setUp()
+        try:
+            app = CamolApp(fixture.controller, show_boot=False, discover_connections=False)
+            async with app.run_test(size=(110, 32)) as pilot:
+                async def submit(text):
+                    app.query_one("#prompt", PromptArea).load_text(text)
+                    app.action_submit()
+                    await app.workers.wait_for_complete()
+                    await pilot.pause(.02)
+
+                for text in (
+                    "/grill --draft Build two independently verified files",
+                    "left.txt contains good; right.txt contains good", "No deployment or upload",
+                    "README stays baseline", "Unknown newline requirement; ask before defining the oracle",
+                    "process --trusted python3 {workspace}/worker.py {packet} {result}",
+                    "boxes=2 concurrency=2 turns=4 tokens=20000 cost_cents=0 timeout=30 tasks=4 attempts=2",
+                ):
+                    await submit(text)
+                fixture.provider.assert_not_called()
+                state = fixture.controller.session["grill"]
+                self.assertEqual(state["phase"], "review")
+                await submit("/draft confirm " + canonical_digest(state["envelope"]))
+                fixture.provider.return_value = ConversationReply('{"questions":["Must both files end with a newline?"]}', "claude", "fable", None, 2, 3)
+                await submit("/propose")
+                self.assertEqual(fixture.controller.session["grill"]["phase"], "clarifying")
+                await submit("Yes, one newline in each.")
+                self.assertEqual(fixture.provider.call_count, 1)
+                state = fixture.controller.session["grill"]
+                await submit("/draft confirm " + canonical_digest(state["envelope"]))
+                fixture.provider.return_value = ConversationReply(json.dumps(model_candidate(state["envelope"])), "claude", "fable", None, 5, 8)
+                await submit("/propose")
+                self.assertEqual(fixture.controller.session["status"], "plan_ready")
+                digest = fixture.controller.session["plan_digest"]
+                await submit("/approve " + digest)
+                self.assertIsNone(fixture.controller.session["approved_digest"])
+                await submit("/review " + digest)
+                await submit("/approve " + digest)
+                self.assertEqual(fixture.controller.session["status"], "approved")
+                self.assertFalse(Path(fixture.controller.session["state_dir"]).exists())
+                self.assertEqual(fixture.provider.call_count, 2)
+                self.assertTrue(fixture.provider.call_args.kwargs["no_tools"])
+                rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+                self.assertIn("DRAFT RISK", rendered)
+                self.assertIn("command/scope/oracle review", rendered)
+                self.assertIn("Approved", rendered)
+        finally:
+            fixture.tearDown()
 
     async def test_n_box_fleet_and_keyboard_navigation(self):
         for command in (

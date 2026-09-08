@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from .model_host import LlamaCppModelHost, ModelError, _file_digest, _private
+from .model_host import LlamaCppModelHost, ModelError, ModelHostReadbackError, _file_digest, _private
 from .schema import canonical_digest
 
 
@@ -81,7 +81,7 @@ def run_owned(host, digest, operation_id):
         # spawn to detect substitutions in the normal trusted-owner threat model.
         _file_digest(Path(plan.executable), plan.executable_digest, executable=True)
         _file_digest(Path(artifact["path"]), plan.artifact_digest)
-        loaded, last_readback = False, 0.0
+        loaded, last_readback, readback_attempts = False, 0.0, 0
         while True:
             operation = host._operation(digest)
             reason = operation["detail"].get("stop_requested")
@@ -103,11 +103,16 @@ def run_owned(host, digest, operation_id):
                 host._update(digest, outcome, {"exit_code": code, "owned_child_reaped": True})
                 return
             if not loaded or time.monotonic() - last_readback >= 2:
+                readback_attempts += 1
                 try:
                     readback = host._readback(plan, operation)
                     if child.poll() is not None:
                         raise ModelError("child exited during readback")
-                except (ModelError, OSError, ValueError, http.client.HTTPException, subprocess.SubprocessError):
+                except (ModelError, OSError, ValueError, http.client.HTTPException, subprocess.SubprocessError) as error:
+                    host._update(digest, detail={"readback_attempts": readback_attempts,
+                        "last_readback_attempt_at": time.time(), "last_readback_error": {
+                            "phase": error.phase if isinstance(error, ModelHostReadbackError) else "unknown",
+                            "kind": error.kind if isinstance(error, ModelHostReadbackError) else "inspection_failed"}})
                     if loaded:
                         # Losing identity/residency readback drains the owned
                         # process; it does not claim the previous green persisted.
@@ -116,7 +121,8 @@ def run_owned(host, digest, operation_id):
                         host._update(digest, "failed", {"exit_code": code, "owned_child_reaped": True})
                         return
                 else:
-                    host._update(digest, "loaded" if not loaded else None, {"readback": readback})
+                    host._update(digest, "loaded" if not loaded else None, {"readback": readback,
+                        "readback_attempts": readback_attempts, "last_readback_attempt_at": time.time(), "last_readback_error": None})
                     loaded = True
                 last_readback = time.monotonic()
             host._update(digest)

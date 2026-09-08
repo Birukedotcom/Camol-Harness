@@ -9,6 +9,7 @@ ledger and supervised control socket remain authoritative.
 import hashlib
 import json
 import os
+import stat
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -39,6 +40,8 @@ EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 MESSAGE_ROLES = frozenset({"human", "orchestrator", "system"})
 MAX_MESSAGE_CHARS = 256_000
 MAX_SESSION_BYTES = 2 * 1024 * 1024
+MAX_HISTORY_READ_BYTES = 8 * 1024 * 1024
+MAX_TRANSCRIPT_ROW_BYTES = 4 * 1024 * 1024
 
 
 def _now() -> str:
@@ -87,6 +90,45 @@ def _message(value: Mapping[str, Any]) -> Dict[str, str]:
     return dict(value)
 
 
+def _history_tail(path: Path, count: int):
+    """Read a bounded recent view, not an integrity scan of the entire archive."""
+    from .json_contracts import decode_contract
+
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077:
+            raise SessionError("interactive transcript must be an owner-private regular file")
+        offset, data, selected = before.st_size, b"", []
+        while offset:
+            amount = min(offset, 65536, MAX_HISTORY_READ_BYTES - len(data))
+            if amount == 0:
+                raise SessionError("recent transcript exceeds the 8 MiB inspection ceiling; request fewer entries")
+            offset -= amount
+            block = os.pread(descriptor, amount, offset)
+            if len(block) != amount:
+                raise SessionError("interactive transcript changed during inspection")
+            data = block + data
+            lines = data.split(b"\n")
+            # Unless at byte zero, the first row may start before this buffer.
+            eligible = lines[1:] if offset else lines
+            selected = [line for line in eligible if line.strip()][-count:]
+            if len(selected) == count:
+                break
+        if data and not data.endswith(b"\n"):
+            raise SessionError("interactive transcript has an incomplete final record")
+        after = os.fstat(descriptor)
+        names = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_uid", "st_mode")
+        if any(getattr(before, name) != getattr(after, name) for name in names):
+            raise SessionError("interactive transcript changed during inspection")
+        try:
+            return [_message(decode_contract(line, max_bytes=MAX_TRANSCRIPT_ROW_BYTES)) for line in selected]
+        except (ValueError, TypeError, KeyError, RecursionError) as error:
+            raise SessionError("recent interactive transcript is malformed") from error
+    finally:
+        os.close(descriptor)
+
+
 def validate_session(value: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise SessionError("interactive session must be an object")
@@ -116,6 +158,12 @@ def validate_session(value: Mapping[str, Any]) -> Dict[str, Any]:
         raise SessionError("interactive plan must be an object or null")
     if value["grill"] is not None and not isinstance(value["grill"], dict):
         raise SessionError("interactive grill state must be an object or null")
+    if isinstance(value["grill"], dict) and value["grill"].get("schema") == "camol.creation_draft":
+        from .draft_creation import validate_state
+        try:
+            validate_state(value["grill"])
+        except (ValueError, RuntimeError, TypeError, KeyError) as error:
+            raise SessionError("interactive creation draft is malformed: " + str(error)) from error
     if value["plan"] is None and value["plan_digest"] is not None:
         raise SessionError("interactive plan digest requires a plan")
     if value["plan"] is not None and canonical_digest(value["plan"]) != value["plan_digest"]:
@@ -196,7 +244,14 @@ class SessionStore:
 
     def history(self, fallback, count: int = 20):
         # Legacy sessions have no archive. Seed it on the first subsequent write.
-        return (self._read_jsonl(self.transcript_path) if self.transcript_path.exists() else list(fallback))[-count:]
+        if type(count) is not int or not 1 <= count <= 101:
+            raise SessionError("history count must be an integer from 1 to 101")
+        try:
+            return _history_tail(self.transcript_path, count)
+        except FileNotFoundError:
+            return [_message(item) for item in list(fallback)[-count:]]
+        except OSError as error:
+            raise SessionError("interactive transcript is missing, unsafe or unreadable") from error
 
     def _ensure_root(self) -> None:
         for path in (self.project_dir, self.runs_dir):

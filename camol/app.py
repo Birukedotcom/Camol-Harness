@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
 
 from .connections import ConnectionError, ConnectionRegistry
+from . import draft_creation
 from .conversation import ConversationCancelled, ConversationError, converse, parse_selection, planning_history, require_tool_free_provider
 from .planning import (
     GrillState,
@@ -72,7 +73,9 @@ SLASH_COMMANDS = (
     SlashCommand("/model", "Choose the planning model", takes_value=True),
     SlashCommand("/effort", "Set provider reasoning effort", takes_value=True),
     SlashCommand("/grill", "Turn a goal into a gated plan", takes_value=True),
-    SlashCommand("/propose", "One model proposal inside a reviewed seed", takes_value=True),
+    SlashCommand("/propose", "Request one reviewed no-tools model proposal", takes_value=True),
+    SlashCommand("/draft", "Review and confirm a goal-creation envelope", takes_value=True),
+    SlashCommand("/review", "Review exact proposed commands and oracle coverage", takes_value=True),
     SlashCommand("/import", "Review an existing executable runbook", takes_value=True),
     SlashCommand("/plan", "Inspect the exact candidate plan", run_from_palette=True),
     SlashCommand("/approve", "Confirm the exact visible plan", takes_value=True),
@@ -112,6 +115,10 @@ skills and slash commands are not imported into the planning-only orchestrator."
 
 HELP = """Commands
   /grill GOAL              question and freeze a candidate plan
+  /grill --draft GOAL      guided V5 planning without hand-written JSON
+  /draft [confirm DIGEST]  inspect/confirm planning boundaries, not execution
+  /propose                one no-tools model draft after envelope confirmation
+  /review [DIGEST]         inspect/acknowledge draft risks before exact approval
   /propose --from SEED.json GOAL
                             one disclosed no-tools invocation; unapproved V5/V6 seed refinement
   /import PATH             import an exact runbook, bound to this checkout revision
@@ -213,16 +220,16 @@ def validate_envelope(value: Mapping[str, Any]) -> Dict[str, Any]:
         "schema", "schema_version", "proposal", "run_id", "execution_status",
         "execution_limitation", "runbook",
     }
-    if isinstance(value, dict) and value.get("schema_version") in {2, 3}:
+    if isinstance(value, dict) and value.get("schema_version") in {2, 3, 4}:
         fields.add("source")
-        if value["schema_version"] == 3:
+        if value["schema_version"] in {3, 4}:
             fields.add("origin")
     if not isinstance(value, dict) or set(value) != fields:
         raise InteractiveError("product plan has the wrong fields")
-    if value["schema"] != "camol.product_plan" or type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2, 3}:
+    if value["schema"] != "camol.product_plan" or type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2, 3, 4}:
         raise InteractiveError("product plan schema is unsupported")
     proposal = validate_proposal(value["proposal"]) if value["proposal"] is not None else None
-    if proposal is None and (value["schema_version"] not in {2, 3} or value["runbook"] is None):
+    if proposal is None and (value["schema_version"] not in {2, 3, 4} or value["runbook"] is None):
         raise InteractiveError("only an imported executable runbook may omit a proposal")
     if value["schema_version"] == 2:
         source = value["source"]
@@ -244,6 +251,21 @@ def validate_envelope(value: Mapping[str, Any]) -> Dict[str, Any]:
         for name in ("seed_digest", "seed_bytes_digest", "request_digest", "response_digest"):
             require_digest(origin[name], name)
         require_identifier(origin["planning_call_id"], "planning_call_id")
+    if value["schema_version"] == 4:
+        from .schema import require_digest, require_identifier
+        origin = value["origin"]
+        if not isinstance(origin, dict) or set(origin) != {"kind", "creation_envelope", "reviewed_envelope_digest", "coverage", "request_digest", "response_digest", "planning_call_id"}:
+            raise InteractiveError("creation proposal origin has missing or unknown fields")
+        envelope = draft_creation.validate_creation_envelope(origin["creation_envelope"])
+        if (origin["kind"] != "goal_creation_proposal" or origin["reviewed_envelope_digest"] != canonical_digest(envelope)
+                or value["source"] != envelope["source"]):
+            raise InteractiveError("creation proposal does not bind the exact reviewed envelope/source")
+        for name in ("reviewed_envelope_digest", "request_digest", "response_digest"):
+            require_digest(origin[name], name)
+        require_identifier(origin["planning_call_id"], "planning_call_id")
+        checked = draft_creation.parse_creation_response(json.dumps(dict(runbook=value["runbook"], coverage=origin["coverage"], unresolved_questions=[])), envelope)
+        if "runbook" not in checked:
+            raise InteractiveError("creation proposal has unresolved oracle coverage")
     if not isinstance(value["run_id"], str) or not value["run_id"]:
         raise InteractiveError("product plan run_id is required")
     if value["execution_status"] not in {"planning_only", "preflight_required", "ready"}:
@@ -270,12 +292,12 @@ def render_plan(plan: Mapping[str, Any], digest: str) -> str:
             "workspace: " + plan["source"]["workspace"],
             "frozen source revision: " + plan["source"]["revision"],
             "kernel runbook digest: " + runbook_digest(runbook),
-            "This exact imported contract defines agents, tasks, commands, verification, authority and budgets.",
+            "This exact executable contract defines agents, tasks, commands, verification, authority and budgets.",
             "limitation: " + plan["execution_limitation"],
-            *( ["Model-generated candidate: all state gates remain human; origin=" + json.dumps(plan["origin"], sort_keys=True)] if plan["schema_version"] == 3 else [] ),
+            *( ["Model-generated candidate: all state gates remain human; origin=" + json.dumps(plan["origin"], sort_keys=True)] if plan["schema_version"] in {3, 4} else [] ),
             "canonical product plan JSON:", json.dumps(plan, indent=2, sort_keys=True),
             ("Nothing has started. Review every command, grant and mapping, then /approve " + digest
-             if plan["schema_version"] == 3 else
+             if plan["schema_version"] in {3, 4} else
              "Nothing has started. Review every command and grant, then /approve yes or the exact plan digest."),
         ])
     lines = [
@@ -394,7 +416,11 @@ class InteractiveController:
             if text.startswith("/"):
                 return self._command(text, on_chunk=on_chunk)
             if self.session.get("grill"):
-                return self._answer_grill(text)
+                if draft_creation.is_creation(self.session["grill"]):
+                    if self.session["grill"]["phase"] in {"questioning", "clarifying"}:
+                        return self._answer_creation(text)
+                else:
+                    return self._answer_grill(text)
             reply, _ = self._call_planning(text, on_chunk=on_chunk)
             identity = "{} -> {}".format(reply.requested_model or "default", reply.resolved_model or "unreported")
             identity_message = "model identity: {} ({})".format(identity, reply.provider)
@@ -461,6 +487,18 @@ class InteractiveController:
             self._reconcile_session()
             if self.session["status"] == "running":
                 raise InteractiveError("a run is active; detach or inspect it instead of replacing its plan")
+            if arguments[0] == "--draft":
+                if len(arguments) < 2:
+                    raise InteractiveError("usage: /grill --draft GOAL")
+                require_tool_free_provider(parse_selection(self.session["model"]))
+                from .debug_execution import source_identity
+                goal = " ".join(arguments[1:])
+                state = draft_creation.creation_state(goal, source_identity(self.workspace), getpass.getuser(),
+                    self.session["model"], self.session["effort"], "run-" + uuid4().hex[:16])
+                self.session = self.store.update(self.session, goal=goal, grill=state, plan=None, plan_digest=None,
+                    approved_digest=None, run_id=None, selected_box=None, event_cursor=0, status="planning",
+                    state_dir=str(self.store.runs_dir / ("run-" + uuid4().hex)))
+                return self._respond("DRAFT GRILL 1/{} — {}\nNo model call or worker execution has started.".format(len(draft_creation.QUESTIONS), draft_creation.question(state)))
             goal = " ".join(arguments)
             grill = GrillState.start(goal)
             self.session = self.store.update(
@@ -480,7 +518,13 @@ class InteractiveController:
         if command == "/import":
             return self._import(arguments)
         if command == "/propose":
+            if not arguments:
+                return self._propose_creation(on_chunk=on_chunk)
             return self._propose(arguments, on_chunk=on_chunk)
+        if command == "/draft":
+            return self._draft(arguments)
+        if command == "/review":
+            return self._review_creation(arguments)
         if command == "/plan":
             if self.session["plan"] is None:
                 raise InteractiveError("there is no plan; start with /grill GOAL")
@@ -691,7 +735,7 @@ class InteractiveController:
         self._reconcile_session()
         if self.session["status"] == "running":
             raise InteractiveError("model and effort are frozen while a run is active")
-        if self.session["plan"] is not None:
+        if self.session["plan"] is not None or draft_creation.is_creation(self.session.get("grill")):
             self.session = self.store.update(
                 self.session,
                 plan=None,
@@ -857,6 +901,123 @@ class InteractiveController:
             self.store.append_proposal_event({"type": "PROPOSAL_FINISHED", "outcome": outcome, "origin": origin,
                                              "source": source, "observed_at": datetime.now(timezone.utc).isoformat()})
 
+    def _answer_creation(self, text: str) -> CommandResponse:
+        state = draft_creation.answer(self.session["grill"], text, self.workspace)
+        self.session = self.store.update(self.session, grill=state)
+        question = draft_creation.question(state)
+        if question:
+            return self._respond("DRAFT QUESTION — " + question)
+        return self._respond(draft_creation.render_envelope(state["envelope"]))
+
+    def _draft(self, arguments: Sequence[str]) -> CommandResponse:
+        state = draft_creation.validate_state(self.session["grill"])
+        if state["envelope"] is None:
+            if arguments:
+                raise InteractiveError("finish the draft questions before confirming an envelope")
+            return self._respond("DRAFT QUESTION — " + draft_creation.question(state))
+        if not arguments:
+            return self._respond(draft_creation.render_envelope(state["envelope"]))
+        digest = canonical_digest(state["envelope"])
+        if arguments != ["confirm", digest] or state["phase"] not in {"review", "confirmed"}:
+            raise InteractiveError("review every boundary, then /draft confirm " + digest)
+        from .source_binding import assert_source
+        assert_source(state["source"], self.workspace)
+        if state["planning_model"] != self.session["model"] or state["effort"] != self.session["effort"]:
+            raise InteractiveError("planning provider changed; start a new draft to review its exact identity")
+        state.update(reviewed_digest=digest, phase="confirmed")
+        self.session = self.store.update(self.session, grill=state)
+        return self._respond("Creation envelope confirmed for planning only: " + digest +
+            ". Nothing is approved to execute. Explicitly /propose to request one no-tools candidate; no call happens automatically.")
+
+    def _propose_creation(self, *, on_chunk=None) -> CommandResponse:
+        self._reconcile_session()
+        if self.session["status"] == "running":
+            raise InteractiveError("an unfinished run owns this session; drafts cannot amend it implicitly")
+        if self.session["approved_digest"] is not None:
+            raise InteractiveError("an approved candidate already exists; start a new /grill --draft to replace it explicitly")
+        state = draft_creation.validate_state(self.session["grill"])
+        if state["phase"] not in {"confirmed", "candidate"} or state["reviewed_digest"] != canonical_digest(state["envelope"]):
+            raise InteractiveError("complete /grill --draft GOAL, review /draft, and confirm its exact digest before /propose")
+        require_tool_free_provider(parse_selection(self.session["model"]))
+        from .source_binding import assert_source
+        assert_source(state["source"], self.workspace)
+        if state["planning_model"] != self.session["model"] or state["effort"] != self.session["effort"]:
+            raise InteractiveError("planning provider changed after creation-envelope review")
+        envelope = state["envelope"]
+        prompt = draft_creation.creation_prompt(envelope)
+        call_id = "planning-" + uuid4().hex
+        request = dict(message=prompt, history=planning_history(self.session["messages"][:-1]),
+                       model=self.session["model"], effort=self.session["effort"], tool_policy="none")
+        origin = dict(kind="goal_creation_proposal", creation_envelope=envelope,
+                      reviewed_envelope_digest=state["reviewed_digest"], coverage=[],
+                      request_digest=canonical_digest(request), response_digest=None, planning_call_id=call_id)
+        notice = ("PROPOSE — one no-tools planning invocation using {}. The complete reviewed creation envelope and bounded dialogue are sent; no implicit repository upload. "
+                  "120-second request deadline; internal request count/cost can be unknown. No worker launch or automatic retry. New commands remain UNAPPROVED proposals.").format(self.session["model"])
+        self._persist_message("system", notice, kind="notice")
+        if on_chunk:
+            on_chunk(notice + "\n")
+        self._persist_message("system", "CREATION REQUEST\n" + prompt, kind="notice")
+        self.store.append_proposal_event(dict(type="CREATION_REQUESTED", origin=origin, request=request,
+                                              observed_at=datetime.now(timezone.utc).isoformat()))
+        outcome = "rejected"
+        try:
+            reply, _ = self._call_planning(prompt, request_kind="goal_creation", call_id=call_id,
+                                           history=request["history"], no_tools=True)
+            if not isinstance(reply.text, str):
+                raise PlanningError("creation provider returned non-text output")
+            origin["response_digest"] = "sha256:" + hashlib.sha256(reply.text.encode()).hexdigest()
+            self._persist_message("orchestrator", "UNAPPROVED CREATION RESPONSE\n" + reply.text[:draft_creation.MAX_RESPONSE_CHARS], kind="notice")
+            result = draft_creation.parse_creation_response(reply.text, envelope)
+            assert_source(state["source"], self.workspace)
+            if "questions" in result:
+                outcome = "questions"
+                state.update(phase="clarifying", questions=result["questions"], risk_reviewed_digest=None)
+                self.session = self.store.update(self.session, grill=state)
+                self._persist_message("orchestrator", "Draft questions:\n" + "\n".join(result["questions"]), kind="conversation")
+                return self._respond("DRAFT QUESTIONS — no new candidate or approval. Answer each question; then review the changed envelope and explicitly /propose again.\n" + draft_creation.question(state))
+            origin["coverage"] = result["coverage"]
+            runbook = result["runbook"]
+            kinds = {a["adapter"]["kind"] for a in runbook["agents"]}
+            plan = validate_envelope(dict(schema="camol.product_plan", schema_version=4, proposal=None,
+                run_id=runbook["run"]["id"], runbook=runbook, source=state["source"], origin=origin,
+                execution_status="ready" if kinds == {"process"} else "preflight_required",
+                execution_limitation="Goal-created UNAPPROVED V5 candidate. Oracle mappings and command risks are human-reviewed proposals, not measurements. Every state gate and final acceptance is human. Exact worker profiles and their weaker-network/isolation limits remain in force."))
+            digest = canonical_digest(plan)
+            state.update(phase="candidate", risk_reviewed_digest=None)
+            rendered = render_plan(plan, digest)
+            if len(rendered) > 200000:
+                raise InteractiveError("candidate is too large for safe exact review; narrow the draft")
+            self.session = self.store.update(self.session, plan=plan, plan_digest=digest, approved_digest=None,
+                run_id=plan["run_id"], grill=state, state_dir=str(self.store.runs_dir / ("run-" + uuid4().hex)),
+                selected_box=None, event_cursor=0, status="plan_ready")
+            outcome = "candidate_ready"
+            return self._respond("MODEL CANDIDATE — nothing has started. Use /review to challenge new commands, scope and oracle coverage; acknowledge its exact digest before /approve.", rendered)
+        except ConversationCancelled:
+            outcome = "cancelled"
+            raise
+        finally:
+            self.store.append_proposal_event(dict(type="CREATION_FINISHED", outcome=outcome, origin=origin,
+                                                  observed_at=datetime.now(timezone.utc).isoformat()))
+
+    def _review_creation(self, arguments: Sequence[str]) -> CommandResponse:
+        plan = self.session["plan"]
+        if plan is None or plan.get("schema_version") != 4:
+            raise InteractiveError("/review requires an unapproved goal-created candidate; use /plan for other contracts")
+        plan = validate_envelope(plan)
+        digest = self.session["plan_digest"]
+        rendered = draft_creation.render_risk(plan, digest)
+        if not arguments:
+            return self._respond(rendered)
+        if arguments != [digest] or self.session["status"] != "plan_ready":
+            raise InteractiveError("risk review requires the exact unapproved /plan digest")
+        self._verify_proposal_source(plan)
+        state = draft_creation.validate_state(self.session["grill"])
+        if state["phase"] != "candidate" or canonical_digest(state["envelope"]) != plan["origin"]["reviewed_envelope_digest"]:
+            raise InteractiveError("draft boundaries changed; explicitly request and review a fresh candidate")
+        state["risk_reviewed_digest"] = digest
+        self.session = self.store.update(self.session, grill=state)
+        return self._respond(rendered, "Exact command/scope/oracle review acknowledged; this is not proof of correctness or execution approval. Next /approve " + digest)
+
     def _answer_grill(self, text: str) -> CommandResponse:
         grill = GrillState.from_dict(self.session["grill"])
         grill = grill.answer(text)
@@ -891,7 +1052,7 @@ class InteractiveController:
         if self.session["plan"] is None or self.session["status"] != "plan_ready":
             raise InteractiveError("there is no unapproved plan ready for confirmation")
         if not arguments:
-            if self.session["plan"]["schema_version"] == 3:
+            if self.session["plan"]["schema_version"] in {3, 4}:
                 return self._respond("Model proposal approval requires its exact digest. Review /plan, then /approve " + self.session["plan_digest"])
             return self._respond(
                 "Approval required for {}. Review /plan, then type `/approve yes` or `/approve {}`.".format(
@@ -900,8 +1061,12 @@ class InteractiveController:
             )
         if len(arguments) != 1 or arguments[0] not in {"yes", self.session["plan_digest"]}:
             raise InteractiveError("approval must be `yes` or the exact plan digest")
-        if self.session["plan"]["schema_version"] == 3 and arguments[0] == "yes":
+        if self.session["plan"]["schema_version"] in {3, 4} and arguments[0] == "yes":
             raise InteractiveError("a model-generated proposal requires the exact /plan digest, not a bare yes")
+        if self.session["plan"]["schema_version"] == 4:
+            state = draft_creation.validate_state(self.session["grill"])
+            if state["risk_reviewed_digest"] != self.session["plan_digest"]:
+                raise InteractiveError("new command authority and oracle mappings require /review " + self.session["plan_digest"] + " before approval")
         self._verify_proposal_source(self.session["plan"])
         self.session = self.store.update(
             self.session,
@@ -1028,7 +1193,7 @@ class InteractiveController:
             else:
                 if remote_plan["plan_digest"] != runbook_digest(plan["runbook"]):
                     raise InteractiveError("another supervisor owns this session state with a different plan")
-                if plan["schema_version"] == 3 and (remote_plan.get("source_binding") or {}).get("source") != plan["source"]:
+                if plan["schema_version"] in {3, 4} and (remote_plan.get("source_binding") or {}).get("source") != plan["source"]:
                     raise InteractiveError("supervisor source binding differs from the exact approved proposal; reattach refused")
                 session_status = "terminal" if remote_status["run"]["status"] in {"completed", "blocked"} else "running"
                 self.session = self.store.update(self.session, status=session_status)
@@ -1036,6 +1201,21 @@ class InteractiveController:
                     "Reattached to the existing supervisor without a new provider request or preflight.",
                     "Supervisor reattached pid={}; closing this client will not stop it.".format(remote_status["pid"]),
                 )
+        if plan["schema_version"] == 4:
+            state = draft_creation.validate_state(self.session["grill"])
+            if state["risk_reviewed_digest"] != self.session["plan_digest"]:
+                raise InteractiveError("creation candidate needs its exact risk/scope review before launch")
+            scope = plan["origin"]["creation_envelope"]["scope_policy"]
+            if scope["enforcement"] != "os_scoped":
+                remaining = list(arguments)
+                try:
+                    index = remaining.index("--accept-draft-policy")
+                except ValueError:
+                    raise InteractiveError("this worker tier cannot enforce hard no-egress/host-write boundaries. Explicitly acknowledge /run --accept-draft-policy " + self.session["plan_digest"] + " plus the existing provider flags")
+                if index + 1 >= len(remaining) or remaining[index + 1] != self.session["plan_digest"]:
+                    raise InteractiveError("--accept-draft-policy must name the exact reviewed product-plan digest")
+                del remaining[index:index + 2]
+                arguments = remaining
         self._verify_proposal_source(plan)
         workspace = WorkspaceManager(self.workspace, state_dir)
         workspace.assert_source_ready()
@@ -1132,7 +1312,7 @@ class InteractiveController:
         else:
             raise InteractiveError("Product V0 cannot execute a mixed or unsupported adapter plan")
         runbook_path = self.store.write_runbook(self.session, plan["runbook"])
-        launch_options = {"expected_source": plan["source"]} if plan["schema_version"] == 3 else {}
+        launch_options = {"expected_source": plan["source"]} if plan["schema_version"] in {3, 4} else {}
         started = self.spawn_fn(
             runbook_path,
             self.workspace,
@@ -1168,7 +1348,7 @@ class InteractiveController:
                                 "local_model_load_or_download": "never implicit"}}
 
     def _verify_proposal_source(self, plan: Mapping[str, Any]) -> None:
-        if plan.get("schema_version") == 3:
+        if plan.get("schema_version") in {3, 4}:
             from .debug_execution import source_identity
             if source_identity(self.workspace) != plan["source"]:
                 raise InteractiveError("source checkout changed since the model proposal; request and review a fresh candidate")

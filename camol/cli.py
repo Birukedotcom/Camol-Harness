@@ -558,6 +558,62 @@ def command_model_host(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_model_inference(args: argparse.Namespace) -> int:
+    from .model_inference import ModelInference, ModelInferencePlan, prompt_file_identity, validate_prompt_file
+    from .session import default_state_root
+
+    action = args.inference_action
+    allowed = {
+        "plan": {"validate", "prepare"}, "prompt_file": {"fingerprint", "validate", "prepare", "infer"},
+        "plan_digest": {"approve", "infer", "status", "events"}, "by": {"approve", "infer"},
+        "show_response": {"infer"},
+    }
+    for field, actions in allowed.items():
+        if getattr(args, field) and action not in actions:
+            raise ModelError("--{} is not valid with model-inference {}".format(field.replace("_", "-"), action))
+    if action in {"fingerprint", "infer"} and not args.prompt_file:
+        raise ModelError("model-inference fingerprint/infer requires --prompt-file (never inline prompt text)")
+    if action == "fingerprint":
+        _write_json(dict(prompt_file_identity(args.prompt_file), sends_prompt=False, stores_prompt=False))
+        return 0
+    if action in {"validate", "prepare"} and not args.plan:
+        raise ModelError("model-inference validate/prepare requires --plan")
+    plan = ModelInferencePlan.from_dict(load_contract(args.plan)) if args.plan else None
+    if plan is not None and args.prompt_file:
+        validate_prompt_file(args.prompt_file, plan)
+    if action == "validate":
+        _write_json(dict(plan=plan.to_dict(), plan_digest=plan.digest(), sends_prompt=False,
+                         stores_prompt=False, proves_inference=False))
+        return 0
+    if action in {"approve", "infer", "status", "events"} and not args.plan_digest:
+        raise ModelError("this model-inference operation requires --plan-digest")
+    if action in {"approve", "infer"} and not args.by:
+        raise ModelError("this model-inference operation requires --by naming the exact owner")
+    root = Path(args.root).expanduser() if args.root else default_state_root() / "model-hosts"
+    with ModelInference(root, read_only=action in {"status", "inventory", "events"}) as inference:
+        if action == "prepare":
+            result = inference.prepare(plan)
+        elif action == "approve":
+            result = inference.approve(args.plan_digest, args.by)
+        elif action == "infer":
+            result = inference.infer(args.plan_digest, args.by, prompt_path=args.prompt_file)
+            # Text is only available on the original successful invocation.
+            # Metadata output is safe to collect by default; opting in can put
+            # sensitive model text in terminal scrollback or caller logs.
+            if not args.show_response:
+                result = dict(result, response_text=None)
+        elif action == "inventory":
+            result = inference.inventory()
+        elif action == "events":
+            result = inference.events(args.plan_digest)
+        else:
+            result = inference.status(args.plan_digest)
+    _write_json(result)
+    if action == "infer":
+        return 0 if result.get("status") == "completed" else 2
+    return 0
+
+
 def command_remote(args: argparse.Namespace) -> int:
     from .ssh_bridge import bridge_identity
     from .ssh_transport import SSHControlClient
@@ -869,6 +925,16 @@ def build_parser() -> argparse.ArgumentParser:
     model_host.add_argument("--digest", help="canonical unload request digest approved by its owner")
     model_host.add_argument("--live", action="store_true", help="explicitly read the exact owned endpoint during status; not inference")
     model_host.set_defaults(handler=command_model_host)
+
+    inference = subparsers.add_parser("model-inference", help="explicitly approve one bounded prompt to an already owned model load; no automatic retry")
+    inference.add_argument("inference_action", choices=("fingerprint", "validate", "prepare", "approve", "infer", "status", "inventory", "events"))
+    inference.add_argument("--root", help="existing private model-host lifecycle state (default: Camol state home/model-hosts)")
+    inference.add_argument("--plan", help="exact inference contract binding host/load, owner, prompt bytes, token request and deadline")
+    inference.add_argument("--plan-digest", help="exact inference plan digest; not the host plan digest")
+    inference.add_argument("--prompt-file", help="bounded regular UTF-8 prompt file; text is never placed in argv or the ledger")
+    inference.add_argument("--by", help="exact plan owner approving or dispatching the one-shot request")
+    inference.add_argument("--show-response", action="store_true", help="include sensitive response text in this successful invocation's output; never retained for replay")
+    inference.set_defaults(handler=command_model_inference)
 
     remote = subparsers.add_parser("remote", help="explicit authenticated SSH control-plane connection; never worker provisioning")
     remote.add_argument("remote_action", choices=("validate", "identity", "request", "receipts", "acknowledge-unknown"))

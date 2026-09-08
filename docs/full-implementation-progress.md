@@ -15,8 +15,16 @@ packaging, terminal tests and the explicit fixture/live-validation boundaries.
 The next wave is isolated on `codex/v0-next`: seed-assisted V5/V6 proposals,
 source-bound client/daemon/runner approval, local model-host lifecycle, SSH-bound
 control transport, strict external JSON ingestion, and the macOS runtime-path fix.
-These changes require their own full-suite and remote CI results. A passing
-foundation result must not be used as the verification record for uncommitted code.
+The exact 2dd6d5e checkpoint passed 631 local tests on Python 3.9 and 3.12 plus
+fresh installed-package/terminal checks. Its remote matrix exposed portability
+failures; see [the next-wave verification record](next-wave-verification.md).
+A passing foundation result must not be used as verification of uncommitted code.
+
+The ergonomics wave adds a source-bound natural-goal creation wizard, exact
+command/oracle risk review, one-shot owned-model inference, bounded recent history,
+and a cancelled TUI refresh repair. Focused tests include a real two-box build with
+human task/final gates and authenticated loopback inference/crash fixtures. Its
+whole-suite/package/remote acceptance remains separate from those focused tests.
 
 ## Acceptance ledger
 
@@ -112,17 +120,19 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 
 ## Remaining product and validation gates
 
-- The six-question manual grill produces a legacy V4 runbook. The next wave adds
-  bounded seed-assisted proposals preserving reviewed V5/V6 authority and human
-  gates. Unrestricted prose-to-plan construction remains a separate gap.
+- The legacy manual grill still produces a V4 runbook. Seed-assisted proposals
+  preserve reviewed V5/V6 authority. The new `/grill --draft` path proposes V5 from
+  human intent with fixed worker/scope/limits and exact review/approval. Semantic
+  oracle adequacy and unrestricted autonomous plan construction are not established.
 - V5/V6 imported plans support kernel gates; interactive Codex/OSS launch-policy
   acknowledgement is implemented. A real fake-Codex subprocess test covers terminal
   import through detached build/evaluation/integration and final human acceptance.
   Mixed-provider UI launch and interactive plan
   amendments remain separate gaps; the Python/CLI revision path already exists.
 - Local download receipts are not model loading, GPU residency, inference readiness
-  or an air-gap guarantee. The next wave's narrow owned loader does not yet connect
-  its authenticated endpoint to planning/worker calls or prove actual inference.
+  or an air-gap guarantee. The narrow owned loader now has a separately approved
+  one-shot inference bridge with protocol fixtures; actual models/hardware and
+  automatic planning/worker handoff still need implementation or live proof.
 - Public benchmark adapter protocol tests are not public coding-suite performance.
   Official pinned datasets/images and a budget-enforcing executor still need live
   environment validation; no paid trial has been authorized/run here.

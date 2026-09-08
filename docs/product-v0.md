@@ -79,6 +79,14 @@ commands go through the authoritative supervisor. The existing six-question gril
 still creates a legacy V4 contract; it does not infer that a passing command proves
 arbitrary human-written prose invariants.
 
+For guided V5 creation without a JSON seed, use `/grill --draft GOAL`. It collects
+outcomes, invariants/oracle questions, an exact worker/profile and ceilings; `/draft`
+shows the complete creation envelope. After exact envelope confirmation, bare
+`/propose` makes one explicit no-tools invocation. Newly proposed commands remain
+unapproved and require `/review DIGEST` before exact `/approve DIGEST`. Unknown
+coverage becomes follow-up questions. See the [goal-creation wizard](goal-creation-wizard.md)
+for its separate runtime-policy acknowledgements and weaker hosted-network limits.
+
 `/propose --from REVIEWED_SEED.json GOAL` makes one explicitly requested planning
 invocation to refine a reviewed V5/V6 seed into an unapproved, source-bound candidate.
 Its no-tools adapter currently supports a capability-checked Claude CLI or a local

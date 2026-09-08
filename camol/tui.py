@@ -15,6 +15,7 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Input, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
+from textual.worker import WorkerCancelled
 
 from .app import SLASH_COMMANDS, CommandResponse, InteractiveController, SlashCommand
 from .boot import compose_boot
@@ -499,9 +500,14 @@ class CamolApp(App):
         self.query_one("#prompt", PromptArea).focus()
 
     async def _refresh_fleet(self) -> None:
-        boxes = await self.run_worker(
-            self.controller.box_summaries, thread=True, group="fleet", exclusive=True
-        ).wait()
+        try:
+            boxes = await self.run_worker(
+                self.controller.box_summaries, thread=True, group="fleet", exclusive=True
+            ).wait()
+        except WorkerCancelled:
+            # A newer exclusive refresh or client detach cancels this view
+            # request. It is not a failure of the authoritative run.
+            return
         # Detach/modal transitions can remove the target screen while this
         # read-only background query is pending. A disposable view is not a run
         # failure, and must not crash the client after a successful command.
@@ -527,10 +533,13 @@ class CamolApp(App):
         self._render_dependency_rail()
         if self.selected != "orchestrator":
             target, subview = self.selected, self.selected_view
-            rendered = await self.run_worker(
-                lambda: self.controller.inspect_box(target, subview),
-                thread=True, group="box-view", exclusive=True,
-            ).wait()
+            try:
+                rendered = await self.run_worker(
+                    lambda: self.controller.inspect_box(target, subview),
+                    thread=True, group="box-view", exclusive=True,
+                ).wait()
+            except WorkerCancelled:
+                return
             if self.selected == target and self.selected_view == subview:
                 if not self.query("#box-transcript"):
                     return

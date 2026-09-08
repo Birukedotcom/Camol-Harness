@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from camol.model_host import LlamaCppModelHost, ModelHostPlan, ModelHostUnload, _CHILDREN, _http_json
+from camol.model_host import LlamaCppModelHost, ModelHostUnload, ModelHostPlan, ModelHostReadbackError, _CHILDREN, _http_json
 from camol.models import DownloadFile, DownloadPlan, ModelError, ModelStore
 
 
@@ -210,8 +210,23 @@ class ModelHostTests(unittest.TestCase):
         result = self.host.load(plan.digest(), "owner", operation_id="mismatch")
         self.assertEqual(result["status"], "cancelled", result)
         self.assertEqual(result["loaded"], "no")
+        self.assertGreater(result["operation"]["detail"]["readback_attempts"], 0)
+        self.assertEqual(set(result["operation"]["detail"]["last_readback_error"]), {"phase", "kind"})
         self.assertFalse(any(event["type"] == "MODEL_HOST_LOADED" for event in self.host.events(plan.digest())))
         self.assertEqual(self.host.load(plan.digest(), "owner", operation_id="mismatch")["status"], "cancelled")
+
+    def test_readback_diagnostics_capture_only_fixed_phase_and_error_kind(self):
+        plan = self.plan()
+        with patch("camol.model_host._assert_listener", side_effect=ModelError("PRIVATE_RAW_ERROR_912f")):
+            with self.assertRaises(ModelHostReadbackError) as caught:
+                self.host._readback(plan, {"detail": {"alias": "fixture", "child_pid": 12345}})
+        self.assertEqual(caught.exception.phase, "listener")
+        self.assertEqual(caught.exception.kind, "invalid_readback")
+        self.assertNotIn("PRIVATE_RAW_ERROR", str(caught.exception))
+        diagnostic = ModelHostReadbackError("health", TimeoutError("private timeout"))
+        self.assertEqual(diagnostic.phase, "health")
+        self.assertEqual(diagnostic.kind, "timeout")
+        self.assertNotIn("private timeout", str(diagnostic))
 
     def test_load_cancellation_awaits_owned_child_and_ttl_expiry(self):
         plan = self.plan("slow")

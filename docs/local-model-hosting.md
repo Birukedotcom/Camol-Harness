@@ -110,6 +110,12 @@ stdout/stderr is discarded; structured receipt metadata contains only digests,
 approved file identity, state changes, timing, process identity, and exit status.
 Raw server output, prompts, responses, and API-key values are not journaled.
 
+Readiness failures retain an attempt count, timestamp, and fixed phase/error-kind
+metadata (`listener`, `credential`, `health`, `models`, `properties`, or `identity`).
+They do not retain raw exception messages or provider content. This distinguishes
+an unobservable listener from HTTP/readback failure without loosening authority
+or hiding a startup failure behind an increased deadline.
+
 Camol verifies that the expected child owns the loopback listener before sending
 its generated API key (Linux `/proc` or macOS system `lsof`; unsupported observation
 fails closed). `/health`, authenticated `/v1/models`, and `/props` must agree with
@@ -136,8 +142,10 @@ There is currently **no automatic Camol planner/worker handoff** for this owned
 host. Its generated private API key and per-load alias are not consumed by the
 existing unauthenticated local-conversation/Codex-OSS profiles. In particular,
 `/model local` does not turn this lifecycle receipt into a usable authenticated
-planner connection. A separate owner-only credential-reference and inference
-adapter is required; removing authentication is not a supported workaround.
+planner connection. The separate [owner-approved inference bridge](local-model-inference.md)
+can now submit one exact approved prompt through an internal private credential
+reference, but does not automatically connect the planner/worker. Removing
+authentication is not a supported workaround.
 
 ## Cancellation and uncertain outcomes
 

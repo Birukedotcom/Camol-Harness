@@ -15,18 +15,19 @@ and completion.
 > This branch adds an embeddable Python API, explicit invariant gates and final
 > human acceptance, immutable plan revisions, a debugger, usage accounting, safe
 > repository graphs, shared multi-run capacity, approved model downloads and durable
-> observation/benchmark protocols. The next-wave branch additionally implements
-> seed-assisted plan proposals, source-bound daemon launch, explicit local-model
-> hosting and authenticated SSH control attachment. These are narrow implementations,
-> not a claim of unrestricted planning, distributed workers or live-model readiness.
+> observation/benchmark protocols. The next-wave work adds human-reviewed goal-to-plan
+> creation, seed-assisted proposals, source-bound daemon launch, explicit local-model
+> hosting/inference and authenticated SSH control attachment. These are narrow
+> implementations, not a claim of unrestricted planning, distributed workers or
+> live-model readiness.
 > Local runtime
 > verification includes a 170-task/eight-box soak with five verification restarts.
 > Claude and Codex/local worker integrations still need account-specific live
 > validation; fixture tests do not prove model availability, cloud deployment or
 > production security. See the [acceptance ledger](docs/full-implementation-progress.md)
-> and [exact foundation checks](docs/full-pass-verification.md) for implemented
-> slices, limitations and remaining work. The foundation's Linux CI passed; its
-> macOS CI failure has a targeted next-wave fix awaiting a fresh remote result.
+> and [exact checkpoint checks](docs/next-wave-verification.md) for implemented
+> slices, limitations and remaining work. Linux CI passes; macOS portability and
+> the larger-run performance investigation still require their named gates.
 
 <table>
   <tr>
@@ -61,7 +62,7 @@ Camol requires Python 3.9+ and a Git repository. Textual is an optional dependen
 without it, bare `camol` opens the same command engine in line mode.
 
 ```bash
-git clone --branch codex/v0-full-pass --single-branch \
+git clone --branch codex/v0-next --single-branch \
   https://github.com/Birukedotcom/Camol-Harness.git Camol-Harness-v0
 cd Camol-Harness-v0
 python3 -m venv .venv
@@ -77,7 +78,7 @@ from the root of the real Git project you want it to inspect; do not paste a
 placeholder directory literally.
 
 ```bash
-pipx install 'camol-harness[tui,graph] @ git+https://github.com/Birukedotcom/Camol-Harness.git@codex/v0-full-pass'
+pipx install 'camol-harness[tui,graph] @ git+https://github.com/Birukedotcom/Camol-Harness.git@codex/v0-next'
 cd "$(git rev-parse --show-toplevel)"  # run while already somewhere inside your project
 camol
 ```
@@ -112,7 +113,12 @@ event journal, including daemon restart; cloud source adapters need their own pr
 The next wave adds `camol model-host` for a separately approved, one-shot owned
 llama.cpp process lifecycle. Its private authenticated endpoint is not yet handed
 to the planner/worker adapters; loaded does not mean inference-ready. See
-[local hosting](docs/local-model-hosting.md). [`camol remote`](docs/ssh-control.md) attaches to an already
+[local hosting](docs/local-model-hosting.md). `camol model-inference` separately
+fingerprints and approves one exact prompt to that owned load, records metadata
+and reported/unknown usage, and never silently retries an uncertain result. Response
+text is shown only with `--show-response` and is not retained in its ledger. See
+[owned inference](docs/local-model-inference.md).
+[`camol remote`](docs/ssh-control.md) attaches to an already
 installed, explicitly pinned SSH bridge and running supervisor; it does not provision
 a machine or register a distributed worker. Neither feature runs on startup.
 
@@ -122,6 +128,16 @@ unapproved V5/V6 candidate preserving the reviewed seed's authority. It requires
 exact-digest human approval, not a bare “yes.” See
 [seed-assisted proposals](docs/seed-assisted-proposals.md) for source binding,
 provider limitations and usage coverage; this mode still requires a reviewed seed.
+
+For a goal without a seed, `/grill --draft GOAL` guides six decisions about outcomes,
+invariants, oracles, worker runtime and limits. `/draft confirm DIGEST` confirms
+planning boundaries; an explicit `/propose` requests a candidate. New command and
+oracle authority needs `/review DIGEST`, then `/approve DIGEST`, before `/run` can
+perform readiness checks. Every proposed state gate and the integrated outcome
+remain human-gated. See the [goal creation workflow](docs/goal-creation-wizard.md).
+
+`/history [COUNT]` reads a bounded recent transcript view instead of loading the
+entire lifetime archive. It does not delete old records or imply a retention policy.
 The [approved-source handoff contract](docs/approved-source-handoff.md) explains
 the durable binding and its difference from legacy unbound plans.
 
