@@ -371,7 +371,10 @@ def _candidate(
         probes=results,
         status=status,
         observed_at=context.observed_at(),
-        expires_at=context.expires_at(),
+        expires_at=min(
+            [parse_timestamp(context.expires_at(), "doctor receipt expiry")]
+            + [parse_timestamp(result.expires_at, "probe expiry") for result in results if result.expires_at is not None]
+        ).isoformat(timespec="microseconds"),
         clock=clock,
     )
     coverage = probe_policy.coverage_errors(receipt)

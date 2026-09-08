@@ -83,6 +83,14 @@ class SessionStoreTests(unittest.TestCase):
         self.assertLess(len(reloaded["messages"]), 15)
         self.assertTrue(reloaded["messages"][-1]["content"].startswith("14:"))
 
+    def test_full_transcript_survives_trimming_of_prompt_context(self):
+        store = SessionStore(self.workspace, self.state_root)
+        session = store.create()
+        session = store.append_message(session, "human", "early durable decision")
+        session = store.update(session, messages=[])
+        session = store.append_message(session, "human", "later decision")
+        self.assertEqual([item["content"] for item in store.history(session["messages"])], ["early durable decision", "later decision"])
+
 
 if __name__ == "__main__":
     unittest.main()

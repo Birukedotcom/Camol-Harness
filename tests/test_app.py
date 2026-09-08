@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -198,6 +199,86 @@ class InteractiveControllerTests(unittest.TestCase):
         self.assertEqual(controller.session["messages"][-2]["kind"], "conversation")
         self.assertEqual(controller.session["messages"][-1]["role"], "system")
         self.assertEqual(controller.session["messages"][-1]["kind"], "notice")
+        receipt = controller.store.planning_calls()[-1]
+        self.assertEqual(receipt["input_tokens"], 10)
+        self.assertEqual(receipt["output_tokens"], 5)
+        self.assertIsNone(receipt["total_cost_usd"])
+        self.assertIn("recorded_input_tokens=10", controller.handle("/usage").messages[0])
+
+    def test_commands_do_not_overlap_active_planning_and_cancel_discards_late_reply(self):
+        entered, release = threading.Event(), threading.Event()
+        def conversation(*args, **kwargs):
+            entered.set()
+            release.wait(3)
+            return ConversationReply("late reply", "codex", None, None, 4, 5)
+        self.controller.converse_fn = conversation
+        self.controller.handle("/model codex")
+        thread = threading.Thread(target=lambda: self.controller.handle("plan this"))
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            response = self.controller.handle("/model manual")
+            self.assertIn("still running", response.messages[0])
+            self.assertEqual(self.controller.session["model"], "codex")
+            self.controller.handle("/cancel")
+        finally:
+            release.set()
+            thread.join(3)
+        self.assertFalse(any(item["content"] == "late reply" for item in self.controller.session["messages"]))
+        self.assertEqual(self.controller.store.planning_calls()[-1]["status"], "cancelled")
+
+    def test_new_plan_reconciles_finished_run_and_gets_distinct_state_directory(self):
+        self.complete_grill()
+        old_dir = self.controller.session["state_dir"]
+        self.controller.session = self.controller.store.update(self.controller.session, status="running")
+        with patch.object(self.controller, "_control", return_value={"run": {"status": "completed"}}):
+            response = self.controller.handle("/grill second goal")
+        self.assertIn("GRILL 1", response.messages[0])
+        self.assertNotEqual(self.controller.session["state_dir"], old_dir)
+
+    def test_two_clients_reload_latest_session_instead_of_losing_each_others_changes(self):
+        other = InteractiveController(self.workspace, state_root=self.state_root)
+        self.controller.handle("/effort low")
+        other.handle("/model codex")
+        reloaded = self.controller.store.load()
+        self.assertEqual(reloaded["effort"], "low")
+        self.assertEqual(reloaded["model"], "codex")
+
+    def test_box_subviews_show_artifact_contents_and_mark_disconnected_cache_stale(self):
+        snapshot = {
+            "adapter_kind": "process", "task_ids": ["build"], "workspace": None,
+            "events": [], "artifacts": {
+                "sha256:fixture": {"reference": {"digest": "sha256:fixture", "producer": {"channel": "context-packet"}}, "preview": "frozen task context"},
+            },
+        }
+        with patch.object(self.controller, "_control", return_value=snapshot):
+            self.assertIn("frozen task context", self.controller.inspect_box("builder", "context"))
+        from camol.supervisor import SupervisorError
+        with patch.object(self.controller, "_control", side_effect=SupervisorError("offline")):
+            self.assertIn("STALE", self.controller.inspect_box("builder", "context"))
+
+    def test_final_acceptance_requires_exact_outcome_and_goes_through_supervisor(self):
+        digest = "sha256:" + "a" * 64
+        snapshot = {"status": "awaiting_acceptance", "acceptance": {"outcome_digest": digest}, "pending_gates": {}}
+        with patch.object(self.controller, "_control", return_value=snapshot) as control:
+            challenge = self.controller.handle("/accept")
+            self.assertIn(digest, challenge.messages[-1])
+            denied = self.controller.handle("/accept yes")
+            self.assertIn("exact current outcome", denied.messages[0])
+            self.assertTrue(all(call.args[0] == "acceptance" for call in control.call_args_list))
+        with patch.object(self.controller, "_control", side_effect=[snapshot, {"status": "completed"}]) as control:
+            accepted = self.controller.handle("/accept " + digest)
+            self.assertIn("Final outcome accepted", accepted.messages[0])
+            self.assertEqual(control.call_args_list[-1].args[0], "accept")
+            self.assertEqual(self.controller.session["status"], "terminal")
+
+    def test_gate_approval_rejects_stale_assessment_without_mutation(self):
+        digest = "sha256:" + "b" * 64
+        snapshot = {"pending_gates": {"task": {"assessment_digest": digest}}}
+        with patch.object(self.controller, "_control", return_value=snapshot) as control:
+            self.assertIn(digest, self.controller.handle("/gate task").messages[-1])
+            self.assertIn("exact current assessment", self.controller.handle("/gate task wrong").messages[0])
+            self.assertTrue(all(call.args[0] == "acceptance" for call in control.call_args_list))
 
     def test_confirmed_provider_does_not_mutate_a_frozen_plan(self):
         self.complete_grill()
@@ -267,6 +348,117 @@ class InteractiveControllerTests(unittest.TestCase):
             response = self.controller.handle("/run")
         self.assertIn("detached", response.messages[1])
         self.controller.spawn_fn.assert_called_once()
+
+    def test_models_command_is_passive_and_does_not_create_a_missing_catalog(self):
+        from camol.models import DownloadFile, DownloadPlan, ModelStore
+        self.assertIn("No local model", self.controller.handle("/models").messages[0])
+        root = self.state_root / "models"
+        self.assertFalse(root.exists())
+        plan = DownloadPlan("fixture", "fixture/model", "revision-one", "owner",
+                            (DownloadFile("model.gguf", "https://fixture.invalid/model.gguf", canonical_digest("bytes"), 10),),
+                            ("https://fixture.invalid",), 10, 20)
+        with ModelStore(root) as store:
+            store.prepare(plan)
+            before = store.events(plan.digest())
+        with patch("camol.models.HTTPSDownloadTransport.open", side_effect=AssertionError("inspection fetched model")):
+            response = self.controller.handle("/models")
+            detail = self.controller.handle("/models status " + plan.digest())
+        self.assertIn("fixture/model", response.messages[0])
+        self.assertIn('"loaded": "unverified"', response.messages[0])
+        self.assertIn('"status": "planned"', detail.messages[0])
+        with ModelStore(root, read_only=True) as store:
+            self.assertEqual(store.events(plan.digest()), before)
+        self.assertIn("usage:", self.controller.handle("/models download").messages[0])
+
+    def test_watch_command_reads_existing_ledger_without_observer_execution(self):
+        from camol.orchestrator import Orchestrator
+        from camol.runbook import load_runbook
+        from camol.store import SQLiteEventStore
+        from camol.watchers import Watcher, WatchSpec
+        from contextlib import closing
+        self.complete_grill()
+        database = Path(self.controller.session["state_dir"]) / "camol.sqlite3"
+        with closing(SQLiteEventStore(database)) as store:
+            orchestrator = Orchestrator(store)
+            runbook = load_runbook(Path(__file__).resolve().parents[1] / "examples/three-agent-runbook.json")
+            runbook["run"]["id"] = self.controller.session["run_id"]
+            state = orchestrator.initialize(runbook)
+            orchestrator.approve_plan(state["run_id"], "owner", state["plan_digest"])
+            spec = WatchSpec("calls", "fixture", "correlated fixture calls", ("start", "end"), ("job",),
+                             "end", (("job", "one"),), "v1", "v1", canonical_digest("fixture"))
+            Watcher.create(orchestrator, state["run_id"], spec, approved_by="owner")
+            before = store.read(state["run_id"])
+        with patch("camol.watchers.Watcher.poll", side_effect=AssertionError("inspection polled observer")):
+            response = self.controller.handle("/watch show calls")
+        self.assertIn("no observer or remote poll", response.messages[0])
+        self.assertIn('"watcher_id": "calls"', response.messages[0])
+        self.assertEqual(self.controller._persisted_events(), before)
+
+    def test_repo_command_reads_static_graph_without_importing_workspace_code(self):
+        import subprocess
+        subprocess.run(["/usr/bin/git", "init", "-q", str(self.workspace)], check=True)
+        (self.workspace / "mod.py").write_text("raise RuntimeError('must not be imported')\nimport json\n")
+        subprocess.run(["/usr/bin/git", "-C", str(self.workspace), "add", "mod.py"], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(self.workspace), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], check=True)
+        response = self.controller.handle("/repo")
+        self.assertIn("REPOSITORY GRAPH", response.messages[0])
+        self.assertIn("unverified", response.messages[0])
+        self.assertIn("mod.py", response.messages[0])
+        self.assertIn("usage:", self.controller.handle("/repo execute mod.py").messages[0])
+
+    def _import_codex_fixture(self, *, local=False, snapshot=True):
+        import json
+        from tests.test_codex_adapter import codex_profile
+        from tests.test_gate_runtime import v5_plan
+        plan = v5_plan("product-codex")
+        profile = codex_profile(local)
+        plan["agents"][0]["adapter"] = {"kind": profile["adapter_kind"], "profile": "codex.json", "timeout_seconds": 30}
+        if snapshot:
+            plan["agents"][0]["adapter"]["profile_snapshot"] = profile
+        path = self.workspace.parent / "runbook.json"
+        path.write_text(json.dumps(plan))
+        workspace = SimpleNamespace(assert_source_ready=lambda: None, head_revision=lambda: "a" * 40)
+        with patch("camol.app.WorkspaceManager", return_value=workspace):
+            result = self.controller.handle("/import " + str(path))
+        return workspace, result
+
+    def test_codex_import_launch_requires_exact_policy_and_hosted_spend_ack(self):
+        workspace, imported = self._import_codex_fixture()
+        self.assertIn("IMPORTED PLAN", imported.messages[0])
+        self.controller.handle("/approve yes")
+        self.controller.preflight_fn = Mock(side_effect=AssertionError("Codex invoked paid Claude preflight"))
+        self.controller.spawn_fn = Mock(return_value={"pid": 123, "started": True})
+        with patch("camol.app.WorkspaceManager", return_value=workspace):
+            review = self.controller.handle("/run")
+            self.assertIn("quota_available", review.messages[0])
+            self.assertIn("no worker or paid preflight started", review.messages[0])
+            digest = canonical_digest(self.controller._codex_launch_policy(self.controller.session["plan"]))
+            self.assertIn("exact current", self.controller.handle("/run --accept-provider-policy sha256:" + "0" * 64 + " --accept-spend").messages[0])
+            self.assertIn("requires --accept-spend", self.controller.handle("/run --accept-provider-policy " + digest).messages[0])
+            self.controller.spawn_fn.assert_not_called()
+            launched = self.controller.handle("/run --accept-provider-policy " + digest + " --accept-spend")
+        self.assertIn("not a hard spend cap", launched.messages[0])
+        self.controller.spawn_fn.assert_called_once()
+        self.controller.preflight_fn.assert_not_called()
+
+    def test_local_codex_launch_ack_does_not_call_model_or_claim_inference(self):
+        workspace, imported = self._import_codex_fixture(local=True)
+        self.assertIn("IMPORTED PLAN", imported.messages[0])
+        self.controller.handle("/approve yes")
+        self.controller.spawn_fn = Mock(return_value={"pid": 123, "started": True})
+        digest = canonical_digest(self.controller._codex_launch_policy(self.controller.session["plan"]))
+        with patch("camol.app.WorkspaceManager", return_value=workspace), patch("camol.codex_policy.require_local_model", side_effect=AssertionError("client starts inference/catalog")):
+            denied = self.controller.handle("/run --accept-provider-policy " + digest + " --accept-spend")
+            self.assertIn("local Codex must not", denied.messages[0])
+            launched = self.controller.handle("/run --accept-provider-policy " + digest)
+        self.assertIn("no model is downloaded or loaded", launched.messages[0])
+        self.controller.spawn_fn.assert_called_once()
+
+    def test_codex_interactive_import_rejects_unfrozen_profile_files(self):
+        _, result = self._import_codex_fixture(snapshot=False)
+        self.assertIn("embedded profile_snapshot", result.messages[0])
+        self.assertIsNone(self.controller.session["plan"])
 
 
 if __name__ == "__main__":

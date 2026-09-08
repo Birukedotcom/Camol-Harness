@@ -90,6 +90,28 @@ class ArtifactStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown fields"):
             ArtifactRef.from_dict(payload)
 
+    def test_redaction_precedes_truncation_of_a_known_secret(self):
+        store = ArtifactStore(self.state, redactor=Redactor({"TEST_SECRET": self.secret}), max_retained_bytes=12)
+        reference = store.put_bytes(self.secret.encode(), producer=self.producer)
+        self.assertEqual(store.read(reference), REDACTED.encode())
+
+    def test_upstream_truncated_secret_fragment_is_not_retained(self):
+        reference = self.store.put_bytes(b"safe line\nsuper-secret-val", producer=self.producer, source_bytes=500, truncated=True)
+        self.assertEqual(self.store.read(reference), b"safe line\n")
+
+    def test_multiline_known_secret_prefix_is_not_retained(self):
+        secret = "synthetic-secret-first-line\nsecond-line\nthird-line"
+        store = ArtifactStore(self.state, redactor=Redactor({"TEST_SECRET": secret}))
+        reference = store.put_bytes(("safe\n" + secret[:40]).encode(), producer=self.producer, source_bytes=200, truncated=True)
+        self.assertEqual(store.read(reference), ("safe\n" + REDACTED).encode())
+
+    def test_conflicting_sizes_for_the_same_digest_cannot_hide_in_export(self):
+        reference = self.store.put_bytes(b"evidence", producer=self.producer)
+        malformed = dict(reference.to_dict(), stored_bytes=100)
+        event = {"run_id": "run-1", "payload": {"artifact_refs": [malformed, reference.to_dict()]}}
+        with self.assertRaisesRegex(ArtifactError, "verification"):
+            RunArchive.export("run-1", [event], self.store, self.root / "bad-archive")
+
 
 if __name__ == "__main__":
     unittest.main()

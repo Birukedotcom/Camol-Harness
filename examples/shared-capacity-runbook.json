@@ -1,0 +1,198 @@
+{
+  "schema_version": 6,
+  "run": {
+    "id": "shared-capacity-output",
+    "objective": "Prove explicit invariant gates, isolated integration, and final human acceptance with a deterministic local worker.",
+    "max_concurrency": 1,
+    "completion": [
+      "all_tasks_succeeded",
+      "all_required_evidence_present",
+      "all_verifications_green",
+      "no_open_blockers",
+      "no_open_debug_cases"
+    ],
+    "token_policy": {
+      "max_tokens_per_turn": 4000,
+      "checkpoint_reserve": 400,
+      "max_total_tokens": 10000,
+      "max_turns_per_task": 4
+    },
+    "readiness_policy": {
+      "receipt_ttl_seconds": 300
+    },
+    "capacity_policy": {
+      "namespace": "local-example",
+      "allocation": "saturate_connected",
+      "reservation_ttl_seconds": 90,
+      "allow_owner_declared_supply": true,
+      "rate_scope": "harness_turn_estimate"
+    }
+  },
+  "rules": [
+    {
+      "id": "frozen-eval",
+      "text": "Evaluator inputs are immutable.",
+      "enforcement": "hard"
+    }
+  ],
+  "agents": [
+    {
+      "id": "builder",
+      "role": "Build candidate",
+      "box": "camol-boxes/build",
+      "capabilities": [
+        "code"
+      ],
+      "adapter": {
+        "kind": "process",
+        "timeout_seconds": 30,
+        "argv": [
+          "python3",
+          "{workspace}/examples/fake_agent.py",
+          "{packet}",
+          "{result}"
+        ]
+      },
+      "trust_tier": "developer_trusted",
+      "capacity_pools": {
+        "target": "local-target",
+        "runtime": "process-runtime",
+        "provider": null
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "change",
+      "goal": "Produce a good output",
+      "depends_on": [],
+      "capabilities": [
+        "code"
+      ],
+      "acceptance": [
+        "output is exactly good"
+      ],
+      "required_evidence": [
+        "command",
+        "artifact",
+        "claim",
+        "test_result"
+      ],
+      "max_attempts": 2,
+      "steps": [
+        {
+          "id": "work",
+          "instruction": "Implement the requested output.",
+          "commands": [
+            {
+              "purpose": "Write exact approved output",
+              "argv": [
+                "python3",
+                "-c",
+                "from pathlib import Path; Path('output.txt').write_text('good\\n')"
+              ]
+            }
+          ],
+          "completion": [
+            "output exists"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "purpose": "Frozen output check",
+          "argv": [
+            "python3",
+            "-c",
+            "from pathlib import Path; assert Path('output.txt').read_text() == 'good\\n'"
+          ]
+        }
+      ],
+      "evaluator_assets": [],
+      "resource_requirements": {
+        "cpu_millis": 1000,
+        "memory_bytes": 268435456,
+        "gpu_millis": 0,
+        "vram_bytes": 0,
+        "disk_bytes": 10485760,
+        "placement": {
+          "locality": "local"
+        }
+      }
+    }
+  ],
+  "state_model": {
+    "invariants": [
+      {
+        "schema": "camol.invariant",
+        "schema_version": 1,
+        "invariant_id": "correct-output",
+        "revision": 1,
+        "owner": "human-owner",
+        "scope": "task:change",
+        "modality": "eventually",
+        "predicate": "output.txt contains exactly good followed by a newline",
+        "preconditions": [],
+        "observables": [
+          "output.txt bytes"
+        ],
+        "severity": "normal",
+        "falsification_strategies": [
+          "wrong-output mutation"
+        ],
+        "required_evidence": [
+          "test_result"
+        ],
+        "positive_evidence_required": true,
+        "approval_policy": "preauthorized"
+      }
+    ],
+    "obligations": [
+      {
+        "schema": "camol.obligation",
+        "schema_version": 1,
+        "obligation_id": "output-accepted",
+        "owner": "human-owner",
+        "target_state": "ACCEPTED",
+        "invariant_ids": [
+          "correct-output"
+        ],
+        "task_ids": [
+          "change"
+        ]
+      }
+    ],
+    "gates": [
+      {
+        "task_id": "change",
+        "policy": {
+          "schema": "camol.gate_policy",
+          "schema_version": 1,
+          "policy_id": "output-gate",
+          "level": "basic",
+          "required_families": [
+            "deterministic"
+          ],
+          "independent_verifier": false,
+          "human_approval": false
+        },
+        "invariant_ids": [
+          "correct-output"
+        ],
+        "obligation_ids": [
+          "output-accepted"
+        ],
+        "evaluators": [
+          {
+            "verification_index": 0,
+            "family": "deterministic",
+            "invariant_ids": [
+              "correct-output"
+            ]
+          }
+        ]
+      }
+    ],
+    "final_acceptance": "human"
+  }
+}

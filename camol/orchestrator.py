@@ -1,6 +1,7 @@
 """Authoritative state transitions for a run over an N-worker pool."""
 
 from datetime import datetime, timedelta, timezone
+from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
@@ -14,16 +15,22 @@ from .readiness import CapacityReservation, LeaseFence, ReadinessDecision, Waiti
 from .probes import Redactor
 from .runbook import runbook_digest, validate_runbook
 from .schema import canonical_digest, parse_timestamp
-from .state import project
+from .state import apply_event, empty_state, project
 from .store import ConcurrentAppendError, SQLiteEventStore
 from .workspace import SalvageReceipt
+from .usage import UsageRecord, accounted_tokens, _trusted_receipts
+from .leases import effective_expiry, validate_authorization
+from .gate_runtime import GateOrchestratorMixin, acceptance_digest, require_integration_gate
+from .revisions import RevisionOrchestratorMixin, prior_effect_reuse
+from .capacity import CapacityError
+from .capacity_runtime import capacity_for_task
 
 
 class StateTransitionError(RuntimeError):
     pass
 
 
-class Orchestrator:
+class Orchestrator(GateOrchestratorMixin, RevisionOrchestratorMixin):
     def __init__(
         self,
         store: SQLiteEventStore,
@@ -38,6 +45,7 @@ class Orchestrator:
         self.clock = clock
         self.lease_ttl_seconds = lease_ttl_seconds
         self.redactor = redactor or Redactor()
+        self._projections: Dict[str, Dict[str, Any]] = {}
 
     def _now(self) -> str:
         value = self.clock()
@@ -53,7 +61,15 @@ class Orchestrator:
         )
 
     def state(self, run_id: str) -> Dict[str, Any]:
-        return project(self.store.read(run_id))
+        previous = self._projections.get(run_id, empty_state())
+        events = self.store.read(run_id, after_seq=previous["last_seq"])
+        current = previous
+        for event in events:
+            current = apply_event(current, event)
+        self._projections[run_id] = current
+        # Callers may assemble packets from the projection. They cannot mutate
+        # durable truth by retaining and editing a previously returned mapping.
+        return deepcopy(current)
 
     def _emit(
         self,
@@ -74,6 +90,7 @@ class Orchestrator:
                 payload,
                 causation_id=causation_id,
                 correlation_id=correlation_id,
+                occurred_at=self._now(),
             ),
             expected_seq=expected_seq,
         )
@@ -86,7 +103,7 @@ class Orchestrator:
         expected_seq: int,
     ) -> List[Dict[str, Any]]:
         events = [
-            new_event(run_id, event_type, actor_id, payload)
+            new_event(run_id, event_type, actor_id, payload, occurred_at=self._now())
             for event_type, actor_id, payload in records
         ]
         return self.store.append_many(events, expected_seq=expected_seq)
@@ -411,6 +428,11 @@ class Orchestrator:
                 continue
             bundle = latest_bundle
             lease_now = self._now()
+            try:
+                shared_capacity = capacity_for_task(latest, task["id"], agent["id"], now=lease_now, local_reservation_id=bundle.reservation.reservation_id)
+            except CapacityError as error:
+                self._wait_task(run_id, task["id"], WaitingReason(code="CAPACITY_EXHAUSTED", detail=str(error), wake_condition="obtain fresh shared capacity", task_id=task["id"], box_id=agent["id"]))
+                continue
             latest_decision = bundle.decision(
                 now=lease_now,
                 plan_digest=latest["plan_digest"],
@@ -429,6 +451,8 @@ class Orchestrator:
                 parse_timestamp(bundle.grant.expires_at, "grant expires_at"),
                 parse_timestamp(bundle.reservation.expires_at, "reservation expires_at"),
             )
+            if shared_capacity is not None:
+                expires = min(expires, parse_timestamp(shared_capacity["expires_at"], "global capacity expiry"))
             epoch = latest["lease_epochs"].get(task["id"], 0) + 1
             fence = LeaseFence(
                 lease_id=lease_id,
@@ -494,14 +518,27 @@ class Orchestrator:
             raise StateTransitionError(
                 "agent {} does not hold the active lease for task {}".format(agent_id, task_id)
             )
-        if require_fresh and not LeaseFence.from_dict(task["lease_fence"]).is_fresh(self._now()):
+        fence = LeaseFence.from_dict(task["lease_fence"])
+        now = parse_timestamp(self._now(), "lease now")
+        if require_fresh and not (
+            parse_timestamp(fence.issued_at, "lease issued") <= now
+            < parse_timestamp(effective_expiry(state, task), "effective lease expiry")
+        ):
             raise StateTransitionError("the active lease fence is expired")
+        if require_fresh:
+            try:
+                capacity_for_task(state, task_id, agent_id, now=self._now())
+            except CapacityError as error:
+                raise StateTransitionError(str(error)) from error
         return state, task
 
     def _active_bundle(self, state: Dict[str, Any], task: Dict[str, Any]) -> AdmissionBundle:
         bundle = self._bundle_for(state, task["id"], task["agent_id"])
         if bundle is None or bundle.digest() != task.get("admission_digest"):
             raise StateTransitionError("active lease admission bundle is missing or changed")
+        authorization = state.get("lease_authorizations", {}).get(task["lease_id"])
+        if authorization is not None and authorization["fence_digest"] == task["fence_digest"]:
+            return AdmissionBundle.from_dict(authorization["bundle"])
         return bundle
 
     def start_task(self, run_id: str, assignment: Dict[str, str]) -> bool:
@@ -637,8 +674,6 @@ class Orchestrator:
             fence_digest=assignment.get("fence_digest"),
         )
         fence = LeaseFence.from_dict(task["lease_fence"])
-        if not fence.is_fresh(self._now()):
-            raise StateTransitionError("cannot heartbeat an expired lease fence")
         try:
             self._emit(
                 run_id,
@@ -654,6 +689,39 @@ class Orchestrator:
             )
         except ConcurrentAppendError as error:
             raise StateTransitionError("run state changed during heartbeat; retry") from error
+
+    def refresh_active_lease(
+        self, run_id: str, assignment: Dict[str, str], bundle: AdmissionBundle, *, verification_resume: bool = False
+    ) -> Dict[str, Any]:
+        """Re-prove continued authority without invalidating an in-flight packet."""
+        state, task = self._require_lease(
+            run_id, assignment["task_id"], assignment["agent_id"], assignment["lease_id"],
+            "running", "verifying", fence_digest=assignment.get("fence_digest"),
+            require_fresh=not verification_resume,
+        )
+        now = self._now()
+        expires = min(
+            parse_timestamp(now, "refresh now") + timedelta(seconds=self.lease_ttl_seconds),
+            parse_timestamp(bundle.receipt.expires_at, "receipt expiry"),
+            parse_timestamp(bundle.grant.expires_at, "grant expiry"),
+            parse_timestamp(bundle.reservation.expires_at, "reservation expiry"),
+        )
+        shared_capacity = capacity_for_task(state, task["id"], task["agent_id"], now=now)
+        if shared_capacity is not None:
+            expires = min(expires, parse_timestamp(shared_capacity["expires_at"], "shared capacity expiry"))
+        payload = {
+            "task_id": task["id"], "lease_id": task["lease_id"],
+            "fence_digest": task["fence_digest"], "bundle": bundle.to_dict(),
+            "bundle_digest": bundle.digest(), "refreshed_at": now,
+            "expires_at": expires.isoformat(timespec="microseconds"),
+            "scope": "verification_resume" if verification_resume else "active",
+        }
+        try:
+            validate_authorization(state, payload)
+            self._emit(run_id, "LEASE_AUTHORIZATION_REFRESHED", payload, expected_seq=state["last_seq"])
+        except (ValueError, ConcurrentAppendError) as error:
+            raise StateTransitionError("lease authorization refresh failed: {}".format(error)) from error
+        return payload
 
     def renew_lease(self, run_id: str, assignment: Dict[str, str]) -> Dict[str, Any]:
         """Renew the same epoch only while every bound admission input remains fresh."""
@@ -803,6 +871,15 @@ class Orchestrator:
         # before redaction: two different secret-bearing mutations must not
         # collapse to the same idempotency binding.
         request_digest = canonical_digest(request)
+        prior = prior_effect_reuse(state, task["id"], provider=provider, operation=operation, target=self.redactor.text(target),
+                                   request_digest=request_digest, idempotency_key=idempotency_key)
+        if prior is not None:
+            self._emit(run_id, "REVISION_EFFECT_REUSED", {"effect_id": prior["effect_id"], "task_id": task["id"],
+                                                         "lease_id": assignment["lease_id"], "fence_digest": assignment["fence_digest"],
+                                                         "request_digest": request_digest}, expected_seq=state["last_seq"])
+            record_data = {key: prior[key] for key in EffectRequest.FIELDS if key in prior}
+            record_data["state"] = "EFFECT_REQUESTED"
+            return EffectRequest.from_dict(record_data), False
         for existing in state.get("effects", {}).values():
             if existing["idempotency_key"] != idempotency_key:
                 continue
@@ -961,6 +1038,7 @@ class Orchestrator:
         )
         if not isinstance(receipt, IntegrationReceipt):
             raise ValueError("receipt must be an IntegrationReceipt")
+        require_integration_gate(state, receipt)
         self._emit(
             run_id, "INTEGRATION_ACCEPTED",
             {"receipt": receipt.to_dict(), "receipt_digest": receipt.digest()},
@@ -1041,6 +1119,8 @@ class Orchestrator:
         )
         return {
             "protocol": "camol-agent-turn/v1",
+            **({"revision_context": state["revision"]} if state.get("revision") else {}),
+            **({"state_model": runbook["state_model"]} if runbook["schema_version"] >= 5 else {}),
             "run": {
                 "id": run_id,
                 "objective": runbook["run"]["objective"],
@@ -1075,7 +1155,7 @@ class Orchestrator:
                 "checkpoint_reserve": runbook["run"]["token_policy"]["checkpoint_reserve"],
                 "run_remaining": max(
                     0,
-                    runbook["run"]["token_policy"]["max_total_tokens"] - state["total_tokens"],
+                    runbook["run"]["token_policy"]["max_total_tokens"] - accounted_tokens(state),
                 ),
             },
             "return_contract": {
@@ -1096,6 +1176,8 @@ class Orchestrator:
         run_id: str,
         assignment: Dict[str, str],
         result: Dict[str, Any],
+        *,
+        usage_invocation_id: Optional[str] = None,
     ) -> List[str]:
         state, task = self._require_lease(
             run_id,
@@ -1119,18 +1201,29 @@ class Orchestrator:
         checkpoint = self.redactor.text(checkpoint)
         input_tokens = result.get("input_tokens")
         output_tokens = result.get("output_tokens")
-        if not isinstance(input_tokens, int) or input_tokens < 0:
+        if type(input_tokens) is not int or input_tokens < 0:
             raise ValueError("input_tokens must be a non-negative integer")
-        if not isinstance(output_tokens, int) or output_tokens < 0:
+        if type(output_tokens) is not int or output_tokens < 0:
             raise ValueError("output_tokens must be a non-negative integer")
         previous_steps = set(task["completed_step_ids"])
         newly_completed = len(set(completed_step_ids) - previous_steps)
         used_tokens = input_tokens + output_tokens
+        current_charge = 0
+        if usage_invocation_id is not None:
+            receipts = _trusted_receipts(state["evidence"].values())
+            receipt = receipts.get(usage_invocation_id)
+            if (receipt is None or usage_invocation_id in state.get("accounted_usage_invocations", ())
+                    or (receipt.run_id, receipt.task_id, receipt.agent_id, receipt.lease_id,
+                        receipt.turn_number, receipt.input_tokens, receipt.output_tokens) !=
+                    (run_id, task["id"], assignment["agent_id"], assignment["lease_id"],
+                     task["turn_count"] + 1, input_tokens, output_tokens)):
+                raise StateTransitionError("turn usage must bind one unconsumed provider receipt")
+            current_charge = receipt.token_charge
         policy = state["runbook"]["run"]["token_policy"]
         violations = []
         if used_tokens > policy["max_tokens_per_turn"]:
             violations.append("turn_token_budget_exceeded")
-        if state["total_tokens"] + used_tokens > policy["max_total_tokens"]:
+        if accounted_tokens(state) - current_charge + used_tokens > policy["max_total_tokens"]:
             violations.append("run_token_budget_exceeded")
         if task["turn_count"] + 1 > policy["max_turns_per_task"]:
             violations.append("task_turn_budget_exceeded")
@@ -1153,6 +1246,7 @@ class Orchestrator:
                 "output_tokens": output_tokens,
                 "checkpoint_tokens_estimate": checkpoint_tokens_estimate,
                 "budget_violations": violations,
+                **({"usage_invocation_id": usage_invocation_id} if usage_invocation_id is not None else {}),
             },
             actor_id=assignment["agent_id"],
             expected_seq=state["last_seq"],
@@ -1262,6 +1356,9 @@ class Orchestrator:
             "running",
             "verifying",
             fence_digest=assignment.get("fence_digest"),
+            # Observed costs and retained outputs remain facts after expiry;
+            # their exact lease must still be current. They cannot advance it.
+            require_fresh=producer == "worker",
         )
         if kind not in EVIDENCE_KINDS:
             raise ValueError("unknown evidence kind: {}".format(kind))
@@ -1346,6 +1443,8 @@ class Orchestrator:
             "TASK_VERIFICATION_RECORDED",
             {
                 "task_id": assignment["task_id"],
+                "lease_id": assignment["lease_id"],
+                "fence_digest": assignment["fence_digest"],
                 "passed": passed,
                 "checks": self.redactor.value(checks),
             },
@@ -1364,6 +1463,12 @@ class Orchestrator:
         )
         if not task["verification_history"] or task["verification_history"][-1]["passed"] is not True:
             raise StateTransitionError("the latest verification is not green")
+        latest_verification = task["verification_history"][-1]
+        if (
+            latest_verification.get("lease_id") != assignment["lease_id"]
+            or latest_verification.get("fence_digest") != assignment["fence_digest"]
+        ):
+            raise StateTransitionError("the latest verification belongs to another lease")
         task_candidates = {
             candidate_id for candidate_id, candidate in state.get("candidates", {}).items()
             if candidate["task_id"] == task["id"] and candidate["lease_id"] == task["lease_id"]
@@ -1514,7 +1619,8 @@ class Orchestrator:
             "all_verifications_green": not failed_verification,
             "no_open_blockers": not blockers,
             "no_open_debug_cases": not any(
-                debug_case["status"] == "open" for debug_case in state["debug_cases"].values()
+                debug_case["status"] not in {"verified", "eval_promoted"}
+                for debug_case in state["debug_cases"].values()
             ),
         }
         required = state["runbook"]["run"]["completion"] if state["runbook"] else []
@@ -1531,6 +1637,11 @@ class Orchestrator:
         state = self._require_status(run_id, "running")
         report = self.completion_report(run_id)
         if report["complete"]:
+            if state["runbook"]["schema_version"] >= 5:
+                for item in state["integrations"]:
+                    require_integration_gate(state, IntegrationReceipt.from_dict(item))
+                self._emit(run_id, "RUN_AWAITING_ACCEPTANCE", {"outcome_digest": acceptance_digest(state)}, expected_seq=state["last_seq"])
+                return True
             self._emit(
                 run_id,
                 "RUN_COMPLETED",
@@ -1579,33 +1690,13 @@ class Orchestrator:
         reproduction: List[str],
         required_evidence: List[str],
     ) -> None:
+        from .debugger import Debugger
         state = self._require_status(run_id, "running")
-        if case_id in state["debug_cases"]:
-            raise StateTransitionError("debug case already exists: {}".format(case_id))
-        if not observed_behavior.strip() or not target_behavior.strip():
-            raise ValueError("observed and target behavior are required")
-        if not reproduction:
-            raise ValueError("debug reproduction must not be empty")
-        if any(not isinstance(step, str) or not step.strip() for step in reproduction):
-            raise ValueError("debug reproduction steps must be non-empty strings")
-        if any(
-            not isinstance(kind, str) or not kind.strip() for kind in required_evidence
-        ):
-            raise ValueError("debug evidence kinds must be non-empty strings")
-        unknown = sorted(set(required_evidence) - EVIDENCE_KINDS)
-        if not required_evidence or unknown:
-            raise ValueError("invalid debug evidence contract: {}".format(", ".join(unknown)))
-        self._emit(
-            run_id,
-            "DEBUG_CASE_OPENED",
-            {
-                "case_id": case_id,
-                "observed_behavior": observed_behavior,
-                "target_behavior": target_behavior,
-                "reproduction": reproduction,
-                "required_evidence": required_evidence,
-            },
+        Debugger(self, run_id).open(
+            case_id, observed_behavior, target_behavior, reproduction, required_evidence,
+            target_authority="plan {} approved by {}".format(state["plan_digest"], state["approved_by"]),
         )
+        return
 
     def record_debug_evidence(
         self,
@@ -1615,38 +1706,8 @@ class Orchestrator:
         data: Dict[str, Any],
         actor_id: str,
     ) -> str:
-        state = self._require_status(run_id, "running")
-        debug_case = state["debug_cases"].get(case_id)
-        if not debug_case or debug_case["status"] != "open":
-            raise StateTransitionError("debug case is not open: {}".format(case_id))
-        if kind not in EVIDENCE_KINDS:
-            raise ValueError("unknown evidence kind: {}".format(kind))
-        if not isinstance(data, dict):
-            raise ValueError("debug evidence data must be an object")
-        evidence_id = str(uuid4())
-        record = EvidenceRecord(
-            evidence_id=evidence_id,
-            run_id=run_id,
-            task_id=None,
-            debug_case_id=case_id,
-            agent_id=None,
-            lease_id=None,
-            fence_digest=None,
-            kind=kind,
-            epistemic_status="HUMAN_REPORTED",
-            producer=actor_id,
-            observed_at=self._now(),
-            data=self.redactor.value(data),
-            artifact_refs=(),
-        )
-        self._emit(
-            run_id,
-            "EVIDENCE_RECORDED",
-            record.to_dict(),
-            actor_id=actor_id,
-            expected_seq=state["last_seq"],
-        )
-        return evidence_id
+        from .debugger import Debugger
+        return Debugger(self, run_id).observe(case_id, kind, data, producer=actor_id)
 
     def verify_debug_case(self, run_id: str, case_id: str, verdict: str) -> None:
         state = self._require_status(run_id, "running")
@@ -1656,18 +1717,15 @@ class Orchestrator:
         present = {
             state["evidence"][evidence_id]["kind"]
             for evidence_id in debug_case["evidence_ids"]
+            if self._gate_evidence(state["evidence"][evidence_id])
         }
         missing = sorted(set(debug_case["required_evidence"]) - present)
         if missing:
             raise StateTransitionError(
                 "debug case is missing required evidence: {}".format(", ".join(missing))
             )
-        if not verdict.strip():
-            raise ValueError("verification verdict is required")
-        self._emit(
-            run_id,
-            "DEBUG_CASE_VERIFIED",
-            {"case_id": case_id, "verdict": verdict},
+        raise StateTransitionError(
+            "use Debugger.verify after reproduction, localization and a bounded experiment"
         )
 
     def promote_eval(
@@ -1677,16 +1735,5 @@ class Orchestrator:
         eval_id: str,
         definition: Dict[str, Any],
     ) -> None:
-        state = self._require_status(run_id, "running")
-        debug_case = state["debug_cases"].get(case_id)
-        if not debug_case or debug_case["status"] != "verified":
-            raise StateTransitionError("debug case must be verified before eval promotion")
-        if eval_id in state["evals"]:
-            raise StateTransitionError("eval already exists: {}".format(eval_id))
-        if not definition.get("fixture") or not definition.get("oracle"):
-            raise ValueError("eval definition requires fixture and oracle")
-        self._emit(
-            run_id,
-            "EVAL_PROMOTED",
-            {"case_id": case_id, "eval_id": eval_id, "definition": definition},
-        )
+        from .debugger import Debugger
+        Debugger(self, run_id).promote(case_id, eval_id, definition)

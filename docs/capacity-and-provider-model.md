@@ -1,6 +1,8 @@
 # Capacity, agent selection, and public provider model
 
-Status: specified, not implemented beyond static process-worker registration.
+Status: schema-6 shared admission and local execution are implemented and tested.
+Dynamic provider/target discovery, authenticated remote workers, auto-provisioning,
+and physical provider-request accounting through CLI internals remain unbacked.
 
 Camol is a harness. It is not a model, worker agent, or vendor account. It hosts a
 deterministic control plane and can invoke a replaceable orchestration agent to turn a
@@ -223,3 +225,72 @@ Code 2.1.255 or later for Fable 5.1. Those values belong in versioned adapter
 compatibility data and must be reprobed rather than hard-coded into scheduler logic.
 The complete implementation order and dogfood acceptance gate live in
 [`v0-build-plan.md`](v0-build-plan.md).
+
+## 10. Executable shared broker (schema 6)
+
+V1–V5 retain their original digests and per-run capacity semantics. V6 opts into the
+shared SQLite admission broker and retains V5 invariant gates/final human acceptance.
+The plan freezes an exact `run.capacity_policy`:
+
+```json
+{
+  "namespace": "team-local",
+  "allocation": "saturate_connected",
+  "reservation_ttl_seconds": 90,
+  "allow_owner_declared_supply": false,
+  "rate_scope": "harness_turn_estimate"
+}
+```
+
+Each agent declares separate `capacity_pools` for `target`, `runtime`, and optional
+`provider`. Each task declares nonnegative `resource_requirements` for `cpu_millis`,
+`memory_bytes`, `gpu_millis`, `vram_bytes`, and `disk_bytes`, plus a `placement` map
+using OS, architecture, region, locality, or trust-tier constraints. A leased task
+also reserves one target slot and one runtime/provider session. Shared physical
+resources must use the same namespace and pool identity across runs; creating a
+second alias is not another machine or additional quota.
+
+Pools are versioned, expiring supply observations with capabilities, placement,
+limits, outside workload use, and explicit `observed` or `owner_declared` provenance.
+Only ready, fresh, policy-permitted supply is usable. Owner-declared supply requires
+an explicit allowance in the approved plan; it is never relabeled observed. Supply
+changes are preserved in the broker's audit table. A CLI login does not publish
+provider quota. The broker does not provision machines, load/download models, or
+inspect credentials.
+
+The default database is `capacity.sqlite3` under the per-user Camol state root;
+multiple project state directories share it. Embedded/test callers can inject an
+explicit `CapacityBroker` path. Tests use only temporary broker databases. Database
+files are owner-only. `read_only=True` inspection requires an existing database and
+does not create directories or change database configuration.
+
+Reservation is atomic across all requested pools, subtracting both observed outside
+use and all active/suspect Camol reservations. Queued admission is round-robin among
+runs and FIFO within a run. A resource-starved older request blocks conflicting
+younger work but not work using independent pools; an impossible or unready request
+does not globally stall other pools. Capacity is never fabricated to meet a desired
+box count. Every selected reservation and waiting reason is recorded in the run
+ledger; lease replay rejects missing, changed, or expired global receipts.
+
+Expiry does not make a possibly running process disappear: an expired reservation
+becomes `suspect` and continues to hold resources. The runtime stops/reconciles
+processes before release. A captured candidate awaiting human review may retain its
+slot; verification-only recovery can restore that held reservation after proving
+the worker process stopped and obtaining fresh supply. It does not authorize a new
+worker call. Source plan revisions require shared reservations to be settled too.
+
+Provider pools additionally declare a rolling window with `max_requests`,
+`max_tokens`, `window_seconds`, and `scope`. Debits occur before an uncached adapter
+invocation, are idempotent by invocation identity, and survive cancellation or
+unknown results until window expiry. Current Claude/Codex wrappers use
+`harness_turn_estimate`: one charge represents a Camol turn/CLI session, which may
+contain multiple internal provider requests. This is scheduling pressure, **not a
+hard physical RPM/TPM guarantee**. Requiring `provider_request` fails closed for these
+adapters until a request-observing execution/proxy adapter exists. Likewise CPU,
+memory, and GPU values are admission reservations, not a claim of OS/cgroup resource
+enforcement. Strong resource isolation requires an appropriate execution backend.
+
+The broker provides finite, shared accounting and suitability/fairness checks. It
+does not yet supply automatic historical-performance ranking, dynamic model loading,
+cloud provisioning, or an authenticated cross-host broker transport. These remain
+separate adapter and operational proof obligations.

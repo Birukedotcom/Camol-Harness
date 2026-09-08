@@ -7,11 +7,14 @@ import selectors
 import shutil
 import signal
 import subprocess
+import queue
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from threading import Event
 
 from .connections import ConnectionError, open_without_proxy, validate_loopback_endpoint
 from .probes import Redactor
@@ -19,6 +22,10 @@ from .probes import Redactor
 
 class ConversationError(RuntimeError):
     """The selected orchestrator provider is unavailable or returned unsafe data."""
+
+
+class ConversationCancelled(ConversationError):
+    """The human cancelled an in-flight planning call."""
 
 
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
@@ -127,6 +134,8 @@ def _parse_cli_reply(provider: str, stdout: bytes) -> Tuple[str, Optional[str], 
             payload = json.loads(decoded)
         except json.JSONDecodeError as error:
             raise ConversationError("Claude returned malformed JSON") from error
+        if not isinstance(payload, dict):
+            raise ConversationError("Claude returned a non-object response")
         text = payload.get("result")
         if not isinstance(text, str) or not text.strip():
             raise ConversationError("Claude returned no orchestrator message")
@@ -141,6 +150,8 @@ def _parse_cli_reply(provider: str, stdout: bytes) -> Tuple[str, Optional[str], 
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
             continue
         item = payload.get("item")
         if payload.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "agent_message":
@@ -195,6 +206,7 @@ def _stream_cli(
     workspace: Path,
     timeout: int,
     on_chunk: Callable[[str], None],
+    cancel_event: Optional[Event] = None,
 ) -> ConversationReply:
     try:
         process = subprocess.Popen(
@@ -204,9 +216,10 @@ def _stream_cli(
     except OSError as error:
         raise ConversationError("{} orchestrator could not start".format(selection.provider)) from error
     try:
-        process.stdin.write(prompt.encode("utf-8"))
-        process.stdin.close()
         selector = selectors.DefaultSelector()
+        pending_input = memoryview(prompt.encode("utf-8"))
+        os.set_blocking(process.stdin.fileno(), False)
+        selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
         selector.register(process.stdout, selectors.EVENT_READ, "stdout")
         selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         buffers = {"stdout": bytearray(), "stderr": bytearray()}
@@ -216,10 +229,22 @@ def _stream_cli(
         import time
         deadline = time.monotonic() + timeout
         while selector.get_map():
+            if cancel_event is not None and cancel_event.is_set():
+                raise ConversationCancelled("planning request cancelled")
             if time.monotonic() >= deadline:
                 os.killpg(process.pid, signal.SIGKILL)
                 raise ConversationError("{} orchestrator timed out".format(selection.provider))
             for key, _ in selector.select(timeout=0.1):
+                if key.data == "stdin":
+                    try:
+                        written = os.write(key.fileobj.fileno(), pending_input[:65536])
+                        pending_input = pending_input[written:]
+                    except BrokenPipeError:
+                        pending_input = pending_input[:0]
+                    if not pending_input:
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                    continue
                 data = os.read(key.fileobj.fileno(), 65536)
                 if not data:
                     selector.unregister(key.fileobj)
@@ -230,12 +255,16 @@ def _stream_cli(
                 if channel != "stdout":
                     continue
                 line_buffer.extend(data)
+                if len(line_buffer) > (16 << 20):
+                    raise ConversationError("provider emitted an oversized streaming record")
                 while b"\n" in line_buffer:
                     line, _, rest = line_buffer.partition(b"\n")
                     line_buffer = bytearray(rest)
                     try:
                         payload = json.loads(line)
                     except (UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(payload, dict):
                         continue
                     if selection.provider == "claude":
                         if payload.get("type") == "stream_event":
@@ -294,7 +323,7 @@ def _stream_cli(
             except ProcessLookupError:
                 pass
             process.wait()
-        for handle in (process.stdout, process.stderr):
+        for handle in (process.stdin, process.stdout, process.stderr):
             if handle is not None:
                 handle.close()
 
@@ -310,18 +339,40 @@ def converse(
     timeout: int = 120,
     runner: Any = subprocess.run,
     on_chunk: Optional[Callable[[str], None]] = None,
+    cancel_event: Optional[Event] = None,
 ) -> ConversationReply:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ConversationCancelled("planning request cancelled")
     selection = parse_selection(selection_text)
     if selection.provider == "manual":
         raise ConversationError("manual mode has no model call; use /grill GOAL to build a deterministic plan")
     prompt = _prompt(message, history)
     if selection.provider == "local":
+        if cancel_event is not None:
+            result_queue = queue.Queue(maxsize=1)
+            def request_local() -> None:
+                try:
+                    result_queue.put((True, _local_reply(local_endpoint, selection.model or "", prompt, timeout)))
+                except Exception as error:
+                    result_queue.put((False, error))
+            threading.Thread(target=request_local, name="camol-local-planner", daemon=True).start()
+            while True:
+                if cancel_event.is_set():
+                    raise ConversationCancelled("local planning wait cancelled; the endpoint may still finish its request, so usage is unknown")
+                try:
+                    succeeded, result = result_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if succeeded:
+                    return result
+                raise result
         return _local_reply(local_endpoint, selection.model or "", prompt, timeout)
     if selection.provider == "openai":
         raise ConversationError("OpenAI API execution is not enabled in Product V0; the key reference can be inspected with /connections")
-    argv = provider_argv(selection, effort, workspace, stream=on_chunk is not None)
-    if on_chunk is not None and runner is subprocess.run:
-        return _stream_cli(selection, argv, prompt, workspace, timeout, on_chunk)
+    use_stream = runner is subprocess.run
+    argv = provider_argv(selection, effort, workspace, stream=use_stream or on_chunk is not None)
+    if use_stream:
+        return _stream_cli(selection, argv, prompt, workspace, timeout, on_chunk or (lambda chunk: None), cancel_event)
     try:
         completed = runner(
             argv,

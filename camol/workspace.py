@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from .probes import GIT_SAFETY_ARGS, Redactor, sanitized_environment
+from .git_safety import GitSafetyError, safe_git_argv
 from .readiness import WorkspaceReceipt
 from .schema import (
     canonical_digest,
@@ -206,16 +207,19 @@ class WorkspaceManager:
         if not git:
             raise WorkspaceError("git is not installed")
         try:
+            env = sanitized_environment()
             result = subprocess.run(
-                [git] + list(GIT_SAFETY_ARGS) + list(args),
+                safe_git_argv(git, list(args), env=env, timeout=timeout),
                 input=input_bytes,
                 stdin=subprocess.DEVNULL if input_bytes is None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=sanitized_environment(),
+                env=env,
                 check=False,
                 timeout=timeout,
             )
+        except GitSafetyError as error:
+            raise WorkspaceError(str(error)) from error
         except (OSError, subprocess.TimeoutExpired) as error:
             raise WorkspaceError("git operation could not run: {}".format(error.__class__.__name__)) from error
         if check and result.returncode != 0:
@@ -242,6 +246,11 @@ class WorkspaceManager:
 
     def _record_path(self, workspace_id: str) -> Path:
         return self.state_dir / "records" / "workspaces" / (workspace_id + ".json")
+
+    def _branch_name(self, run_id, task_id, box_id, *, integration=False):
+        namespace = hashlib.sha256(str(self.state_dir).encode("utf-8")).hexdigest()[:20]
+        return "camol/{}/{}/{}/{}".format(namespace, _component(run_id),
+            "integration" if integration else _component(task_id), _component(box_id))
 
     @staticmethod
     def _atomic_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -297,6 +306,21 @@ class WorkspaceManager:
         created_at: Optional[str] = None,
     ) -> WorkspaceHandle:
         return self._prepare(run_id, task_id, box_id, base_revision=base_revision, created_at=created_at, integration=False)
+
+    def restore_receipt(self, receipt: WorkspaceReceipt) -> WorkspaceHandle:
+        """Reload a retained workspace without replacing its saved generation."""
+        record = self._record_path(receipt.workspace_id)
+        try:
+            payload = json.loads(record.read_text(encoding="utf-8"))
+            handle = self._load_existing(
+                record, run_id=payload["run_id"], task_id=payload["task_id"],
+                box_id=payload["box_id"], integration=payload["integration"],
+            )
+        except (KeyError, OSError, ValueError) as error:
+            raise WorkspaceError("cannot restore retained workspace receipt") from error
+        if self.refresh_receipt(handle).digest() != receipt.digest():
+            raise WorkspaceError("retained workspace has changed since verification")
+        return handle
 
     def prepare_integration(
         self, run_id: str, *, base_revision: Optional[str] = None, created_at: Optional[str] = None
@@ -362,7 +386,9 @@ class WorkspaceManager:
 
         revision = base_revision or self._git("-C", str(self.source), "rev-parse", "HEAD")
         resolved_revision = self._git("-C", str(self.source), "rev-parse", "{}^{{commit}}".format(revision))
-        branch = "camol/{}/{}/{}".format(safe_run, "integration" if integration else safe_task, safe_box)
+        # New records namespace refs by controller directory. Existing records
+        # above retain their exact prior branch, including legacy naming.
+        branch = self._branch_name(run_id, task_id, box_id, integration=integration)
         path = self.state_dir / "worktrees" / safe_run / (
             "integration" if integration else "{}--{}".format(safe_task, safe_box)
         )
@@ -377,12 +403,15 @@ class WorkspaceManager:
         created = False
         try:
             self._git(
-                "-C", str(self.source), "worktree", "add", "--no-track", "-b", branch, str(path), resolved_revision,
+                "-C", str(self.source), "worktree", "add", "--no-track", "--no-checkout", "-b", branch, str(path), resolved_revision,
                 timeout=300,
             )
             created = True
             if path.is_symlink() or not _inside(path, self.state_dir / "worktrees"):
                 raise WorkspaceError("created workspace escaped the state directory")
+            # Conditional includes may select different callback drivers in
+            # this worktree. Inspect that configuration before checkout.
+            self._git("-C", str(path), "read-tree", "--reset", "-u", resolved_revision)
             receipt = WorkspaceReceipt(
                 workspace_id=workspace_id,
                 repository_id=self._repository_id(),

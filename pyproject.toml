@@ -4,19 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "camol-harness"
-version = "0.2.0"
+dynamic = ["version"]
 description = "A persistent, plan-driven multi-agent orchestration harness."
 requires-python = ">=3.9"
 dependencies = []
+readme = "README.md"
+
+[project.urls]
+Repository = "https://github.com/Birukedotcom/Camol-Harness"
+Issues = "https://github.com/Birukedotcom/Camol-Harness/issues"
 
 [project.optional-dependencies]
 tui = ["textual>=8.0,<9"]
+graph = ["tomli>=2,<3; python_version < '3.11'"]
 
 [project.scripts]
 camol = "camol.cli:main"
 
 [tool.setuptools]
 packages = ["camol"]
+
+[tool.setuptools.dynamic]
+version = {attr = "camol._version.__version__"}
 
 [tool.setuptools.package-data]
 camol = ["assets/*.txt", "assets/profiles/*.json"]

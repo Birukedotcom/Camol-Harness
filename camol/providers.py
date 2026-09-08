@@ -91,6 +91,9 @@ class ModelProfile:
     credential_refs: Tuple[str, ...]
     credential_read_paths: Tuple[str, ...]
     maturity: str
+    execution_policy: Optional[Dict[str, str]] = None
+    local_provider: Optional[str] = None
+    local_endpoint: Optional[str] = None
 
     def __post_init__(self) -> None:
         for name in ("profile_id", "provider", "adapter_kind"):
@@ -124,9 +127,14 @@ class ModelProfile:
                 raise ProviderError("credential_read_paths must be descendants of {home}")
         if self.credential_read_paths and not self.credential_refs:
             raise ProviderError("credential_read_paths require an opaque credential reference")
+        if self.execution_policy is not None:
+            from .codex_policy import validate_codex_policy
+            validate_codex_policy(self)
+        elif self.adapter_kind in {"codex_cli", "codex_oss"} or self.local_provider is not None or self.local_endpoint is not None:
+            raise ProviderError("Codex workers require a schema2 explicit execution_policy")
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "schema": self.SCHEMA,
             "schema_version": self.SCHEMA_VERSION,
             "profile_id": self.profile_id,
@@ -149,6 +157,10 @@ class ModelProfile:
             "credential_read_paths": list(self.credential_read_paths),
             "maturity": self.maturity,
         }
+        if self.execution_policy is not None:
+            result.update(schema_version=2, execution_policy=dict(self.execution_policy),
+                          local_provider=self.local_provider, local_endpoint=self.local_endpoint)
+        return result
 
     def digest(self) -> str:
         return canonical_digest(self.to_dict())
@@ -157,12 +169,18 @@ class ModelProfile:
     def from_dict(cls, payload: Mapping[str, Any]) -> "ModelProfile":
         if not isinstance(payload, dict):
             raise ProviderError("model profile must be an object")
-        require_schema_header(payload, cls.SCHEMA, cls.SCHEMA_VERSION, "model profile")
-        reject_unknown_fields(payload, cls.FIELDS, "model profile")
-        missing = sorted(set(cls.FIELDS) - set(payload))
+        version = payload.get("schema_version")
+        if type(version) is not int or version not in {1, 2}:
+            raise ProviderError("model profile schema_version must be 1 or 2")
+        require_schema_header(payload, cls.SCHEMA, version, "model profile")
+        fields = set(cls.FIELDS) | ({"execution_policy", "local_provider", "local_endpoint"} if version == 2 else set())
+        reject_unknown_fields(payload, fields, "model profile")
+        missing = sorted(fields - set(payload))
         if missing:
             raise ProviderError("model profile is missing fields: {}".format(", ".join(missing)))
-        values = {key: payload[key] for key in cls.FIELDS if key not in {"schema", "schema_version"}}
+        values = {key: payload[key] for key in fields if key not in {"schema", "schema_version"}}
+        if version == 2 and payload["execution_policy"] is None:
+            raise ProviderError("schema2 execution_policy cannot be null")
         for name in (
             "allowed_resolved_models", "allowed_tools", "network_destinations",
             "credential_refs", "credential_read_paths",

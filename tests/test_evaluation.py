@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,9 @@ from camol.runner import HarnessRunner
 from camol.schema import canonical_digest
 from camol.state import project
 from camol.store import SQLiteEventStore
+from camol.debugger import Debugger
+from camol.sandbox import MacOSSandboxBackend
+from camol.probes import Redactor
 
 
 AGENT = r'''import hashlib
@@ -121,6 +125,50 @@ class EvaluationLoopTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    @unittest.skipUnless(MacOSSandboxBackend.available(), "requires macOS sandbox-exec")
+    def test_hardened_verifier_cannot_temporarily_rewrite_oracle_but_can_use_scratch(self):
+        oracle = self.source / "oracle.txt"
+        oracle.write_text("good")
+        git(self.source, "add", "oracle.txt")
+        git(self.source, "commit", "-qm", "oracle")
+        store = SQLiteEventStore(self.state / "events.sqlite3")
+        self.addCleanup(store.close)
+        runner = HarnessRunner(Orchestrator(store), self.source, state_dir=self.state)
+        assignment = dict(task_id="task", agent_id="worker", lease_id="lease", fence={"run_id": "readonly-verifier"})
+        attack = "from pathlib import Path; import atexit; p=Path('oracle.txt'); old=p.read_text(); atexit.register(lambda:p.write_text(old)); p.write_text('bad'); assert p.read_text()=='bad'"
+        async def check(code, tier):
+            return await runner._run_check(self.source, {"purpose": "Oracle mutation trap", "argv": [sys.executable, "-c", code]},
+                assignment, workspace_root=self.source, trust_tier=tier)
+        hardened = asyncio.run(check(attack, "developer_sandboxed"))
+        self.assertFalse(hardened["passed"], hardened)
+        self.assertEqual(hardened["source_write_policy"], "os_readonly_with_scratch")
+        self.assertEqual(oracle.read_text(), "good")
+        legitimate = asyncio.run(check("import tempfile; from pathlib import Path; f=tempfile.TemporaryFile(); f.write(b'scratch'); assert Path('oracle.txt').read_text()=='good'", "developer_sandboxed"))
+        self.assertTrue(legitimate["passed"], legitimate)
+        weak = asyncio.run(check(attack, "developer_trusted"))
+        self.assertTrue(weak["passed"], weak)
+        self.assertEqual(weak["source_write_policy"], "hash_checks_only_unenforced")
+        self.assertEqual(oracle.read_text(), "good")
+
+    def test_redacted_policy_metadata_keeps_gates_and_debugger_evidence_bound(self):
+        from tests.test_gate_runtime import v5_plan
+        plan = v5_plan("redacted-check-binding")
+        store = SQLiteEventStore(self.state / "events.sqlite3")
+        self.addCleanup(store.close)
+        # Deliberately redact a string present only in nested policy metadata.
+        orchestrator = Orchestrator(store, redactor=Redactor({"TEST_SECRET": "PYTHONDONTWRITEBYTECODE"}))
+        state = orchestrator.initialize(plan)
+        orchestrator.approve_plan(state["run_id"], "human-owner", state["plan_digest"])
+        runner = HarnessRunner(orchestrator, self.source, state_dir=self.state)
+        self.addCleanup(runner.close)
+        final = asyncio.run(runner.run_until_terminal(state["run_id"]))
+        self.assertEqual(final["status"], "awaiting_acceptance", final.get("terminal"))
+        self.assertTrue(Debugger(orchestrator, state["run_id"]).inbox()[0]["verifier_evidence_ids"])
+        integration = final["integrations"][0]
+        assessed = final["gate_assessments"][integration["candidate_id"] + ":integration"]
+        self.assertEqual(integration["checks_digest"], assessed["checks_digest"])
+        self.assertEqual(project(store.read(state["run_id"])), final)
+
     def execute(self, plan):
         store = SQLiteEventStore(self.state / "events.sqlite3")
         self.addCleanup(store.close)
@@ -136,6 +184,16 @@ class EvaluationLoopTests(unittest.TestCase):
         self.assertEqual(final["status"], "completed", final.get("terminal"))
         self.assertEqual(final["tasks"]["change"]["attempts"], 2)
         self.assertEqual(len(final["counterexamples"]), 1)
+        reader = SQLiteEventStore(self.state / "events.sqlite3")
+        try:
+            inbox = Debugger(Orchestrator(reader), plan["run"]["id"]).inbox()
+        finally:
+            reader.close()
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["status"], "untriaged")
+        self.assertFalse(inbox[0]["blocking"])
+        self.assertTrue(inbox[0]["verifier_evidence_ids"])
+        self.assertEqual(final["debug_cases"], {})
         self.assertEqual(final["counterexamples"][0]["phase"], "candidate")
         self.assertEqual(len(final["candidates"]), 2)
         self.assertEqual(len(final["integrations"]), 1)

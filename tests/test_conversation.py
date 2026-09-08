@@ -2,10 +2,12 @@ import json
 import subprocess
 import tempfile
 import unittest
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
-from camol.conversation import ConversationError, _environment, _prompt, converse, parse_selection, provider_argv
+from camol.conversation import ConversationCancelled, ConversationError, _environment, _prompt, converse, parse_selection, provider_argv
 
 
 class ConversationTests(unittest.TestCase):
@@ -120,6 +122,25 @@ class ConversationTests(unittest.TestCase):
             )
         self.assertEqual(chunks, ["first ", "second"])
         self.assertEqual(reply.text, "first second")
+
+    def test_cancellation_kills_provider_even_when_it_never_reads_prompt(self):
+        executable = self.workspace / "fake-claude"
+        executable.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n", encoding="utf-8")
+        executable.chmod(0o755)
+        cancelled = threading.Event()
+        timer = threading.Timer(0.15, cancelled.set)
+        started = time.monotonic()
+        timer.start()
+        try:
+            with patch("camol.conversation.shutil.which", return_value=str(executable)):
+                with self.assertRaises(ConversationCancelled):
+                    converse(
+                        "claude:fable", "hello", [{"role": "human", "content": "x" * 4000}] * 20,
+                        effort="high", workspace=self.workspace, cancel_event=cancelled,
+                    )
+        finally:
+            timer.cancel()
+        self.assertLess(time.monotonic() - started, 2)
 
 
 if __name__ == "__main__":

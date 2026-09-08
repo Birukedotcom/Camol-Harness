@@ -9,7 +9,7 @@ complete runnable example.
 
 ## Schema versions
 
-Four `schema_version` values are readable. Any other value is rejected with
+Five `schema_version` values are readable. Any other value is rejected with
 `unsupported schema_version`.
 
 | Version | Status | Differences |
@@ -17,7 +17,8 @@ Four `schema_version` values are readable. Any other value is rejected with
 | `1` | frozen; digests pinned in `tests/test_runbook.py` | Accepts the legacy `run.max_agents` alias, ignores unknown fields, and has no readiness fields. Normalization is byte-identical to the pre-M0 kernel, so existing frozen plans still resume. |
 | `2` | frozen | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, rejects booleans in integer fields, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
 | `3` | frozen | Preserves v2 semantics and adds a provider-neutral hosted-adapter shape: `kind`, workspace-relative `profile`, optional strict `profile_snapshot`, and `timeout_seconds`. Process adapters retain `kind`, `argv`, and `timeout_seconds`. |
-| `4` | current | Preserves v3 semantics, requires an explicit `evaluator_assets` list on every task, and permits an explicit verification-command `cwd` of `box` or `workspace_root`. Protected asset manifests/bytes and evaluator location are digest-bound; changed workspace copies cannot pass. |
+| `4` | frozen | Preserves v3 semantics, requires an explicit `evaluator_assets` list on every task, and permits an explicit verification-command `cwd` of `box` or `workspace_root`. Protected asset manifests/bytes and evaluator location are digest-bound; changed workspace copies cannot pass. |
+| `5` | current | Adds an explicit `state_model`: versioned invariants, obligations, task gates, and owner-written mappings from each frozen verification command to evaluator families and invariant IDs. Candidate and integration gates are replayed before acceptance, and the final integrated outcome requires human acceptance. |
 
 A v1 file that contains a v2 field (`readiness_policy` or `trust_tier`) is rejected
 rather than partially reinterpreted. Upgrading is explicit:
@@ -112,6 +113,42 @@ keys, and non-JSON values. The same function hashes readiness receipts, workspac
 receipts, reservations, grants, and lease fences (`camol.readiness`).
 
 ## Run
+
+Schema V5 adds a required root `state_model` object:
+
+```text
+invariants: [camol.invariant/v1 records]
+obligations: [camol.obligation/v1 records]
+gates: [{task_id, policy: camol.gate_policy/v1, invariant_ids,
+         obligation_ids, evaluators: [{verification_index, family, invariant_ids}]}]
+final_acceptance: "human"
+```
+
+Mappings are explicit decisions reviewed with the plan. Camol never infers that an
+arbitrary green test establishes a prose invariant. Every verification command and
+obligation is mapped; every inherited global invariant is included in each task
+gate. Threshold definitions and mappings are part of the evaluator digest and are
+included in worker context. Missing property, metamorphic, adaptive, integration,
+rollback, or real-boundary checks cannot silently downgrade a named threshold.
+
+The evaluator command boundary generates executed command and test-result evidence.
+Gate replay verifies exact command arguments, task lease, plan, evaluator,
+environment identity, and candidate or integration artifact identity. Worker claims
+cannot satisfy these obligations. A `NOT_DISPROVED_WITHIN_BUDGET` result cannot
+substitute for required positive target evidence.
+
+Task gates requiring a human set a durable `gate_wait` on that task. The candidate
+stays immutable and other tasks may continue. `approve_task_gate(run_id, task_id,
+approved_by, assessment_digest)` accepts only the exact pending gate and run owner;
+verification resumes after readiness is re-proven. Final completion stops at
+`awaiting_acceptance`, exposing an outcome digest covering the plan, integrations,
+gates, evidence, and debug cases. `accept_run(run_id, approved_by, outcome_digest)`
+accepts only that exact outcome and the original human approver. These methods are
+available on the embeddable orchestrator as well as terminal controls.
+
+V1–V4 retain their original completion semantics. There is no automatic upgrade to
+V5 because evaluator-to-invariant mappings require human judgment. Import an explicit
+V5 runbook to use these gates.
 
 ```json
 {

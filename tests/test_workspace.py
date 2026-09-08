@@ -65,9 +65,18 @@ class WorkspaceManagerTests(unittest.TestCase):
             WorkspaceManager(self.source, symlink)
 
         manager = WorkspaceManager(self.source, self.state)
-        git(self.source, "branch", "camol/run/task/box")
+        git(self.source, "branch", manager._branch_name("run", "task", "box"))
         with self.assertRaisesRegex(WorkspaceError, "branch already exists"):
             manager.prepare_task("run", "task", "box")
+
+    def test_same_run_task_box_in_distinct_state_directories_have_distinct_refs(self):
+        first = WorkspaceManager(self.source, self.state).prepare_task("run", "task", "box")
+        other_state = self.root / "other-state"
+        second = WorkspaceManager(self.source, other_state).prepare_task("run", "task", "box")
+        self.assertNotEqual(first.branch, second.branch)
+        self.assertNotEqual(first.path, second.path)
+        self.assertEqual(WorkspaceManager(self.source, self.state).prepare_task("run", "task", "box"), first)
+        self.assertEqual(WorkspaceManager(self.source, other_state).prepare_task("run", "task", "box"), second)
 
     def test_base_revision_is_exact_and_source_is_never_worker_cwd(self):
         base = git(self.source, "rev-parse", "HEAD")

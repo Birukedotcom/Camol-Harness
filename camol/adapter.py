@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import importlib
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
@@ -45,9 +47,13 @@ class ProcessAgentAdapter:
         self.run_id = run_id
         self.state_dir = Path(state_dir).resolve() if state_dir is not None else self.workspace / ".camol"
         self.sandbox_backend = sandbox_backend
+        if sandbox_backend is not None:
+            sandbox_backend.invocation_root = self.state_dir / "packets" / run_id
         self.sandbox_policy = sandbox_policy
         self.artifact_store = artifact_store
         self.redactor = redactor or Redactor()
+        self.before_launch = None
+        self.execution_environment = None
         if (sandbox_backend is None) != (sandbox_policy is None):
             raise AdapterError("sandbox backend and policy must be supplied together")
 
@@ -58,6 +64,11 @@ class ProcessAgentAdapter:
         except ValueError as error:
             raise AdapterError("agent path escapes the harness workspace") from error
         return path
+
+    async def _authorize_launch(self, assignment, turn_number):
+        """Runtime callback runs only for a new invocation, never cache replay."""
+        if self.before_launch is not None:
+            await self.before_launch(assignment, turn_number)
 
     async def execute_turn(
         self,
@@ -78,6 +89,9 @@ class ProcessAgentAdapter:
         packet_dir.mkdir(parents=True, exist_ok=True)
         packet_path = packet_dir / "turn-{:03d}.packet.json".format(turn_number)
         result_path = packet_dir / "turn-{:03d}.result.json".format(turn_number)
+        worker_dir = packet_dir / "worker-output"
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        worker_result_path = worker_dir / "turn-{:03d}.result.json".format(turn_number)
         desired_packet_bytes = (json.dumps(packet, indent=2, sort_keys=True) + "\n").encode("utf-8")
         packet_bytes = desired_packet_bytes
         if packet_path.exists():
@@ -142,13 +156,14 @@ class ProcessAgentAdapter:
             except (AdapterError, json.JSONDecodeError):
                 result_path.unlink()
 
+        await self._authorize_launch(assignment, turn_number)
         argv = _substitute(
             agent["adapter"]["argv"],
             {
                 "workspace": str(self.workspace),
                 "box": str(box),
                 "packet": str(packet_path),
-                "result": str(result_path),
+                "result": str(worker_result_path),
                 "run_id": self.run_id,
                 "task_id": assignment["task_id"],
                 "agent_id": assignment["agent_id"],
@@ -161,6 +176,7 @@ class ProcessAgentAdapter:
                 cwd=box,
                 policy=self.sandbox_policy,
                 timeout_seconds=agent["adapter"]["timeout_seconds"],
+                environment=self.execution_environment,
                 invocation_record=packet_dir / "turn-{:03d}.invocation.json".format(turn_number),
             )
             return_code = sandboxed.exit_code
@@ -239,6 +255,7 @@ class ProcessAgentAdapter:
                 "artifact_refs": output_references,
                 "data": {
                     "invocation_id": invocation_id,
+                    "turn_number": turn_number,
                     "argv": self.redactor.argv(argv),
                     "cwd": self.redactor.text(str(box)),
                     "exit_code": return_code,
@@ -277,17 +294,30 @@ class ProcessAgentAdapter:
                 ),
                 observed_evidence=observed_evidence,
             )
-        if not result_path.exists():
-            raise AdapterError("agent did not write its structured result")
+        if not worker_result_path.exists():
+            raise AdapterError("agent did not write its structured result", observed_evidence=observed_evidence)
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise AdapterError("agent result is not valid JSON") from error
-        self.validate_result(result, packet_sha256)
+            descriptor = os.open(str(worker_result_path), os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as result_file:
+                if not stat.S_ISREG(os.fstat(result_file.fileno()).st_mode):
+                    raise ValueError("result is not a regular file")
+                raw = result_file.read((16 << 20) + 1)
+            if len(raw) > 16 << 20:
+                raise ValueError("result exceeds its capture bound")
+            result = json.loads(raw)
+        except (OSError, ValueError) as error:
+            raise AdapterError("agent result is not valid JSON", observed_evidence=observed_evidence) from error
+        try:
+            self.validate_result(result, packet_sha256)
+        except AdapterError as error:
+            raise AdapterError(str(error), observed_evidence=observed_evidence) from error
         result = self.redactor.value(result)
         clean_result_bytes = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        if clean_result_bytes != result_path.read_bytes():
-            result_path.write_bytes(clean_result_bytes)
+        # Cache only after collection/validation in the control-owned root.
+        # Workers never receive write permission for packets, journals or logs.
+        temporary = result_path.with_suffix(".tmp")
+        temporary.write_bytes(clean_result_bytes)
+        temporary.replace(result_path)
         result_reference = self._store_content(
             clean_result_bytes,
             assignment,
@@ -396,7 +426,7 @@ class ProcessAgentAdapter:
 
 
 _ADAPTER_FACTORIES: Dict[str, Callable[..., ProcessAgentAdapter]] = {"process": ProcessAgentAdapter}
-_BUNDLED_ADAPTER_MODULES = ("camol.claude_adapter",)
+_BUNDLED_ADAPTER_MODULES = ("camol.claude_adapter", "camol.codex_adapter")
 
 
 def register_agent_adapter(kind: str, factory: Callable[..., ProcessAgentAdapter]) -> None:

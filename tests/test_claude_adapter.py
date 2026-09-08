@@ -11,6 +11,8 @@ from camol.adapter import AdapterError, create_agent_adapter
 from camol.probes import Redactor
 from camol.sandbox import DeveloperTrustedBackend, SandboxPolicy
 from camol.runner import HarnessRunner
+from camol.usage import UsageRecord
+from camol.sandbox import SandboxError
 from tests.test_providers import profile_payload
 
 
@@ -91,11 +93,51 @@ for event in events: print(json.dumps(event))
         self.assertIn("model_usage", kinds)
         self.assertEqual(kinds.count("tool_call"), 2)
         usage = next(item for item in observed if item["kind"] == "model_usage")
-        self.assertEqual(usage["data"]["resolved_model"], "claude-fable-5")
+        self.assertEqual(usage["data"]["model"], "claude-fable-5")
         self.assertEqual(usage["data"]["cost_usd_micros"], 30000)
         command = next(item for item in observed if item["kind"] == "command")
         self.assertNotIn("CONTEXT PACKET", " ".join(command["data"]["argv"]))
         self.assertTrue(command["artifact_refs"])
+
+    async def test_overspend_retains_incurred_usage_and_tool_history(self):
+        with patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", "")}):
+            with self.assertRaisesRegex(AdapterError, "cost ceiling") as caught:
+                await self.adapter().execute_turn(self.agent, self.assignment, self.packet, 1, cost_budget_cents=1)
+        items = caught.exception.observed_evidence
+        record = UsageRecord.from_dict(next(item["data"] for item in items if item["kind"] == "model_usage"))
+        self.assertEqual(record.cost_usd_micros, 30000)
+        self.assertEqual(record.total_tokens, 20)
+        self.assertEqual(record.outcome, "error")
+        self.assertEqual(sum(item["kind"] == "tool_call" for item in items), 2)
+
+    async def test_invalid_agent_json_retains_valid_provider_receipt(self):
+        content = self.executable.read_text()
+        self.executable.write_text(content.replace("json.dumps(result)", "'invalid-json'"))
+        with patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", "")}):
+            with self.assertRaisesRegex(AdapterError, "JSON result contract") as caught:
+                await self.adapter().execute_turn(self.agent, self.assignment, self.packet, 1, cost_budget_cents=5)
+        receipt = next(item for item in caught.exception.observed_evidence if item["kind"] == "model_usage")
+        self.assertEqual(receipt["data"]["cost_usd_micros"], 30000)
+
+    async def test_transport_failure_reserves_budget_and_marks_usage_unknown(self):
+        adapter = self.adapter()
+        with patch.object(adapter.sandbox_backend, "run", side_effect=SandboxError("sandboxed process timed out")):
+            with self.assertRaises(AdapterError) as caught:
+                await adapter.execute_turn(self.agent, self.assignment, self.packet, 1, cost_budget_cents=5)
+        receipt = UsageRecord.from_dict(caught.exception.observed_evidence[0]["data"])
+        self.assertEqual(receipt.provenance, "unknown")
+        self.assertIsNone(receipt.total_tokens)
+        self.assertIsNone(receipt.cost_usd_micros)
+        self.assertEqual(receipt.cost_charge, 50000)
+
+    async def test_unapproved_secondary_model_fails_with_billing_evidence(self):
+        content = self.executable.read_text()
+        content = content.replace("'modelUsage': {'claude-fable-5': {'costUSD': 0.03}}", "'model': 'claude-fable-5', 'modelUsage': {'claude-fable-5': {'costUSD': 0.02}, 'unapproved': {'costUSD': 0.01}}")
+        self.executable.write_text(content)
+        with patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", "")}):
+            with self.assertRaisesRegex(AdapterError, "secondary model") as caught:
+                await self.adapter().execute_turn(self.agent, self.assignment, self.packet, 1, cost_budget_cents=5)
+        self.assertEqual(next(item["data"]["cost_usd_micros"] for item in caught.exception.observed_evidence if item["kind"] == "model_usage"), 30000)
 
     async def test_exhausted_budget_prevents_cli_launch(self):
         with self.assertRaisesRegex(AdapterError, "budget is exhausted"):
@@ -125,15 +167,15 @@ for event in events: print(json.dumps(event))
 
     def test_remaining_cost_is_the_strictest_turn_task_or_run_ceiling(self):
         state = {"evidence": {
-            "one": {"kind": "model_usage", "task_id": "build", "data": {"cost_usd_micros": 150_000}},
-            "two": {"kind": "model_usage", "task_id": "other", "data": {"cost_usd_micros": 120_000}},
+            "one": {"kind": "model_usage", "epistemic_status": "OBSERVED", "producer": "adapter", "task_id": "build", "data": {"cost_usd_micros": 150_000}},
+            "two": {"kind": "model_usage", "epistemic_status": "OBSERVED", "producer": "adapter", "task_id": "other", "data": {"cost_usd_micros": 120_000}},
         }}
         self.assertEqual(
             HarnessRunner._provider_cost_remaining(state, self.agent, "build", self.workspace),
             3,
         )
         state["evidence"]["three"] = {
-            "kind": "model_usage", "task_id": "other", "data": {"cost_usd_micros": 30_000},
+            "kind": "model_usage", "epistemic_status": "OBSERVED", "producer": "adapter", "task_id": "other", "data": {"cost_usd_micros": 30_000},
         }
         self.assertEqual(
             HarnessRunner._provider_cost_remaining(state, self.agent, "build", self.workspace),

@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,6 +139,57 @@ class SessionStore:
         self.project_dir = project_state_dir(self.workspace, self.root)
         self.path = self.project_dir / "session.json"
         self.runs_dir = self.project_dir / "runs"
+        self.transcript_path = self.project_dir / "transcript.jsonl"
+        self.planning_calls_path = self.project_dir / "planning-calls.jsonl"
+
+    @contextmanager
+    def transaction(self):
+        """Serialize clients sharing one project, including separate terminals."""
+        import fcntl
+        self._ensure_root()
+        path = self.project_dir / "session.lock"
+        if path.is_symlink():
+            raise SessionError("interactive session lock must not be a symlink")
+        descriptor = os.open(str(path), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise SessionError("another client is updating this project; retry after its request finishes") from error
+            yield
+        finally:
+            os.close(descriptor)
+
+    def _append_jsonl(self, path: Path, value: Mapping[str, Any]) -> None:
+        self._ensure_root()
+        if path.is_symlink():
+            raise SessionError("interactive log must not be a symlink")
+        descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(value, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def append_planning_call(self, value: Mapping[str, Any]) -> None:
+        self._append_jsonl(self.planning_calls_path, value)
+
+    def planning_calls(self):
+        return self._read_jsonl(self.planning_calls_path)
+
+    def _read_jsonl(self, path: Path):
+        if not path.exists():
+            return []
+        if path.is_symlink():
+            raise SessionError("interactive log must not be a symlink")
+        try:
+            with path.open(encoding="utf-8") as handle:
+                return [json.loads(line) for line in handle if line.strip()]
+        except (OSError, ValueError) as error:
+            raise SessionError("interactive log is malformed") from error
+
+    def history(self, fallback, count: int = 20):
+        # Legacy sessions have no archive. Seed it on the first subsequent write.
+        return (self._read_jsonl(self.transcript_path) if self.transcript_path.exists() else list(fallback))[-count:]
 
     def _ensure_root(self) -> None:
         for path in (self.project_dir, self.runs_dir):
@@ -227,6 +279,10 @@ class SessionStore:
             "kind": kind,
         })
         record = dict(value)
+        if not self.transcript_path.exists():
+            for previous in record["messages"]:
+                self._append_jsonl(self.transcript_path, previous)
+        self._append_jsonl(self.transcript_path, message)
         record["messages"] = (list(record["messages"]) + [message])[-500:]
         return self.save(record)
 

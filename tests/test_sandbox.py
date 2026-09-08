@@ -8,6 +8,8 @@ import unittest
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
+from dataclasses import replace
 
 from camol.sandbox import (
     DeveloperTrustedBackend,
@@ -17,6 +19,7 @@ from camol.sandbox import (
     system_read_paths,
 )
 from camol.workspace import WorkspaceManager
+from camol.admission import AdmissionController
 
 
 class SandboxTests(unittest.TestCase):
@@ -61,6 +64,70 @@ class SandboxTests(unittest.TestCase):
         profile = MacOSSandboxBackend.profile(self.policy())
         self.assertIn("file-read-metadata", profile)
         self.assertNotIn('(allow file-read* (subpath "{}"))'.format(self.root), profile)
+
+    def test_v1_policy_identity_is_unchanged_and_v2_roundtrips_exclusions(self):
+        old = self.policy()
+        serialized = old.to_dict()
+        self.assertEqual(serialized["schema_version"], 1)
+        self.assertNotIn("readonly_paths", serialized)
+        self.assertEqual(SandboxPolicy.from_dict(serialized).digest(), old.digest())
+        oracle = self.workspace / "oracle.txt"
+        oracle.write_text("strict")
+        policy = replace(old, readonly_paths=(str(oracle),))
+        self.assertEqual(policy.to_dict()["schema_version"], 2)
+        self.assertEqual(SandboxPolicy.from_dict(policy.to_dict()), policy)
+        with self.assertRaisesRegex(SandboxError, "cannot enforce"):
+            replace(policy, trust_tier="developer_trusted")
+        forged = old.to_dict()
+        forged["readonly_paths"] = [str(oracle)]
+        with self.assertRaises(ValueError):
+            SandboxPolicy.from_dict(forged)
+
+    @unittest.skipUnless(MacOSSandboxBackend.available(), "requires macOS sandbox-exec")
+    def test_readonly_oracle_denies_transient_writes_and_parent_replacement(self):
+        oracles = self.workspace / "oracles"
+        oracles.mkdir()
+        oracle = oracles / "expected.txt"
+        oracle.write_text("good")
+        policy = replace(self.policy(), readonly_paths=(str(oracle),))
+        attack = """from pathlib import Path
+blocked = 0
+oracle = Path('oracles/expected.txt')
+for operation in (lambda: oracle.write_text('bad'), lambda: oracle.unlink(),
+                  lambda: Path('oracles').rename('renamed'), lambda: oracle.rename('moved.txt')):
+    try:
+        operation()
+    except PermissionError:
+        blocked += 1
+Path('unrelated.txt').write_text('allowed')
+assert blocked == 4, blocked
+assert oracle.read_text() == 'good'
+"""
+        result = asyncio.run(MacOSSandboxBackend().run([sys.executable, "-c", attack], cwd=self.workspace, policy=policy, timeout_seconds=10))
+        self.assertEqual(result.exit_code, 0, result.stderr.decode())
+        self.assertEqual(oracle.read_text(), "good")
+        self.assertEqual((self.workspace / "unrelated.txt").read_text(), "allowed")
+
+    def test_runtime_read_roots_follow_multihop_venv_without_home_or_root_access(self):
+        installation = self.root / "managed-python"
+        (installation / "bin").mkdir(parents=True)
+        (installation / "lib" / "python3.12").mkdir(parents=True)
+        binary = installation / "bin" / "python3.12"
+        binary.write_bytes(b"fixture")
+        shim = self.root / "shim-bin"
+        shim.mkdir()
+        (shim / "python3.12").symlink_to(binary)
+        virtual = self.root / "venv"
+        (virtual / "bin").mkdir(parents=True)
+        (virtual / "lib").mkdir()
+        (virtual / "pyvenv.cfg").write_text("home = fixture")
+        (virtual / "bin" / "python").symlink_to(shim / "python3.12")
+        paths = system_read_paths(str(virtual / "bin" / "python"))
+        for expected in (shim, installation / "bin", installation / "lib", virtual / "lib", virtual / "pyvenv.cfg"):
+            self.assertIn(str(expected), paths)
+        self.assertNotIn("/", paths)
+        self.assertNotIn(str(Path.home()), paths)
+        self.assertNotIn(str(self.root), paths)
 
     def test_unsandboxed_backend_cannot_claim_sandboxed_trust(self):
         with self.assertRaisesRegex(SandboxError, "cannot satisfy"):
@@ -154,6 +221,50 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(persisted["state"], "completed")
         self.assertEqual(persisted["process_started"], "exited-before-os-observation")
 
+    def test_stdin_backpressure_is_bounded_and_reaps_the_child(self):
+        record = self.workspace / "blocked-input.invocation.json"
+
+        async def scenario():
+            with self.assertRaisesRegex(SandboxError, "timed out"):
+                await asyncio.wait_for(
+                    DeveloperTrustedBackend().run(
+                        [sys.executable, "-c", "import time; time.sleep(30)"],
+                        cwd=self.workspace, policy=self.policy(trust_tier="developer_trusted"),
+                        timeout_seconds=0.2, stdin_bytes=b"x" * (2 << 20),
+                        invocation_record=record,
+                    ), timeout=3,
+                )
+            payload = json.loads(record.read_text())
+            self.assertEqual(payload["state"], "timed_out")
+            with self.assertRaises(ProcessLookupError):
+                os.kill(payload["pid"], 0)
+
+        asyncio.run(scenario())
+
+    def test_cancellation_during_stdin_backpressure_reaps_the_child(self):
+        record = self.workspace / "cancel-input.invocation.json"
+
+        async def scenario():
+            pending = asyncio.create_task(DeveloperTrustedBackend().run(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=self.workspace, policy=self.policy(trust_tier="developer_trusted"),
+                timeout_seconds=30, stdin_bytes=b"x" * (2 << 20), invocation_record=record,
+            ))
+            for _ in range(100):
+                if record.exists():
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(record.exists())
+            pending.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await pending
+            payload = json.loads(record.read_text())
+            self.assertEqual(payload["state"], "terminated")
+            with self.assertRaises(ProcessLookupError):
+                os.kill(payload["pid"], 0)
+
+        asyncio.run(scenario())
+
     def test_process_streams_are_drained_but_retention_is_bounded(self):
         policy = self.policy(trust_tier="developer_trusted")
         size = (1 << 20) + 8192
@@ -200,6 +311,48 @@ class SandboxTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertEqual((self.workspace / "inside.txt").read_text(), "ok")
         self.assertEqual(sentinel.read_text(), "original")
+
+    @unittest.skipUnless(MacOSSandboxBackend.available(), "requires macOS sandbox-exec")
+    def test_worker_output_grant_cannot_overwrite_or_unlink_control_evidence(self):
+        controller = AdmissionController.__new__(AdmissionController)
+        controller.state_dir = self.root / "state"
+        controller.runbook = {"run": {"id": "run"}}
+        agent = dict(id="worker", adapter=dict(kind="process", argv=[sys.executable]), trust_tier="developer_sandboxed")
+        policy = controller._sandbox_policy(SimpleNamespace(path=self.workspace), {"id": "task"}, agent)
+        packets = controller.state_dir / "packets" / "run" / "task"
+        protected = [packets / name for name in ("turn-001.packet.json", "turn-001.provider-result.json", "turn-001.charge-pending.json", "turn-001.invocation.json")]
+        for path in protected:
+            path.write_text("trusted")
+        output = packets / "worker-output" / "turn-001.result.json"
+        invocation = packets / "kernel-record.json"
+        script = """from pathlib import Path
+import time
+for _ in range(200):
+    if Path(%r).exists():
+        break
+    time.sleep(0.005)
+blocked = 0
+for name in %r:
+    path = Path(name)
+    for operation in (lambda: path.write_text('forged'), lambda: path.unlink()):
+        try:
+            operation()
+        except PermissionError:
+            blocked += 1
+Path(%r).write_text('untrusted-result')
+Path('inside.txt').write_text('allowed')
+assert blocked == 10, blocked
+""" % (str(invocation), [str(path) for path in protected + [invocation]], str(output))
+        backend = MacOSSandboxBackend()
+        backend.invocation_root = packets
+        result = asyncio.run(backend.run([sys.executable, "-c", script], cwd=self.workspace,
+            policy=policy, timeout_seconds=10, invocation_record=invocation))
+        self.assertEqual(result.exit_code, 0, result.stderr.decode())
+        self.assertEqual(output.read_text(), "untrusted-result")
+        self.assertEqual((self.workspace / "inside.txt").read_text(), "allowed")
+        self.assertTrue(all(path.read_text() == "trusted" for path in protected))
+        self.assertEqual(json.loads(invocation.read_text())["state"], "completed")
+        self.assertNotIn(str(packets), policy.write_paths)
 
     @unittest.skipUnless(MacOSSandboxBackend.available(), "requires macOS sandbox-exec")
     def test_workspace_symlink_cannot_escape_write_policy(self):

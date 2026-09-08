@@ -1,0 +1,8 @@
+include README.md SPEC.md pyproject.toml setup.py
+recursive-include camol/assets *.txt *.json
+recursive-include assets *.txt *.png *.md
+recursive-include docs *.md *.json
+recursive-include examples *.json *.py
+recursive-include tests *.py
+recursive-include scripts *.py
+recursive-include Formula *.rb

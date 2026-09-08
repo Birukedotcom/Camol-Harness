@@ -1,11 +1,13 @@
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from camol.app import InteractiveController
 from camol.planning import compile_runbook
@@ -56,29 +58,22 @@ class ProductFlowTests(unittest.TestCase):
             final = self.controller.handle(answer)
         self.assertIn("Nothing has started", final.messages[0])
 
-        # Replace the planning-only manual adapter with the repository's explicit
-        # deterministic fixture adapter, preserving it beneath a new visible digest.
-        plan = dict(self.controller.session["plan"])
-        proposal = plan["proposal"]
-        plan["runbook"] = compile_runbook(
+        # An ordinary user can import an explicit process runbook. This goes
+        # through the same visible frozen-plan path as the terminal command.
+        proposal = self.controller.session["plan"]["proposal"]
+        runbook = compile_runbook(
             proposal,
-            run_id=plan["run_id"],
+            run_id=self.controller.session["run_id"],
             adapter={
                 "kind": "process",
                 "argv": ["python3", "{workspace}/examples/fake_agent.py", "{packet}", "{result}"],
                 "timeout_seconds": 60,
             },
         )
-        plan["execution_status"] = "ready"
-        plan["execution_limitation"] = "TEST FIXTURE: deterministic local process evidence; no hosted-model evidence."
-        digest = canonical_digest(plan)
-        self.controller.session = self.controller.store.update(
-            self.controller.session,
-            plan=plan,
-            plan_digest=digest,
-            approved_digest=None,
-            status="plan_ready",
-        )
+        runbook_path = self.workspace.parent / "process.runbook.json"
+        runbook_path.write_text(json.dumps(runbook), encoding="utf-8")
+        imported = self.controller.handle("/import " + str(runbook_path))
+        self.assertIn("IMPORTED PLAN", imported.messages[0])
         self.assertFalse(Path(self.controller.session["state_dir"]).exists())
         denied = self.controller.handle("/run")
         self.assertIn("requires the exact current plan", denied.messages[0])
@@ -119,6 +114,84 @@ class ProductFlowTests(unittest.TestCase):
         self.assertEqual(reattached.session["session_id"], self.controller.session["session_id"])
         status_response = reattached.handle("/status")
         self.assertIn("supervisor=terminal", status_response.messages[0])
+        self.assertIn("provider_observed_tokens", self.controller.handle("/usage run").messages[0])
+        self.assertEqual(json.loads(self.controller.handle("/debug list").messages[0]), {})
+
+    def test_second_completed_project_run_uses_a_new_ledger_and_boxes(self):
+        self.test_boot_to_grill_approval_detached_run_box_completion_and_reattach()
+        controller = self.controller
+        first_state_dir = Path(controller.session["state_dir"])
+        try:
+            response = controller.handle("/grill make the second fixture")
+            self.assertIn("GRILL 1", response.messages[0])
+            self.assertNotEqual(Path(controller.session["state_dir"]), first_state_dir)
+            for answer in (
+                "Second fixture has independent green verification", "Do not deploy", "Preserve source",
+                "second | produce the second fixture", "python3 -c 'pass'", "boxes=1 turns=3 tokens=12000",
+            ):
+                response = controller.handle(answer)
+            runbook = compile_runbook(
+                controller.session["plan"]["proposal"], run_id=controller.session["run_id"],
+                adapter={"kind": "process", "argv": ["python3", "{workspace}/examples/fake_agent.py", "{packet}", "{result}"], "timeout_seconds": 60},
+            )
+            runbook_path = self.workspace.parent / "second.runbook.json"
+            runbook_path.write_text(json.dumps(runbook), encoding="utf-8")
+            imported = controller.handle("/import " + str(runbook_path))
+            self.assertIn("IMPORTED PLAN", imported.messages[0])
+            controller.handle("/approve yes")
+            started = controller.handle("/run")
+            self.assertIn("detached", started.messages[-1])
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                status = controller._control("status")
+                if status["run"]["status"] in {"completed", "blocked"}:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(status["run"]["status"], "completed", status)
+            context = controller.handle("/box builder context")
+            self.assertIn("context-packet", context.messages[0])
+            self.assertIn("second fixture", context.messages[0])
+        finally:
+            if SupervisorPaths.under(first_state_dir).socket.exists():
+                asyncio.run(send_control(first_state_dir, "stop", requested_by="test-owner"))
+                deadline = time.monotonic() + 5
+                while SupervisorPaths.under(first_state_dir).socket.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+
+
+    def test_imported_codex_policy_to_real_daemon_build_and_human_acceptance(self):
+        from tests.test_codex_adapter import FAKE_CODEX, codex_profile
+        from tests.test_gate_runtime import v5_plan
+        bin_dir = self.workspace.parent / "fixture-bin"
+        bin_dir.mkdir()
+        executable = bin_dir / "fake-codex"
+        executable.write_text(FAKE_CODEX)
+        executable.chmod(0o755)
+        runbook = v5_plan("interactive-codex")
+        runbook["agents"][0]["adapter"] = {"kind": "codex_cli", "profile": "codex.json",
+                                          "profile_snapshot": codex_profile(), "timeout_seconds": 30}
+        path = self.workspace.parent / "codex.runbook.json"
+        path.write_text(json.dumps(runbook))
+        imported = self.controller.handle("/import " + str(path))
+        self.assertIn("IMPORTED PLAN", imported.messages[0])
+        self.controller.handle("/approve yes")
+        policy = self.controller._codex_launch_policy(self.controller.session["plan"])
+        with patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}):
+            started = self.controller.handle("/run --accept-provider-policy " + canonical_digest(policy) + " --accept-spend")
+            self.assertIn("detached", started.messages[-1])
+            deadline = time.monotonic() + 30
+            status = None
+            while time.monotonic() < deadline:
+                status = self.controller._control("status")
+                if status["run"]["status"] in {"awaiting_acceptance", "blocked", "completed"}:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(status["run"]["status"], "awaiting_acceptance", status)
+            pending = self.controller._control("acceptance")
+            accepted = self.controller.handle("/accept " + pending["acceptance"]["outcome_digest"])
+            self.assertIn("Final outcome accepted", accepted.messages[0])
+            self.assertEqual(self.controller._control("status")["run"]["status"], "completed")
+        self.assertIn("unknown_cost_invocations", self.controller.handle("/usage run").messages[0])
 
 
 if __name__ == "__main__":

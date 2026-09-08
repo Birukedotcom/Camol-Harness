@@ -55,13 +55,14 @@ import shutil
 import socket
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .readiness import ProbeResult
 from .schema import ID_PATTERN, SchemaError, canonical_digest
+from .git_safety import GIT_SAFETY_ARGS, GitSafetyError, safe_git_argv
 
 __all__ = [
     "ProbeExecutionError",
@@ -194,12 +195,18 @@ class Redactor:
             reverse=True,
         )
 
-    def text(self, value: str) -> str:
+    def text(self, value: str, *, truncated: bool = False) -> str:
         if not isinstance(value, str):
             return value
         text = value
         for secret in self._values:
             text = text.replace(secret, REDACTED)
+            if truncated:
+                # A retained stream prefix may stop inside a known multiline
+                # credential. Full-value matching alone would leak its prefix.
+                start = text.rfind(secret[:6])
+                if start >= 0 and secret.startswith(text[start:]):
+                    text = text[:start] + REDACTED
         text = _PEM_BLOCK.sub(REDACTED, text)
         text = _URL_USERINFO.sub(lambda match: "{}{}@".format(match.group("scheme"), REDACTED), text)
         text = _COOKIE_HEADER.sub(lambda match: "{}: {}".format(match.group(1), REDACTED), text)
@@ -285,6 +292,7 @@ Which = Callable[[str], Optional[str]]
 
 _ENV_PASSTHROUGH = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SYSTEMROOT")
 GIT_ENV = {
+    "GIT_NO_REPLACE_OBJECTS": "1",
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -294,14 +302,6 @@ GIT_ENV = {
 }
 # Command-line config overrides win over repository config, so a repo that sets
 # core.fsmonitor to a script, or a custom hooks path, cannot run anything.
-GIT_SAFETY_ARGS = (
-    "-c", "core.fsmonitor=false",
-    "-c", "core.untrackedCache=false",
-    "-c", "core.hooksPath=" + os.devnull,
-    "-c", "core.sshCommand=false",
-    "-c", "core.pager=cat",
-    "-c", "protocol.allow=never",
-)
 
 
 def sanitized_environment(source: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
@@ -317,17 +317,20 @@ def sanitized_environment(source: Optional[Mapping[str, str]] = None) -> Dict[st
 def run_command(argv: Sequence[str], cwd: Optional[Path], timeout_seconds: int = 20) -> CommandOutcome:
     """Run a command without a shell in a sanitized environment. Launch failure is a probe failure."""
     try:
+        env = sanitized_environment()
+        if Path(argv[0]).name in {"git", "git.exe"}:
+            argv = safe_git_argv(argv[0], argv[1:], env=env, cwd=cwd, timeout=timeout_seconds)
         completed = subprocess.run(
             list(argv),
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            env=sanitized_environment(),
+            env=env,
             timeout=timeout_seconds,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (OSError, subprocess.TimeoutExpired, GitSafetyError) as error:
         raise ProbeExecutionError("could not run {}: {}".format(Path(argv[0]).name, error.__class__.__name__))
     return CommandOutcome(
         argv=tuple(argv),
@@ -797,21 +800,21 @@ class AdapterBinaryProbe(Probe):
     def observe(self, context):
         adapter = self.agent["adapter"]
         policy = adapter_policy(self.agent, context)
-        if adapter.get("kind") == "claude_cli":
+        if adapter.get("kind") in {"claude_cli", "codex_cli", "codex_oss"}:
             try:
                 from .providers import model_profile_for_adapter
                 profile = model_profile_for_adapter(context.workspace, adapter)
             except Exception as error:
                 return self.red(
                     context,
-                    "Claude adapter profile is invalid: {}".format(error),
+                    "provider adapter profile is invalid: {}".format(error),
                     reason="POLICY_DENIED",
                     wake="repair and re-approve the versioned model profile",
                     missing=["valid model profile"],
                     facts={"policy": policy, "profile": adapter.get("profile")},
                 )
-            if profile.adapter_kind != "claude_cli":
-                return self.red(context, "model profile adapter kind does not match the worker", reason="POLICY_DENIED", wake="select a claude_cli profile", missing=["matching adapter profile"], facts={"profile_digest": profile.digest()})
+            if profile.adapter_kind != adapter["kind"]:
+                return self.red(context, "model profile adapter kind does not match the worker", reason="POLICY_DENIED", wake="select a matching adapter profile", missing=["matching adapter profile"], facts={"profile_digest": profile.digest()})
             resolved = context.path_binary(profile.runtime_binary)
             facts = {
                 "policy": policy,
@@ -822,14 +825,20 @@ class AdapterBinaryProbe(Probe):
                 "maturity": profile.maturity,
             }
             if not resolved:
-                return self.red(context, "Claude CLI runtime is not installed on PATH", reason="NEEDS_DOWNLOAD", wake="install {} and rerun readiness".format(profile.runtime_binary), missing=[profile.runtime_binary], method="filesystem", facts=facts)
+                return self.red(context, "provider CLI runtime is not installed on PATH", reason="NEEDS_DOWNLOAD", wake="install {} and rerun readiness".format(profile.runtime_binary), missing=[profile.runtime_binary], method="filesystem", facts=facts)
             outcome = context.runner((resolved, "--version"), None, 20)
             lines = (outcome.stdout or outcome.stderr).strip().splitlines()
             version = lines[0] if outcome.exit_code == 0 and lines else None
             facts["version"] = version
             if not version:
-                return self.unknown(context, "Claude CLI did not return a version", reason="OPERATOR_ATTENTION", wake="repair or upgrade the Claude CLI", missing=["parseable CLI version"], command=(resolved, "--version"), facts=facts)
-            return self.green(context, "Claude CLI is installed and its version was observed; provider entitlement is checked separately", command=(resolved, "--version"), tool_version=version, facts=facts)
+                return self.unknown(context, "provider CLI did not return a version", reason="OPERATOR_ATTENTION", wake="repair or upgrade the provider CLI", missing=["parseable CLI version"], command=(resolved, "--version"), facts=facts)
+            if adapter["kind"] in {"codex_cli", "codex_oss"}:
+                help_result = context.runner((resolved, "exec", "--help"), None, 20)
+                required_flags = ("--ignore-user-config", "--ignore-rules", "--ephemeral", "--output-schema", "--json", "--sandbox")
+                if help_result.exit_code or any(flag not in help_result.stdout for flag in required_flags):
+                    return self.red(context, "Codex CLI lacks required worker isolation/output flags", reason="POLICY_DENIED", wake="upgrade Codex to a compatible runtime", missing=list(required_flags), facts=facts)
+                facts["execution_policy"] = profile.execution_policy
+            return self.green(context, "CLI is installed and its version was observed; model capability is checked separately under the frozen policy", command=(resolved, "--version"), tool_version=version, facts=facts)
         if adapter.get("kind") != "process":
             return self.unknown(context, "no probe adapter registered for adapter kind {!r}".format(adapter.get("kind")), reason="OPERATOR_ATTENTION", wake="register a probe adapter for this adapter kind", missing=["probe adapter for {}".format(adapter.get("kind"))], facts={"policy": policy})
         raw = list(adapter["argv"])
@@ -1007,7 +1016,7 @@ class ProviderConnectionProbe(Probe):
                 continue
             adapter = agent["adapter"]
             item = {"agent_id": agent["id"], "adapter_kind": adapter["kind"], "profile": adapter.get("profile")}
-            if adapter["kind"] == "claude_cli" and adapter.get("profile"):
+            if adapter["kind"] in {"claude_cli", "codex_cli", "codex_oss"} and adapter.get("profile"):
                 try:
                     from .providers import model_profile_for_adapter
                     item["profile_digest"] = model_profile_for_adapter(context.workspace, adapter).digest()
@@ -1030,8 +1039,34 @@ class ProviderConnectionProbe(Probe):
         facts = {"agents": []}
         missing = []
         unsupported = False
+        capability_expiries = []
         for agent in hosted:
             adapter = agent["adapter"]
+            if adapter.get("kind") in {"codex_cli", "codex_oss"}:
+                try:
+                    from .providers import model_profile_for_adapter
+                    from .codex_policy import require_local_model, validate_codex_policy
+                    profile = model_profile_for_adapter(context.workspace, adapter)
+                    validate_codex_policy(profile)
+                    resolved = context.path_binary(profile.runtime_binary)
+                    if not resolved:
+                        raise ValueError("Codex runtime is missing")
+                    item = {"agent_id": agent["id"], "adapter_kind": adapter["kind"], "profile_digest": profile.digest(),
+                            "execution_policy": profile.execution_policy, "requested_model": profile.requested_model,
+                            "resolved_model": None, "quota_available": None, "hard_spend_ceiling": False}
+                    if adapter["kind"] == "codex_cli":
+                        auth = context.runner((resolved, "login", "status"), None, 20)
+                        authenticated = auth.exit_code == 0 and "logged in" in (auth.stdout + auth.stderr).lower()
+                        item["authenticated"] = authenticated
+                        if not authenticated:
+                            missing.append("existing Codex CLI login for " + agent["id"])
+                    else:
+                        item.update(require_local_model(profile))
+                        item["scope"] = "loopback catalog observed, not an offline/airgap or inference-quality proof"
+                    facts["agents"].append(item)
+                except Exception as error:
+                    missing.append("{}: {}".format(agent["id"], str(error)))
+                continue
             if adapter.get("kind") != "claude_cli" or not adapter.get("profile"):
                 unsupported = True
                 missing.append("provider probe adapter for {}".format(agent["id"]))
@@ -1049,6 +1084,9 @@ class ProviderConnectionProbe(Probe):
                 authenticated = payload.get("loggedIn") is True or payload.get("authenticated") is True
                 capability = read_capability(context.state_dir, profile)
                 valid, detail = capability.valid_for(profile, context.target_id, context.now) if capability else (False, "capability receipt is missing")
+                if valid:
+                    from .schema import parse_timestamp
+                    capability_expiries.append(parse_timestamp(capability.expires_at, "provider capability expiry"))
                 item = {
                     "agent_id": agent["id"],
                     "adapter_kind": adapter["kind"],
@@ -1076,12 +1114,17 @@ class ProviderConnectionProbe(Probe):
                 missing=missing,
                 facts=facts,
             )
-        return self.green(
+        outcome = self.green(
             context,
-            "existing CLI authentication and fresh spend-capped model capability are proven for every hosted worker",
+            "each provider satisfies its frozen capability tier; Codex requested-model/observed-only policy does not prove entitlement, exact model or a hard spend ceiling",
             method="in_process",
             facts=facts,
         )
+        if capability_expiries:
+            from .schema import parse_timestamp
+            expiry = min([parse_timestamp(outcome.result.expires_at, "provider probe expiry")] + capability_expiries)
+            outcome = replace(outcome, result=replace(outcome.result, expires_at=expiry.isoformat(timespec="microseconds")))
+        return outcome
 
 
 class ServiceEndpointProbe(Probe):

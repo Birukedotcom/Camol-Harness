@@ -231,15 +231,11 @@ class OrchestratorTests(unittest.TestCase):
         self.orchestrator.record_debug_evidence(
             self.run_id, "case-1", "test_result", {"passed": True}, "verifier"
         )
-        self.orchestrator.verify_debug_case(self.run_id, "case-1", "target observed")
-        self.orchestrator.promote_eval(
-            self.run_id,
-            "case-1",
-            "artifact-created",
-            {"fixture": "fixtures/case-1.json", "oracle": "artifact exists"},
-        )
+        with self.assertRaisesRegex(StateTransitionError, "missing required evidence"):
+            self.orchestrator.verify_debug_case(self.run_id, "case-1", "target observed")
         state = self.orchestrator.state(self.run_id)
-        self.assertEqual(state["debug_cases"]["case-1"]["status"], "eval_promoted")
+        self.assertEqual(state["debug_cases"]["case-1"]["status"], "open")
+        self.assertEqual(state["evals"], {})
 
 
 if __name__ == "__main__":

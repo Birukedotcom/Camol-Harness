@@ -1,6 +1,6 @@
 """Loading, normalization, and validation for executable JSON runbooks.
 
-Four schema versions are readable:
+Six schema versions are readable:
 
 * ``schema_version: 1`` is the pre-M0 contract. Its normalization is unchanged so
   every previously frozen plan digest still reproduces byte-for-byte, including
@@ -17,6 +17,10 @@ Four schema versions are readable:
 * ``schema_version: 4`` adds an explicit per-task ``evaluator_assets`` list.
   Existing files below those paths are frozen outside builder authority and a
   candidate that changes one is rejected before evaluator execution.
+* ``schema_version: 5`` freezes explicit invariants, obligations, thresholds,
+  evaluator mappings, and final human acceptance.
+* ``schema_version: 6`` additionally freezes shared-capacity pool placement and
+  heterogeneous resource requirements. Global reservations are required to lease.
 
 A v1 document is never reinterpreted as v2 implicitly. Use
 :func:`migrate_runbook_v1_to_v2` with explicit values for every new field.
@@ -38,8 +42,8 @@ class RunbookError(ValueError):
 
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4)
-LATEST_SCHEMA_VERSION = 4
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4, 5, 6)
+LATEST_SCHEMA_VERSION = 6
 
 _ROOT_FIELDS_V2 = ("schema_version", "run", "rules", "agents", "tasks")
 _RUN_FIELDS_V2 = ("id", "objective", "max_concurrency", "completion", "token_policy", "readiness_policy")
@@ -127,7 +131,11 @@ def validate_runbook(raw: Dict[str, Any]) -> Dict[str, Any]:
                 version, ", ".join(str(item) for item in SUPPORTED_SCHEMA_VERSIONS)
             )
         )
-    return _validate(root, version=version)
+    from .capacity import CapacityError
+    try:
+        return _validate(root, version=version)
+    except CapacityError as error:
+        raise RunbookError(str(error)) from error
 
 
 def _strict_int(value: Any, label: str, *, minimum: int) -> int:
@@ -153,13 +161,13 @@ def _validate_readiness_policy(value: Any) -> Dict[str, Any]:
 def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
     strict = version >= 2
     if strict:
-        _reject_unknown(root, _ROOT_FIELDS_V2, "runbook")
+        _reject_unknown(root, _ROOT_FIELDS_V2 + (("state_model",) if version >= 5 else ()), "runbook")
 
     run = _object(root.get("run"), "run")
     if strict:
         if "max_agents" in run:
             raise RunbookError("run.max_agents is a schema v1 alias; schema v2 requires run.max_concurrency")
-        _reject_unknown(run, _RUN_FIELDS_V2, "run")
+        _reject_unknown(run, _RUN_FIELDS_V2 + (("capacity_policy",) if version >= 6 else ()), "run")
     run_id = _identifier(run.get("id"), "run.id")
     objective = _string(run.get("objective"), "run.objective")
     if strict:
@@ -245,7 +253,7 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
     for index, agent_value in enumerate(agents):
         agent = _object(agent_value, "agents[{}]".format(index))
         if strict:
-            _reject_unknown(agent, _AGENT_FIELDS_V2, "agents[{}]".format(index))
+            _reject_unknown(agent, _AGENT_FIELDS_V2 + (("capacity_pools",) if version >= 6 else ()), "agents[{}]".format(index))
         elif "trust_tier" in agent:
             raise RunbookError(
                 "agents[{}].trust_tier is a schema v2 field; migrate the runbook to schema_version 2".format(index)
@@ -258,10 +266,11 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
                 "agents[{}].adapter".format(index),
             )
         kind = adapter.get("kind")
-        if kind not in ({"process", "claude_cli"} if version >= 3 else {"process"}):
+        kinds = {"process", "claude_cli", "codex_cli", "codex_oss"} if version >= 5 else ({"process", "claude_cli"} if version >= 3 else {"process"})
+        if kind not in kinds:
             raise RunbookError(
                 "agents[{}].adapter.kind must be {}".format(
-                    index, "process or claude_cli" if version >= 3 else "process"
+                    index, ", ".join(sorted(kinds))
                 )
             )
         argv = None
@@ -274,7 +283,7 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             argv = _string_list(adapter.get("argv"), "agents[{}].adapter.argv".format(index), allow_empty=False)
         else:
             if "argv" in adapter:
-                raise RunbookError("agents[{}].adapter.argv is not accepted for claude_cli; the profile owns invocation policy".format(index))
+                raise RunbookError("agents[{}].adapter.argv is not accepted for provider workers; the profile owns invocation policy".format(index))
             profile = _relative_path(adapter.get("profile"), "agents[{}].adapter.profile".format(index))
             profile_snapshot = None
             if "profile_snapshot" in adapter:
@@ -320,6 +329,11 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
                     "agents[{}].trust_tier must be one of: {}".format(index, ", ".join(sorted(TRUST_TIERS)))
                 )
             normalized_agent["trust_tier"] = trust_tier
+        if version >= 6:
+            from .capacity import validate_pool_bindings
+            normalized_agent["capacity_pools"] = validate_pool_bindings(agent.get("capacity_pools"))
+            if kind != "process" and normalized_agent["capacity_pools"]["provider"] is None:
+                raise RunbookError("provider adapters require an explicit shared provider capacity pool")
         normalized_agents.append(normalized_agent)
     _unique((agent["id"] for agent in normalized_agents), "agent ids")
     _unique((agent["box"] for agent in normalized_agents), "agent boxes")
@@ -333,7 +347,7 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
         task = _object(task_value, "tasks[{}]".format(task_index))
         if strict:
             _reject_unknown(
-                task, _TASK_FIELDS_V4 if version >= 4 else _TASK_FIELDS,
+                task, (_TASK_FIELDS_V4 + (("resource_requirements",) if version >= 6 else ())) if version >= 4 else _TASK_FIELDS,
                 "tasks[{}]".format(task_index),
             )
         task_id = _identifier(task.get("id"), "tasks[{}].id".format(task_index))
@@ -447,6 +461,9 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
             ]
             _unique(assets, "evaluator assets for task {}".format(task_id))
             normalized_task["evaluator_assets"] = assets
+        if version >= 6:
+            from .capacity import validate_resource_requirements
+            normalized_task["resource_requirements"] = validate_resource_requirements(task.get("resource_requirements"))
         normalized_tasks.append(normalized_task)
 
     normalized_run = {
@@ -463,6 +480,9 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
     }
     if readiness_policy is not None:
         normalized_run["readiness_policy"] = readiness_policy
+    if version >= 6:
+        from .capacity import validate_capacity_policy
+        normalized_run["capacity_policy"] = validate_capacity_policy(run.get("capacity_policy"))
     normalized = {
         "schema_version": version,
         "run": normalized_run,
@@ -470,7 +490,98 @@ def _validate(root: Dict[str, Any], *, version: int) -> Dict[str, Any]:
         "agents": normalized_agents,
         "tasks": normalized_tasks,
     }
+    if version >= 5:
+        normalized["state_model"] = _validate_state_model(root.get("state_model"), normalized_tasks)
     return normalized
+
+
+def _validate_state_model(value: Any, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """V5 mappings are owner-supplied contract data, never inferred from prose."""
+    from .gates import FAMILIES, GatePolicy, Invariant, Obligation
+
+    model = _object(value, "state_model")
+    expected = {"invariants", "obligations", "gates", "final_acceptance"}
+    if set(model) != expected:
+        raise RunbookError("state_model requires exactly invariants, obligations, gates, and final_acceptance")
+    if model["final_acceptance"] != "human":
+        raise RunbookError("state_model.final_acceptance must be human")
+    for field in ("invariants", "obligations", "gates"):
+        if not isinstance(model[field], list) or not model[field]:
+            raise RunbookError("state_model.{} must be a non-empty array".format(field))
+    try:
+        invariants = [Invariant.from_dict(item) for item in model["invariants"]]
+        obligations = [Obligation.from_dict(item) for item in model["obligations"]]
+    except ValueError as error:
+        raise RunbookError("invalid state_model: {}".format(error)) from error
+    _unique((item.invariant_id for item in invariants), "state_model invariant ids")
+    _unique((item.obligation_id for item in obligations), "state_model obligation ids")
+    invariant_ids = {item.invariant_id for item in invariants}
+    obligation_by_id = {item.obligation_id: item for item in obligations}
+    task_by_id = {item["id"]: item for item in tasks}
+    global_ids = {item.invariant_id for item in invariants if item.scope in {"kernel", "global"}}
+    for item in obligations:
+        if not set(item.invariant_ids).issubset(invariant_ids) or not set(item.task_ids).issubset(task_by_id):
+            raise RunbookError("state_model obligation has unknown invariant or task")
+    gates, seen_tasks, used_obligations = [], set(), set()
+    for raw in model["gates"]:
+        gate = _object(raw, "state_model gate")
+        if set(gate) != {"task_id", "policy", "invariant_ids", "obligation_ids", "evaluators"}:
+            raise RunbookError("state_model gate has missing or unknown fields")
+        task_id = _identifier(gate["task_id"], "state_model gate task_id")
+        if task_id not in task_by_id or task_id in seen_tasks:
+            raise RunbookError("state_model needs one gate for each known task")
+        seen_tasks.add(task_id)
+        try:
+            policy = GatePolicy.from_dict(gate["policy"])
+        except ValueError as error:
+            raise RunbookError("invalid gate policy: {}".format(error)) from error
+        local_invariants = _string_list(gate["invariant_ids"], "gate invariant_ids", allow_empty=False)
+        local_obligations = _string_list(gate["obligation_ids"], "gate obligation_ids", allow_empty=False)
+        _unique(local_invariants, "gate invariant_ids")
+        _unique(local_obligations, "gate obligation_ids")
+        if not set(local_invariants).issubset(invariant_ids) or not global_ids.issubset(local_invariants):
+            raise RunbookError("gate must include declared invariants and every inherited global invariant")
+        if not set(local_obligations).issubset(obligation_by_id):
+            raise RunbookError("gate has unknown obligations")
+        covered = {identifier for name in local_obligations for identifier in obligation_by_id[name].invariant_ids}
+        if covered != set(local_invariants):
+            raise RunbookError("gate obligations must cover its exact invariant set")
+        if any(task_id not in obligation_by_id[name].task_ids for name in local_obligations):
+            raise RunbookError("task gate cannot discharge an unrelated task obligation")
+        used_obligations.update(local_obligations)
+        if not isinstance(gate["evaluators"], list) or not gate["evaluators"]:
+            raise RunbookError("gate evaluators must explicitly map every verification command")
+        mappings, indices, families = [], set(), {identifier: set() for identifier in local_invariants}
+        for evaluator in gate["evaluators"]:
+            if not isinstance(evaluator, dict) or set(evaluator) != {"verification_index", "family", "invariant_ids"}:
+                raise RunbookError("gate evaluator has missing or unknown fields")
+            index = _strict_int(evaluator["verification_index"], "gate evaluator verification_index", minimum=0)
+            if index >= len(task_by_id[task_id]["verification"]) or index in indices:
+                raise RunbookError("gate evaluator index is unknown or duplicated")
+            indices.add(index)
+            family = evaluator["family"]
+            if family not in FAMILIES:
+                raise RunbookError("gate evaluator family is unsupported")
+            targets = _string_list(evaluator["invariant_ids"], "gate evaluator invariant_ids", allow_empty=False)
+            _unique(targets, "gate evaluator invariant_ids")
+            if not set(targets).issubset(local_invariants):
+                raise RunbookError("gate evaluator maps an undeclared invariant")
+            for identifier in targets:
+                families[identifier].add(family)
+            mappings.append({"verification_index": index, "family": family, "invariant_ids": targets})
+        if indices != set(range(len(task_by_id[task_id]["verification"]))):
+            raise RunbookError("every verification command must have an explicit invariant mapping")
+        if any(not set(policy.required_families).issubset(values) for values in families.values()):
+            raise RunbookError("gate evaluator mappings do not cover its frozen threshold families")
+        gates.append(dict(task_id=task_id, policy=policy.to_dict(), invariant_ids=local_invariants,
+                          obligation_ids=local_obligations, evaluators=mappings))
+    if seen_tasks != set(task_by_id) or used_obligations != set(obligation_by_id):
+        raise RunbookError("state_model must gate every task and obligation")
+    used_invariants = {identifier for gate in gates for identifier in gate["invariant_ids"]}
+    if used_invariants != invariant_ids:
+        raise RunbookError("state_model contains ungated invariants")
+    return dict(invariants=[item.to_dict() for item in invariants], obligations=[item.to_dict() for item in obligations],
+                gates=gates, final_acceptance="human")
 
 
 def migrate_runbook_v1_to_v2(

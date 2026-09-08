@@ -22,7 +22,12 @@ def run_line_ui(workspace: Path, *, state_root: Optional[Path] = None, show_boot
         except (EOFError, KeyboardInterrupt):
             print("\ndetached")
             return 0
-        response = controller.handle(text)
+        try:
+            response = controller.handle(text)
+        except KeyboardInterrupt:
+            controller.cancel_active()
+            print("\nPlanning request interrupted; client detached.")
+            return 0
         for message in response.messages:
             print(message)
         if response.login_choices:

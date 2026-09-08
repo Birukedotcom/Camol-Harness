@@ -3,7 +3,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -67,6 +67,23 @@ else:
 
     def tearDown(self):
         self.temporary.cleanup()
+
+    def test_admission_cannot_outlive_its_provider_capability(self):
+        path = str(self.bin) + os.pathsep + os.environ.get("PATH", "")
+        with patch.dict(os.environ, {"PATH": path}):
+            profile = load_model_profile(self.source, "profiles/models/test-fable.yaml")
+            capability = create_claude_capability(
+                profile, target_id="local:test", state_dir=self.state, cwd=self.source,
+                accept_spend=True, now=self.now,
+                runner=lambda *args, **kwargs: Completed(),
+            )
+            self.now += timedelta(seconds=profile.capability_ttl_seconds - 1)
+            controller = AdmissionController(self.runbook, WorkspaceManager(self.source, self.state), target_id="local:test", clock=lambda: self.now)
+            bundle, _ = controller.prepare(
+                plan_digest=runbook_digest(self.runbook), task=self.runbook["tasks"][0],
+                agent=self.runbook["agents"][0], granted_by="human",
+            )
+            self.assertEqual(bundle.receipt.expires_at, capability.expires_at)
 
     def test_hosted_candidate_is_red_then_green_only_after_bound_preflight(self):
         path = str(self.bin) + os.pathsep + os.environ.get("PATH", "")

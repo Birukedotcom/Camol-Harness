@@ -284,7 +284,7 @@ class CamolApp(App):
     #boot-art { width: 100%; height: 100%; color: #68e892; }
     #dependency-rail { height: 1; background: #07100a; color: #79d996; padding: 0 1; }
     #context { height: 1; background: #0b1710; color: #f1f7f3; padding: 0 1; }
-    #transcript {
+    #transcript, #box-transcript {
         height: 1fr;
         padding: 1 2;
         scrollbar-size-vertical: 1;
@@ -296,6 +296,7 @@ class CamolApp(App):
         scrollbar-background-active: #09100b;
         scrollbar-corner-color: #09100b;
     }
+    #box-transcript { display: none; }
     #stream { height: auto; max-height: 5; color: #68e892; padding: 0 2; }
     #prompt {
         height: 5;
@@ -357,8 +358,12 @@ class CamolApp(App):
         self.history = []
         self.history_index = 0
         self.selected = "orchestrator"
+        self.selected_view = "events"
+        self._box_rendered = None
+        self._visible_box_start = 0
         self.boxes = []
         self.stream_text = ""
+        self._stream_suppressed = False
         self._connection_probe_lock = threading.Lock()
         self._slash_palette_open = False
         self._slash_palette_timer = None
@@ -368,7 +373,8 @@ class CamolApp(App):
             yield Static("", id="dependency-rail")
             yield Static("ORCHESTRATOR", id="context")
             yield RichLog(id="transcript", markup=False, wrap=True, highlight=False)
-            yield Static("", id="stream")
+            yield RichLog(id="box-transcript", markup=False, wrap=True, highlight=False)
+            yield Static("", id="stream", markup=False)
             yield PromptArea(
                 "", id="prompt", soft_wrap=True, show_line_numbers=False,
                 placeholder="Message the orchestrator · Enter sends · Shift+Enter adds a line · / opens commands",
@@ -496,14 +502,29 @@ class CamolApp(App):
             self.controller.box_summaries, thread=True, group="fleet", exclusive=True
         ).wait()
         self.boxes = boxes
-        items = ["ORCH[Alt+0]"]
-        for index, box in enumerate(boxes, 1):
+        items = ["ORCH[Alt+0]", "BOXES {}".format(len(boxes))]
+        selected_index = next((index for index, box in enumerate(boxes) if box["box_id"] == self.selected), 0)
+        page_size = min(9, max(1, (self.size.width - 20) // 24))
+        start = (selected_index // page_size) * page_size
+        self._visible_box_start = start
+        visible_boxes = boxes[start:start + page_size]
+        for index, box in enumerate(visible_boxes, 1):
             mark = "!" if box["status"] in {"blocked", "waiting"} else "■" if box.get("connected") == "yes" else "□"
-            shortcut = "Alt+{}".format(index) if index <= 9 else "cycle"
+            shortcut = "Alt+{}".format(index)
             selected = ">" if self.selected == box["box_id"] else ""
             items.append("{}{} {}:{}({})".format(selected, mark, index, box["box_id"], shortcut))
+        if len(boxes) > len(visible_boxes):
+            items.append("[{}–{}/{}; cycle [ ] or /box ID]".format(start + 1, start + len(visible_boxes), len(boxes)))
         self.query_one("#fleet", Static).update("  ".join(items))
         self._render_dependency_rail()
+        if self.selected != "orchestrator":
+            target, subview = self.selected, self.selected_view
+            rendered = await self.run_worker(
+                lambda: self.controller.inspect_box(target, subview),
+                thread=True, group="box-view", exclusive=True,
+            ).wait()
+            if self.selected == target and self.selected_view == subview:
+                self._render_box(target, subview, rendered)
 
     def action_submit(self) -> None:
         prompt = self.query_one("#prompt", PromptArea)
@@ -560,17 +581,37 @@ class CamolApp(App):
         prompt.move_cursor((0, len(value)))
         prompt.focus()
 
-    @work(thread=True, group="commands", exclusive=True)
+    @work(thread=True, group="commands", exclusive=False)
     def _submit(self, text: str) -> None:
-        self.stream_text = ""
-        response = self.controller.handle(text, on_chunk=self._stream_chunk)
-        self.call_from_thread(self._apply_response, response)
+        stream_state = {"text": "", "suppressed": False}
+        response = self.controller.handle(text, on_chunk=lambda chunk: self._stream_chunk(chunk, stream_state))
+        try:
+            self.call_from_thread(self._apply_response, response)
+        except RuntimeError:
+            # Detach can race a cancelled provider's final response.
+            pass
 
-    def _stream_chunk(self, chunk: str) -> None:
-        self.stream_text = (self.stream_text + chunk)[-4000:]
+    def _stream_chunk(self, chunk: str, stream_state=None) -> None:
+        state = stream_state if stream_state is not None else {"text": self.stream_text, "suppressed": self._stream_suppressed}
+        if state["suppressed"]:
+            return
+        state["text"] += chunk
+        if len(state["text"]) > 64000:
+            state["suppressed"] = True
+            state["text"] = ""
+            if stream_state is None:
+                self.stream_text, self._stream_suppressed = "", True
+            self.call_from_thread(self.query_one("#stream", Static).update, "Provider output is lengthy; waiting for the final redacted response…")
+            return
+        # Keep the trailing token private until it is complete: credentials can
+        # arrive split across arbitrary provider chunks.
+        boundary = max((index for index, character in enumerate(state["text"]) if character.isspace()), default=-1)
+        visible = Redactor().text(state["text"][:boundary + 1])[-4000:]
+        if stream_state is None:
+            self.stream_text, self._stream_suppressed = state["text"], state["suppressed"]
         self.call_from_thread(
             self.query_one("#stream", Static).update,
-            "orchestrator ~ " + self.stream_text,
+            "orchestrator ~ " + visible,
         )
 
     def _apply_response(self, response: CommandResponse) -> None:
@@ -578,6 +619,10 @@ class CamolApp(App):
         log = self.query_one("#transcript", RichLog)
         if response.clear_transcript:
             log.clear()
+        if response.box_id is not None:
+            self._render_box(response.box_id, response.box_view or "events", "\n".join(response.messages))
+            self.query_one("#prompt", PromptArea).focus()
+            return
         for message in response.messages:
             log.write("camol > " + message)
         if response.login_choices:
@@ -633,18 +678,31 @@ class CamolApp(App):
 
     def action_orchestrator(self) -> None:
         self.selected = "orchestrator"
+        self.query_one("#transcript", RichLog).display = True
+        self.query_one("#box-transcript", RichLog).display = False
         self._render_dependency_rail()
         self.query_one("#prompt", PromptArea).focus()
 
     def action_box(self, index: int) -> None:
         boxes = self.boxes
+        index += self._visible_box_start
         if not 1 <= index <= len(boxes):
             self.notify("Box {} does not exist".format(index), severity="warning")
             return
         target = boxes[index - 1]["box_id"]
-        self.selected = target
-        self.query_one("#context", Static).update("BOX {} — read-only evidence view".format(target))
         self._submit("/box " + target)
+
+    def _render_box(self, target: str, subview: str, rendered: str) -> None:
+        self.selected = target
+        self.selected_view = subview
+        self.query_one("#context", Static).update("BOX {} / {} — read-only evidence view".format(target, subview))
+        self.query_one("#transcript", RichLog).display = False
+        log = self.query_one("#box-transcript", RichLog)
+        log.display = True
+        if rendered != self._box_rendered:
+            log.clear()
+            log.write(rendered)
+            self._box_rendered = rendered
 
     def action_cycle(self, direction: int) -> None:
         boxes = self.boxes
@@ -654,7 +712,7 @@ class CamolApp(App):
         if selected == "orchestrator":
             self.action_orchestrator()
         else:
-            self.action_box(choices.index(selected))
+            self._submit("/box " + selected)
 
     def action_history(self, direction: int) -> None:
         if not self.history:
@@ -666,7 +724,11 @@ class CamolApp(App):
         prompt.focus()
 
     def action_detach(self) -> None:
+        self.controller.cancel_active()
         self.exit()
+
+    def on_unmount(self) -> None:
+        self.controller.cancel_active()
 
 
 def run_tui(

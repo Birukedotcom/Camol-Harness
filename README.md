@@ -11,13 +11,16 @@ and evaluators are replaceable components. The kernel owns durable truth about
 plans, state, readiness, authority, leases, evidence, budgets, retries, integration,
 and completion.
 
-> Project status: **Product V0 is runnable developer software.** The terminal client,
-> persistent planning/approval records, detachable supervisor, local-process proof,
-> and kernel are `BACKED` by automated local tests. Claude/Fable execution remains
-> `SPECULATIVE` until an owner-authorized live run proves the requested model resolves
-> to the frozen allowlist on that account. Codex and local models are planning-only in
-> V0; OpenAI Platform is connection-discovery only. Remote deployment, VM provisioning,
-> and production security are not claimed.
+> Development status: **0.3.0a1 is an alpha, not completion of the whole spec.**
+> This branch adds an embeddable Python API, explicit invariant gates and final
+> human acceptance, immutable plan revisions, a debugger, usage accounting, safe
+> repository graphs, shared multi-run capacity, approved model downloads and durable
+> observation/benchmark protocols. Local runtime
+> verification includes a 170-task/eight-box soak with five verification restarts.
+> Claude and Codex/local worker integrations still need account-specific live
+> validation; fixture tests do not prove model availability, cloud deployment or
+> production security. See the [acceptance ledger](docs/full-implementation-progress.md)
+> for implemented slices, limitations and remaining work.
 
 <table>
   <tr>
@@ -52,12 +55,12 @@ Camol requires Python 3.9+ and a Git repository. Textual is an optional dependen
 without it, bare `camol` opens the same command engine in line mode.
 
 ```bash
-git clone --branch codex/product-v0 --single-branch \
+git clone --branch codex/v0-full-pass --single-branch \
   https://github.com/Birukedotcom/Camol-Harness.git Camol-Harness-v0
 cd Camol-Harness-v0
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e '.[tui]'
+.venv/bin/python -m pip install -e '.[tui,graph]'
 source .venv/bin/activate
 camol
 ```
@@ -68,19 +71,56 @@ from the root of the real Git project you want it to inspect; do not paste a
 placeholder directory literally.
 
 ```bash
-pipx install 'camol-harness[tui] @ git+https://github.com/Birukedotcom/Camol-Harness.git@codex/product-v0'
+pipx install 'camol-harness[tui,graph] @ git+https://github.com/Birukedotcom/Camol-Harness.git@codex/v0-full-pass'
 cd "$(git rev-parse --show-toplevel)"  # run while already somewhere inside your project
 camol
 ```
 
-Homebrew is a follow-on distribution target; this repository does not pretend a
-formula exists yet.
+A development-only [Homebrew formula](Formula/camol.rb) includes the full terminal
+dependencies with checked source hashes. It is not yet a published stable tap or a
+tested Homebrew installation. The verified installation path is a Python virtual
+environment; see [packaging and release gates](docs/packaging.md).
+
+## Inspect and embed the harness
+
+```text
+camol --version
+camol repo crawl --workspace .
+camol repo impact camol/runner.py --workspace .
+```
+
+Run-ledger tools take the real database path shown by `/status`: `camol usage`,
+`camol debug`, `camol watchers`, `camol profile`, `camol logs`, `camol events`, and `camol export`. No provider
+request is needed to inspect existing evidence. `/usage run` and `/debug list`
+are available in the terminal; `/box` has context, transcript, tools, diff, eval
+and evidence views. `/import` accepts an explicit runbook without inferring its
+invariant-to-evaluator mapping from prose. Schema V5 adds per-task human gates
+and `/accept` for the exact completed outcome. Schema V6 adds explicit shared
+capacity/placement contracts; connected accounts do not imply known quota.
+
+`camol models` separates download planning, exact approval, transfer and verified
+artifact inspection. It never implicitly downloads, loads or claims inference
+readiness. `camol watch` supports approved durable polling of a normalized local
+event journal, including daemon restart; cloud source adapters need their own proof.
+
+Python applications use [`Harness`](docs/embedding.md) without a terminal. It owns
+the same execution lock, isolated workspaces and durable kernel as the CLI, with
+methods for approval, execution, observation, debugging, usage, revisions and
+portable lineage exports. Trusted plugins are host code; they are not capabilities
+that worker agents may grant themselves.
 
 Inside Camol, a first live-capable plan looks like this:
 
+This manual `/grill` path currently produces a Claude-worker V4 plan. Choosing
+Codex for planning does not silently turn that worker plan into Codex execution.
+For a Codex or Codex-local worker, import a reviewed V5/V6 runbook with embedded
+provider profiles; `/run` then presents the exact provider-policy acknowledgement.
+See [Codex worker contracts](docs/codex-workers.md). Neither path starts work merely
+because a login succeeds.
+
 ```text
 /connections
-/login                        # choose Claude or Codex with arrows + Enter
+/login                        # for the manual grill path, choose Claude with arrows + Enter
                               # successful verification selects its planning model
 /effort max
 /grill Build the feature and prove it without deployment
@@ -365,10 +405,13 @@ The implementation sequence is deliberately narrow:
 | M7 (kernel implemented; hosted proof pending) | Frozen evaluator, controlled failure injection, matched-trial contract, and deterministic Camol-on-Camol proof |
 
 The [v0 build plan](docs/v0-build-plan.md) gives each milestone its expected files,
-tests, failure cases, and exit gate. Dynamic VM provisioning, multi-provider routing,
-automatic local-model downloads, GCP/voice workflows, the repository graph UI,
-benchmark-scale N-box campaigns, Homebrew distribution, and the spatial visualizer
-come after the one-box vertical slice is backed.
+tests, failure cases, and exit gate. The current alpha extends that slice with
+explicit model downloads, static repository graphs, shared N-box capacity, durable
+local watchers and an embeddable benchmark campaign. Dynamic VM provisioning,
+live GCP/voice workflows, public-suite benchmark proof, published Homebrew
+distribution and the spatial visualizer are not implied by those implementations.
+The [current acceptance ledger](docs/full-implementation-progress.md) distinguishes
+implemented adapters from validated workflows.
 
 ## Run the current deterministic proof
 
@@ -445,6 +488,16 @@ real hosted-agent run.
   codes, execution guard, and redaction.
 - [Debugger protocol](docs/debugger-protocol.md): observed-versus-target behavior,
   experiments, evidence, and eval promotion.
+- [Embedding](docs/embedding.md): Python harness ownership, execution, approvals and exports.
+- [Usage and logging](docs/usage-accounting.md): observed versus reserved spend, profiling,
+  metadata log sinks and incomplete measurement coverage.
+- [Durable observers](docs/durable-observers.md): bounded approved polling, normalized
+  journal source, cursor recovery and daemon scheduling.
+- [Codex workers](docs/codex-workers.md): frozen hosted/local worker profiles and
+  explicitly supported capability boundaries.
+- [Plan revisions](docs/plan-revisions.md): linked, owner-approved successors and inherited costs.
+- [Benchmark campaigns](docs/benchmark-campaigns.md): frozen cohorts, paired arms and replay.
+- [Packaging](docs/packaging.md): installation verification and public release gates.
 - [Evaluation program](docs/evaluation-program.md): canaries, coding suites,
   long-horizon campaigns, ablations, and direct Claude CLI comparisons.
 - [Repository graph](docs/repository-graph.md): dependency rail, source graph,

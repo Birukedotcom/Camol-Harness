@@ -94,10 +94,12 @@ class PlanningTests(unittest.TestCase):
 
     def test_shell_verification_pipeline_is_rejected(self):
         grill = GrillState.start("test")
-        for answer in ("done", "nothing", "safe", "task | do it", "pytest && deploy", "boxes=1"):
+        for answer in ("done", "nothing", "safe", "task | do it"):
             grill = grill.answer(answer)
         with self.assertRaisesRegex(PlanningError, "argv"):
-            proposal_from_grill(grill)
+            grill.answer("pytest && deploy")
+        self.assertEqual(grill.question_index, 4)
+        self.assertEqual(grill.answer("pytest").question_index, 5)
 
     def test_incomplete_grill_cannot_produce_plan(self):
         with self.assertRaisesRegex(PlanningError, "every"):
@@ -110,19 +112,19 @@ class PlanningTests(unittest.TestCase):
             "tests | test it | after=core\ncore | build it",
             "python3 -m unittest", "boxes=2 tokens=1000 local only",
         )
-        for answer in answers:
+        for answer in answers[:3]:
             grill = grill.answer(answer)
         with self.assertRaisesRegex(PlanningError, "declared earlier"):
-            proposal_from_grill(grill)
+            grill.answer(answers[3])
 
         grill = GrillState.start("test")
         for answer in (
             "Return HTTP 200", "no deploy", "Preserve Python 3.9",
-            "core | build it", "python3 -m unittest", "boxes=1 local only",
+            "core | build it", "python3 -m unittest",
         ):
             grill = grill.answer(answer)
         with self.assertRaisesRegex(PlanningError, "only boxes"):
-            proposal_from_grill(grill)
+            grill.answer("boxes=1 local only")
 
     def test_numeric_suffixes_and_total_turn_cap_are_preserved(self):
         grill = GrillState.start("test")

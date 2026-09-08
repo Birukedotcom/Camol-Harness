@@ -62,7 +62,7 @@ def _thaw_json(value: Any) -> Any:
 
 def evaluator_definition(runbook: Dict[str, Any]) -> Dict[str, Any]:
     """Return the human-approved normative evaluator surface."""
-    return {
+    definition = {
         "schema": "camol.evaluator_definition",
         "schema_version": 1,
         "run_id": runbook["run"]["id"],
@@ -86,6 +86,9 @@ def evaluator_definition(runbook: Dict[str, Any]) -> Dict[str, Any]:
             for task in runbook["tasks"]
         ],
     }
+    if runbook["schema_version"] >= 5:
+        definition["state_model"] = runbook["state_model"]
+    return definition
 
 
 def _inside(path: Path, root: Path) -> bool:

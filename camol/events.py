@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import uuid4
+from .schema import require_timestamp
 
 
 EVENT_TYPES = frozenset(
@@ -23,6 +24,20 @@ EVENT_TYPES = frozenset(
         "TASK_RETRY_SCHEDULED",
         "TASK_BLOCKED",
         "DEBUG_CASE_OPENED",
+        "DEBUG_CASE_CREATED",
+        "DEBUG_REPRODUCED",
+        "DEBUG_LOCALIZED",
+        "DEBUG_EXPERIMENT_STARTED",
+        "DEBUG_EXPERIMENT_FINISHED",
+        "DEBUG_VERIFIED",
+        "DEBUG_CONTRADICTED",
+        "DEBUG_BLOCKED",
+        "DEBUG_RESUMED",
+        "DEBUG_EVAL_PROMOTED",
+        "DEBUG_REPRODUCTION_FROZEN", "DEBUG_EXECUTION_AUTHORIZED", "DEBUG_EXECUTION_STARTED",
+        "DEBUG_EXECUTION_FINISHED", "DEBUG_EXECUTION_INTERRUPTED", "DEBUG_COUNTEREXAMPLE_LINKED",
+        "WATCHER_CREATED", "WATCHER_BATCH_RECORDED", "WATCHER_WAITING", "WATCHER_CONFLICT", "WATCHER_REOPENED",
+        "WATCHER_SCHEDULED", "WATCHER_POLL_STARTED", "WATCHER_POLL_FINISHED", "WATCHER_STOPPED",
         "DEBUG_CASE_VERIFIED",
         "EVAL_PROMOTED",
         "HILLCLIMB_RECORDED",
@@ -36,6 +51,7 @@ EVENT_TYPES = frozenset(
         "TASK_LEASE_REJECTED",
         "LEASE_HEARTBEAT",
         "LEASE_RENEWED",
+        "LEASE_AUTHORIZATION_REFRESHED",
         "LEASE_REVOKED",
         # External mutation intent and reconciled outcome.
         "EFFECT_REQUESTED",
@@ -47,6 +63,15 @@ EVENT_TYPES = frozenset(
         "CANDIDATE_CAPTURED",
         "COUNTEREXAMPLE_RECORDED",
         "INTEGRATION_ACCEPTED",
+        "GATE_ASSESSED",
+        "GATE_APPROVED",
+        "RUN_AWAITING_ACCEPTANCE",
+        "RUN_ACCEPTED",
+        "REVISION_PROPOSED",
+        "RUN_SUPERSEDED",
+        "REVISION_LINKED",
+        "REVISION_EFFECT_REUSED",
+        "GLOBAL_CAPACITY_RESERVED", "GLOBAL_CAPACITY_RENEWED", "GLOBAL_CAPACITY_RELEASED", "GLOBAL_CAPACITY_WAITING", "CAPACITY_CALL_RESERVED",
     }
 )
 
@@ -55,6 +80,13 @@ EVENT_TYPES = frozenset(
 LEGACY_EVENT_TYPES = frozenset(
     EVENT_TYPES
     - {
+        "WATCHER_CREATED", "WATCHER_BATCH_RECORDED", "WATCHER_WAITING", "WATCHER_CONFLICT", "WATCHER_REOPENED",
+        "WATCHER_SCHEDULED", "WATCHER_POLL_STARTED", "WATCHER_POLL_FINISHED", "WATCHER_STOPPED",
+        "DEBUG_CASE_CREATED", "DEBUG_REPRODUCED", "DEBUG_LOCALIZED",
+        "DEBUG_EXPERIMENT_STARTED", "DEBUG_EXPERIMENT_FINISHED", "DEBUG_VERIFIED",
+        "DEBUG_CONTRADICTED", "DEBUG_BLOCKED", "DEBUG_RESUMED", "DEBUG_EVAL_PROMOTED",
+        "DEBUG_REPRODUCTION_FROZEN", "DEBUG_EXECUTION_AUTHORIZED", "DEBUG_EXECUTION_STARTED",
+        "DEBUG_EXECUTION_FINISHED", "DEBUG_EXECUTION_INTERRUPTED", "DEBUG_COUNTEREXAMPLE_LINKED",
         "READINESS_RECORDED",
         "TASK_WAITING",
         "TASK_WAIT_CLEARED",
@@ -63,6 +95,7 @@ LEGACY_EVENT_TYPES = frozenset(
         "TASK_LEASE_REJECTED",
         "LEASE_HEARTBEAT",
         "LEASE_RENEWED",
+        "LEASE_AUTHORIZATION_REFRESHED",
         "LEASE_REVOKED",
         "EFFECT_REQUESTED",
         "EFFECT_CONFIRMED",
@@ -72,6 +105,15 @@ LEGACY_EVENT_TYPES = frozenset(
         "CANDIDATE_CAPTURED",
         "COUNTEREXAMPLE_RECORDED",
         "INTEGRATION_ACCEPTED",
+        "GATE_ASSESSED",
+        "GATE_APPROVED",
+        "RUN_AWAITING_ACCEPTANCE",
+        "RUN_ACCEPTED",
+        "REVISION_PROPOSED",
+        "RUN_SUPERSEDED",
+        "REVISION_LINKED",
+        "REVISION_EFFECT_REUSED",
+        "GLOBAL_CAPACITY_RESERVED", "GLOBAL_CAPACITY_RENEWED", "GLOBAL_CAPACITY_RELEASED", "GLOBAL_CAPACITY_WAITING", "CAPACITY_CALL_RESERVED",
     }
 )
 
@@ -99,6 +141,7 @@ def new_event(
     *,
     causation_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
+    occurred_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     if event_type not in EVENT_TYPES:
         raise ValueError("unknown event type: {}".format(event_type))
@@ -109,7 +152,7 @@ def new_event(
         "run_id": run_id,
         "type": event_type,
         "actor_id": actor_id,
-        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "occurred_at": require_timestamp(occurred_at, "event occurred_at") if occurred_at is not None else datetime.now(timezone.utc).isoformat(),
         "payload": payload,
     }
     if causation_id:

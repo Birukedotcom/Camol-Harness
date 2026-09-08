@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import unittest
 import subprocess
+import copy
 from pathlib import Path
 
 from camol.orchestrator import Orchestrator
@@ -50,6 +51,47 @@ class RunnerTests(unittest.TestCase):
                     if event["type"] == "TASK_LEASED"
                 ][:3]
                 self.assertEqual(len({event["payload"]["agent_id"] for event in first_wave_leases}), 3)
+            finally:
+                store.close()
+
+    def test_dag_reuses_freed_box_without_waiting_for_unrelated_long_task(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, state_dir, store = self._workspace_and_store(temporary)
+            try:
+                raw = load_runbook(ROOT / "examples/local-n-box-runbook.json")
+                raw["run"]["id"] = "continuous-dag"
+                raw["run"]["max_concurrency"] = 2
+                raw["agents"] = [copy.deepcopy(raw["agents"][0]), copy.deepcopy(raw["agents"][1])]
+                raw["agents"][0].update(id="fast-worker", box="fast-box", capabilities=["fast"])
+                raw["agents"][1].update(id="slow-worker", box="slow-box", capabilities=["slow"])
+                raw["tasks"] = [copy.deepcopy(raw["tasks"][0]) for _ in range(3)]
+                for task, identifier, capability, dependencies in zip(
+                    raw["tasks"], ("fast", "slow", "child"), ("fast", "slow", "fast"), ([], [], ["fast"])
+                ):
+                    task.update(id=identifier, capabilities=[capability], depends_on=dependencies)
+                    prelude = "import time; time.sleep(5); " if identifier == "slow" else ""
+                    if identifier == "child":
+                        prelude += "from pathlib import Path; assert Path('fast.txt').read_text() == 'ready'; "
+                    task["steps"][0]["commands"][0]["argv"] = [
+                        "python3", "-c", prelude + "from pathlib import Path; Path({!r}).write_text('ready')".format(identifier + ".txt")
+                    ]
+                    task["verification"][0]["argv"] = [
+                        "python3", "-c", "from pathlib import Path; assert Path({!r}).read_text() == 'ready'".format(identifier + ".txt")
+                    ]
+                orchestrator = Orchestrator(store)
+                state = orchestrator.initialize(raw)
+                orchestrator.approve_plan(state["run_id"], "test-owner", state["plan_digest"])
+                runner = HarnessRunner(orchestrator, workspace, state_dir=state_dir)
+                final = asyncio.run(runner.run_until_terminal(state["run_id"]))
+                self.assertEqual(final["status"], "completed", final.get("terminal"))
+                events = store.read(state["run_id"])
+                child_start = next(item["seq"] for item in events if item["type"] == "TASK_STARTED" and item["payload"]["task_id"] == "child")
+                slow_finish = next(item["seq"] for item in events if item["type"] == "TASK_SUCCEEDED" and item["payload"]["task_id"] == "slow")
+                self.assertLess(child_start, slow_finish)
+                integration = Path(final["integrations"][-1]["workspace"]["path"])
+                for identifier in ("fast", "slow", "child"):
+                    box = "slow-box" if identifier == "slow" else "fast-box"
+                    self.assertEqual((integration / box / (identifier + ".txt")).read_text(), "ready")
             finally:
                 store.close()
 

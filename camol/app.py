@@ -4,13 +4,17 @@ import asyncio
 import getpass
 import json
 import shlex
+import sqlite3
+import threading
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
 
 from .connections import ConnectionError, ConnectionRegistry
-from .conversation import ConversationError, converse, parse_selection
+from .conversation import ConversationCancelled, ConversationError, converse, parse_selection
 from .planning import (
     GrillState,
     PlanningError,
@@ -27,9 +31,10 @@ from .providers import (
     load_model_profile,
     model_profile_for_adapter,
 )
-from .runbook import RunbookError, runbook_digest, validate_runbook
+from .runbook import RunbookError, load_runbook, runbook_digest, validate_runbook
 from .schema import canonical_digest
-from .session import EFFORTS, SessionError, SessionStore
+from .session import EFFORTS, SessionError, SessionStore, default_state_root
+from .store import ReadOnlyEventStore
 from .supervisor import SupervisorError, SupervisorPaths, send_control_v2, spawn_supervisor
 from .workspace import WorkspaceError, WorkspaceManager
 
@@ -46,6 +51,8 @@ class CommandResponse:
     login_provider: Optional[str] = None
     login_choices: Tuple[str, ...] = ()
     clear_transcript: bool = False
+    box_id: Optional[str] = None
+    box_view: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -64,14 +71,23 @@ SLASH_COMMANDS = (
     SlashCommand("/model", "Choose the planning model", takes_value=True),
     SlashCommand("/effort", "Set provider reasoning effort", takes_value=True),
     SlashCommand("/grill", "Turn a goal into a gated plan", takes_value=True),
+    SlashCommand("/import", "Review an existing executable runbook", takes_value=True),
     SlashCommand("/plan", "Inspect the exact candidate plan", run_from_palette=True),
     SlashCommand("/approve", "Confirm the exact visible plan", takes_value=True),
+    SlashCommand("/accept", "Review or accept the exact final outcome", takes_value=True),
+    SlashCommand("/gate", "Review or approve a waiting state gate", takes_value=True),
     SlashCommand("/run", "Start an approved ready run", takes_value=True),
     SlashCommand("/status", "Inspect session and supervisor", run_from_palette=True),
     SlashCommand("/boxes", "List the N-box worker pool", run_from_palette=True),
     SlashCommand("/box", "Open one read-only box view", takes_value=True),
     SlashCommand("/events", "Read new durable run events", run_from_palette=True),
     SlashCommand("/history", "Show retained conversation history", run_from_palette=True),
+    SlashCommand("/usage", "Inspect recorded planning call usage", run_from_palette=True),
+    SlashCommand("/debug", "Inspect durable debugger cases", run_from_palette=True),
+    SlashCommand("/models", "Inspect passive local model artifacts", run_from_palette=True),
+    SlashCommand("/watch", "Inspect recorded watcher state", run_from_palette=True),
+    SlashCommand("/repo", "Inspect static repository relationships", run_from_palette=True),
+    SlashCommand("/cancel", "Cancel the active planning request", run_from_palette=True),
     SlashCommand("/clear", "Clear only this terminal view", run_from_palette=True),
     SlashCommand("/btw", "Attach durable out-of-band context", takes_value=True),
     SlashCommand("/drain", "Pause new task admission"),
@@ -94,19 +110,32 @@ skills and slash commands are not imported into the planning-only orchestrator."
 
 HELP = """Commands
   /grill GOAL              question and freeze a candidate plan
+  /import PATH             import an exact runbook, bound to this checkout revision
   /plan                    show the full candidate plan and exact digest
   /approve yes|DIGEST      approve only that visible plan
+  /accept [DIGEST]         review final outcome, then accept its exact digest
+  /gate TASK [DIGEST]      review a pending state gate, then approve its digest
   /run --accept-spend --worker-cents N
                             acknowledge the frozen worker ceiling, prove readiness, and detach
+  /run --accept-provider-policy DIGEST [--accept-spend]
+                            accept an imported Codex tier's explicit weaker guarantees
   /status                  current local session and supervisor state
   /boxes                   list the arbitrary-N worker pool
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
+  /box ID VIEW             status | context | tools | diff | evals | events | evidence | transcript
   /model SELECTION         manual | claude[:MODEL] | codex[:MODEL] | local:MODEL
   /effort LEVEL            low | medium | high | xhigh | max
   /login [claude|codex]    choose an account with arrows, or name it directly
   /connections             read-only connection discovery (not task readiness)
   /skills                  show built-in planning/debug/evidence protocols
   /history                 show retained conversation history
+  /usage [run]             planning usage or the current run's accounting report
+  /debug [list|inbox|show ID] inspect debugger cases or rejected-candidate inbox
+  /models [list|status DIGEST] inspect passive downloads; never downloads or loads
+  /watch [list|show ID]     inspect recorded watchers; never polls a remote source
+  /repo [summary|impact PATH|why FROM TO|cycles]
+                            inspect static repository declarations, not runtime readiness
+  /cancel                  cancel the current planning request
   /clear                   clear this terminal view; durable state is preserved
   /btw NOTE                durable out-of-band note; never mutates a frozen plan
   /events                  show new append-only events since this client cursor
@@ -159,9 +188,9 @@ def _envelope(proposal: Mapping[str, Any]) -> Dict[str, Any]:
     elif selection.provider == "manual":
         limitation = "Manual mode is planning-only and cannot produce live worker evidence. Select claude:fable and re-run /grill to execute."
     elif selection.provider == "codex":
-        limitation = "Codex is available for planning in V0; a fenced Codex worker adapter is not yet implemented."
+        limitation = "This grill produces no Codex worker contract. Use /import with an explicitly reviewed V5+ runbook and embedded profile_snapshot."
     elif selection.provider == "local":
-        limitation = "Local models are available for planning in V0; a fenced local worker adapter is not yet implemented."
+        limitation = "This grill produces no local worker contract. Use /import with an explicitly reviewed V5+ Codex OSS runbook and embedded profile_snapshot."
     elif selection.provider == "openai":
         limitation = "The OpenAI key reference is discoverable, but direct Platform execution is not enabled in V0."
     return {
@@ -180,11 +209,23 @@ def validate_envelope(value: Mapping[str, Any]) -> Dict[str, Any]:
         "schema", "schema_version", "proposal", "run_id", "execution_status",
         "execution_limitation", "runbook",
     }
+    if isinstance(value, dict) and value.get("schema_version") == 2:
+        fields.add("source")
     if not isinstance(value, dict) or set(value) != fields:
         raise InteractiveError("product plan has the wrong fields")
-    if value["schema"] != "camol.product_plan" or value["schema_version"] != 1:
+    if value["schema"] != "camol.product_plan" or type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2}:
         raise InteractiveError("product plan schema is unsupported")
-    proposal = validate_proposal(value["proposal"])
+    proposal = validate_proposal(value["proposal"]) if value["proposal"] is not None else None
+    if proposal is None and (value["schema_version"] != 2 or value["runbook"] is None):
+        raise InteractiveError("only an imported executable runbook may omit a proposal")
+    if value["schema_version"] == 2:
+        source = value["source"]
+        if not isinstance(source, dict) or set(source) != {"workspace", "revision"}:
+            raise InteractiveError("imported plan requires exact workspace and revision")
+        if not all(isinstance(source[name], str) and source[name] for name in source):
+            raise InteractiveError("imported source identity must be non-empty")
+        if not Path(source["workspace"]).is_absolute():
+            raise InteractiveError("imported workspace must be absolute")
     if not isinstance(value["run_id"], str) or not value["run_id"]:
         raise InteractiveError("product plan run_id is required")
     if value["execution_status"] not in {"planning_only", "preflight_required", "ready"}:
@@ -203,6 +244,19 @@ def validate_envelope(value: Mapping[str, Any]) -> Dict[str, Any]:
 def render_plan(plan: Mapping[str, Any], digest: str) -> str:
     plan = validate_envelope(plan)
     proposal = plan["proposal"]
+    if proposal is None:
+        runbook = plan["runbook"]
+        return "\n".join([
+            "IMPORTED PLAN {}".format(digest),
+            "goal: " + runbook["run"]["objective"],
+            "workspace: " + plan["source"]["workspace"],
+            "frozen source revision: " + plan["source"]["revision"],
+            "kernel runbook digest: " + runbook_digest(runbook),
+            "This exact imported contract defines agents, tasks, commands, verification, authority and budgets.",
+            "limitation: " + plan["execution_limitation"],
+            "canonical product plan JSON:", json.dumps(plan, indent=2, sort_keys=True),
+            "Nothing has started. Review every command and grant, then /approve yes or the exact plan digest.",
+        ])
     lines = [
         "PLAN {}".format(digest),
         "goal: {}".format(proposal["goal"]),
@@ -253,11 +307,18 @@ class InteractiveController:
     ):
         self.workspace = Path(workspace).resolve()
         self.store = SessionStore(self.workspace, state_root)
-        self.session = self.store.load()
+        with self.store.transaction():
+            self.session = self.store.load()
         self.connections = ConnectionRegistry(self.store.project_dir)
         self.converse_fn = converse_fn
         self.spawn_fn = spawn_fn
         self.preflight_fn = preflight_fn
+        self._command_lock = threading.Lock()
+        self._cancel_event = threading.Event()
+        self._box_cache = {}
+
+    def cancel_active(self) -> None:
+        self._cancel_event.set()
 
     def _persist_message(self, role: str, text: str, *, kind: str = "conversation") -> None:
         self.session = self.store.append_message(self.session, role, text, kind=kind)
@@ -284,6 +345,22 @@ class InteractiveController:
         )
 
     def handle(self, raw: str, *, on_chunk: Optional[Callable[[str], None]] = None) -> CommandResponse:
+        if raw.strip() == "/cancel":
+            self.cancel_active()
+            return CommandResponse(messages=("Planning cancellation requested. Authoritative worker execution is unchanged.",))
+        if not self._command_lock.acquire(blocking=False):
+            return CommandResponse(messages=("A request is still running. Use /cancel, or wait before submitting another command.",))
+        try:
+            with self.store.transaction():
+                self.session = self.store.load()
+                self._cancel_event.clear()
+                return self._handle(raw, on_chunk=on_chunk)
+        except SessionError as error:
+            return CommandResponse(messages=("denied: {}".format(error),))
+        finally:
+            self._command_lock.release()
+
+    def _handle(self, raw: str, *, on_chunk: Optional[Callable[[str], None]] = None) -> CommandResponse:
         text = raw.strip()
         if not text:
             return CommandResponse()
@@ -297,10 +374,39 @@ class InteractiveController:
                 return self._command(text)
             if self.session.get("grill"):
                 return self._answer_grill(text)
-            reply = self.converse_fn(
-                self.session["model"], text, self.session["messages"][:-1],
-                effort=self.session["effort"], workspace=self.workspace, on_chunk=on_chunk,
-            )
+            selection = parse_selection(self.session["model"])
+            started_at = datetime.now(timezone.utc).isoformat()
+            started = time.monotonic()
+            reply = None
+            call_status = "failed"
+            try:
+                reply = self.converse_fn(
+                    self.session["model"], text, self.session["messages"][:-1],
+                    effort=self.session["effort"], workspace=self.workspace, on_chunk=on_chunk,
+                    cancel_event=self._cancel_event,
+                )
+                if self._cancel_event.is_set():
+                    raise ConversationCancelled("planning request cancelled")
+                call_status = "completed"
+            except ConversationCancelled:
+                call_status = "cancelled"
+                raise
+            finally:
+                if selection.provider != "manual":
+                    self.store.append_planning_call({
+                        "schema": "camol.planning_call", "schema_version": 1,
+                        "call_id": "planning-" + uuid4().hex,
+                        "session_id": self.session["session_id"],
+                        "provider": selection.provider,
+                        "requested_model": selection.model,
+                        "resolved_model": reply.resolved_model if reply else None,
+                        "effort": self.session["effort"], "started_at": started_at,
+                        "duration_seconds": round(time.monotonic() - started, 6),
+                        "status": call_status,
+                        "input_tokens": reply.input_tokens if reply else None,
+                        "output_tokens": reply.output_tokens if reply else None,
+                        "total_cost_usd": None,
+                    })
             identity = "{} -> {}".format(reply.requested_model or "default", reply.resolved_model or "unreported")
             identity_message = "model identity: {} ({})".format(identity, reply.provider)
             self._persist_message("orchestrator", reply.text, kind="conversation")
@@ -326,6 +432,7 @@ class InteractiveController:
         if command == "/grill":
             if not arguments:
                 raise InteractiveError("usage: /grill GOAL")
+            self._reconcile_session()
             if self.session["status"] == "running":
                 raise InteractiveError("a run is active; detach or inspect it instead of replacing its plan")
             goal = " ".join(arguments)
@@ -341,14 +448,50 @@ class InteractiveController:
                 selected_box=None,
                 event_cursor=0,
                 status="planning",
+                state_dir=str(self.store.runs_dir / ("run-" + uuid4().hex)),
             )
             return self._respond("GRILL 1/{} — {}".format(len(grill_question_names()), grill.question()))
+        if command == "/import":
+            return self._import(arguments)
         if command == "/plan":
             if self.session["plan"] is None:
                 raise InteractiveError("there is no plan; start with /grill GOAL")
             return self._respond(render_plan(self.session["plan"], self.session["plan_digest"]))
         if command == "/approve":
             return self._approve(arguments)
+        if command == "/accept":
+            if len(arguments) > 1:
+                raise InteractiveError("usage: /accept [OUTCOME_DIGEST]")
+            snapshot = self._control("acceptance")
+            acceptance = snapshot.get("acceptance")
+            if snapshot["status"] != "awaiting_acceptance" or not acceptance:
+                raise InteractiveError("run is not awaiting final human acceptance")
+            if not arguments:
+                return self._respond(
+                    "FINAL OUTCOME — inspect the integrated result and evidence before confirming:\n" + json.dumps(snapshot, indent=2, sort_keys=True),
+                    "To accept exactly this outcome: /accept " + acceptance["outcome_digest"],
+                )
+            if arguments[0] != acceptance["outcome_digest"]:
+                raise InteractiveError("acceptance requires the exact current outcome digest; review /accept")
+            result = self._control("accept", {"approved_by": getpass.getuser(), "outcome_digest": arguments[0]})
+            self.session = self.store.update(self.session, status="terminal")
+            return self._respond("Final outcome accepted: " + json.dumps(result, sort_keys=True))
+        if command == "/gate":
+            if not 1 <= len(arguments) <= 2:
+                raise InteractiveError("usage: /gate TASK_ID [ASSESSMENT_DIGEST]")
+            snapshot = self._control("acceptance")
+            waiting = snapshot["pending_gates"].get(arguments[0])
+            if not waiting:
+                raise InteractiveError("task has no pending human gate")
+            if len(arguments) == 1:
+                return self._respond(
+                    "PENDING STATE GATE\n" + json.dumps(waiting, indent=2, sort_keys=True),
+                    "To approve exactly this assessment: /gate {} {}".format(arguments[0], waiting["assessment_digest"]),
+                )
+            if arguments[1] != waiting["assessment_digest"]:
+                raise InteractiveError("gate approval requires the exact current assessment digest")
+            result = self._control("gate-approve", {"task_id": arguments[0], "approved_by": getpass.getuser(), "assessment_digest": arguments[1]})
+            return self._respond("State gate approved: " + json.dumps(result, sort_keys=True))
         if command == "/model":
             if len(arguments) != 1:
                 raise InteractiveError("usage: /model SELECTION")
@@ -373,6 +516,47 @@ class InteractiveController:
             return CommandResponse(messages=(BUILTIN_PROTOCOLS,))
         if command == "/history":
             return self._history(arguments)
+        if command == "/models":
+            return self._models(arguments)
+        if command == "/watch":
+            return self._watch(arguments)
+        if command == "/repo":
+            return self._repo(arguments)
+        if command == "/usage":
+            if arguments == ["run"]:
+                from .usage import usage_report
+                events = self._persisted_events()
+                if not events:
+                    raise InteractiveError("no run ledger exists yet; /usage shows planning calls")
+                return CommandResponse(messages=(json.dumps(usage_report(events), indent=2, sort_keys=True),))
+            if arguments:
+                raise InteractiveError("usage: /usage [run]")
+            calls = self.store.planning_calls()
+            known_input = sum(item["input_tokens"] for item in calls if type(item.get("input_tokens")) is int)
+            known_output = sum(item["output_tokens"] for item in calls if type(item.get("output_tokens")) is int)
+            unknown = sum(item.get("input_tokens") is None or item.get("output_tokens") is None for item in calls)
+            return CommandResponse(messages=(
+                "PLANNING USAGE — calls={} recorded_input_tokens={} recorded_output_tokens={} unknown_usage_calls={} duration={:.2f}s cost=unknown\nReceipts: {}".format(
+                    len(calls), known_input, known_output, unknown,
+                    sum(item.get("duration_seconds", 0) for item in calls), self.store.planning_calls_path,
+                ),
+            ))
+        if command == "/debug":
+            if arguments not in ([], ["list"], ["inbox"]) and not (len(arguments) == 2 and arguments[0] == "show"):
+                raise InteractiveError("usage: /debug [list|inbox|show CASE_ID]")
+            from .debugger import Debugger
+            from .orchestrator import Orchestrator
+            database = Path(self.session["state_dir"]) / "camol.sqlite3"
+            if not database.is_file() or self.session["run_id"] is None:
+                raise InteractiveError("no run ledger exists yet")
+            store = ReadOnlyEventStore(database)
+            try:
+                debugger = Debugger(Orchestrator(store), self.session["run_id"])
+                result = debugger.inbox() if arguments == ["inbox"] else debugger.inspect(
+                    arguments[1] if len(arguments) == 2 else None)
+            finally:
+                store.close()
+            return CommandResponse(messages=(json.dumps(result, indent=2, sort_keys=True),))
         if command == "/clear":
             if arguments:
                 raise InteractiveError("usage: /clear")
@@ -419,7 +603,64 @@ class InteractiveController:
             )
         raise InteractiveError("unknown command {}; use /help".format(command))
 
+    @staticmethod
+    def _inspection(title: str, value: Any) -> CommandResponse:
+        rendered = json.dumps(value, indent=2, sort_keys=True)
+        if len(rendered) > 64000:
+            rendered = rendered[:64000] + "\n… preview truncated at 64000 characters; use the corresponding kernel CLI for complete output."
+        return CommandResponse(messages=(title + "\n" + rendered,))
+
+    def _models(self, arguments: Sequence[str]) -> CommandResponse:
+        if arguments not in ([], ["list"]) and not (len(arguments) == 2 and arguments[0] == "status"):
+            raise InteractiveError("usage: /models [list|status PLAN_DIGEST]")
+        from .models import ModelStore
+        root = Path(self.store.root or default_state_root()) / "models"
+        if not root.exists():
+            return CommandResponse(messages=("No local model artifact catalog exists. Use `camol models` to explicitly prepare and approve a download. No download or model load was started.",))
+        with ModelStore(root, read_only=True) as store:
+            if len(arguments) == 2:
+                result = store.status(arguments[1])
+            else:
+                catalog = store.list()
+                result = {"total_plans": len(catalog), "plans": [{
+                    "plan_digest": row["plan_digest"], "model_id": row["plan"]["model_id"],
+                    "revision": row["plan"]["revision"], "status": row["status"],
+                    "accounted_bytes": row["accounted_bytes"], "observed_bytes": row["observed_bytes"],
+                    "loaded": row["loaded"], "inference_ready": row["inference_ready"],
+                } for row in catalog[:100]], "truncated": len(catalog) > 100}
+        return self._inspection("PASSIVE MODEL ARTIFACTS — recorded download state; current hashes are not rechecked by this preview. Downloaded is not loaded or inference-ready.", result)
+
+    def _watch(self, arguments: Sequence[str]) -> CommandResponse:
+        if arguments not in ([], ["list"]) and not (len(arguments) == 2 and arguments[0] == "show"):
+            raise InteractiveError("usage: /watch [list|show WATCHER_ID]")
+        from .state import project
+        events = self._persisted_events()
+        if not events:
+            raise InteractiveError("no run ledger exists yet")
+        watchers = project(events).get("watchers", {})
+        if len(arguments) == 2:
+            if arguments[1] not in watchers:
+                raise InteractiveError("unknown watcher: " + arguments[1])
+            result = watchers[arguments[1]]
+        else:
+            result = watchers
+        return self._inspection("RECORDED WATCHERS — read-only ledger inspection; no observer or remote poll was invoked.", result)
+
+    def _repo(self, arguments: Sequence[str]) -> CommandResponse:
+        if (arguments not in ([], ["summary"], ["cycles"])
+                and not (len(arguments) == 2 and arguments[0] == "impact")
+                and not (len(arguments) == 3 and arguments[0] == "why")):
+            raise InteractiveError("usage: /repo [summary|impact PATH|why FROM TO|cycles]")
+        from .repository_graph import RepositoryGraph, crawl_repository
+        graph = RepositoryGraph(crawl_repository(self.workspace))
+        if arguments in ([], ["summary"]):
+            return CommandResponse(messages=(graph.render_text(),))
+        result = (graph.cycles() if arguments == ["cycles"] else graph.impact(arguments[1])
+                  if arguments[0] == "impact" else graph.why(arguments[1], arguments[2]))
+        return self._inspection("STATIC REPOSITORY GRAPH — source declarations only; actual runtime and deployment capability remain unverified.", result)
+
     def _invalidate_plan_for_setting_change(self) -> None:
+        self._reconcile_session()
         if self.session["status"] == "running":
             raise InteractiveError("model and effort are frozen while a run is active")
         if self.session["plan"] is not None:
@@ -432,6 +673,78 @@ class InteractiveController:
                 grill=None,
                 status="new",
             )
+
+    def _reconcile_session(self) -> None:
+        if self.session["status"] != "running":
+            return
+        try:
+            status = self._control("status")
+        except (SupervisorError, OSError):
+            # Read only terminal evidence. A missing socket alone never proves
+            # that a crashed or drained run completed.
+            if any(event["type"] in {"RUN_COMPLETED", "RUN_BLOCKED", "RUN_ACCEPTED"} for event in self._persisted_events()):
+                self.session = self.store.update(self.session, status="terminal")
+            return
+        if status["run"]["status"] in {"completed", "blocked"}:
+            self.session = self.store.update(self.session, status="terminal")
+
+    def _persisted_events(self) -> List[Dict[str, Any]]:
+        database = Path(self.session["state_dir"]) / "camol.sqlite3"
+        if not database.is_file() or database.is_symlink() or self.session["run_id"] is None:
+            return []
+        store = None
+        try:
+            store = ReadOnlyEventStore(database)
+            return store.read(self.session["run_id"])
+        except (sqlite3.Error, ValueError, OSError):
+            return []
+        finally:
+            if store is not None:
+                store.close()
+
+    def _import(self, arguments: Sequence[str]) -> CommandResponse:
+        if len(arguments) != 1:
+            raise InteractiveError("usage: /import PATH")
+        self._reconcile_session()
+        if self.session["status"] == "running":
+            raise InteractiveError("an unfinished run owns this session; resume or inspect it before importing another plan")
+        path = Path(arguments[0]).expanduser()
+        path = path if path.is_absolute() else self.workspace / path
+        if path.stat().st_size > 2 * 1024 * 1024:
+            raise InteractiveError("runbook is too large to review")
+        runbook = load_runbook(path)
+        reject_sensitive_text(json.dumps(runbook), "imported runbook")
+        state_dir = self.store.runs_dir / ("run-" + uuid4().hex)
+        workspace = WorkspaceManager(self.workspace, state_dir)
+        workspace.assert_source_ready()
+        kinds = {agent["adapter"]["kind"] for agent in runbook["agents"]}
+        if kinds in ({"codex_cli"}, {"codex_oss"}):
+            if any("profile_snapshot" not in agent["adapter"] for agent in runbook["agents"]):
+                raise InteractiveError("interactive Codex plans require every adapter's exact embedded profile_snapshot; no file-backed policy is silently frozen")
+            limitation = ("Codex execution requires /run to review and acknowledge the exact weaker provider-policy digest. "
+                          "Runtime/login or local catalog checks do not establish quota, resolved model or inference readiness. "
+                          "No hard USD, inner-model-turn, or destination-egress guarantee is available.")
+        else:
+            limitation = ("Local process adapters use the exact imported executable protocol. No hosted-model proof is claimed."
+                          if kinds == {"process"} else
+                          "Hosted execution requires explicit preflight and frozen spend acknowledgement; mixed adapters are not supported by this terminal launch command.")
+        plan = validate_envelope({
+            "schema": "camol.product_plan", "schema_version": 2, "proposal": None,
+            "run_id": runbook["run"]["id"], "runbook": runbook,
+            "source": {"workspace": str(self.workspace), "revision": workspace.head_revision()},
+            "execution_status": "ready" if kinds == {"process"} else "preflight_required",
+            "execution_limitation": limitation,
+        })
+        digest = canonical_digest(plan)
+        rendered = render_plan(plan, digest)
+        if len(rendered) > 200_000:
+            raise InteractiveError("the exact imported plan is too large to review in this client")
+        self.session = self.store.update(
+            self.session, plan=plan, plan_digest=digest, approved_digest=None,
+            run_id=plan["run_id"], goal=runbook["run"]["objective"], grill=None,
+            state_dir=str(state_dir), selected_box=None, event_cursor=0, status="plan_ready",
+        )
+        return self._respond(rendered)
 
     def _answer_grill(self, text: str) -> CommandResponse:
         grill = GrillState.from_dict(self.session["grill"])
@@ -502,6 +815,18 @@ class InteractiveController:
         login_returncode: Optional[int] = None,
     ) -> CommandResponse:
         """Promote a verified login to the active planner when no plan is frozen."""
+        if not self._command_lock.acquire(blocking=False):
+            return CommandResponse(messages=("Login verification finished while another request is active. Inspect /connections and choose /model after that request.",))
+        try:
+            with self.store.transaction():
+                self.session = self.store.load()
+                return self._confirm_provider_connection(provider, login_returncode=login_returncode)
+        except SessionError as error:
+            return CommandResponse(messages=("Login selection deferred: {}. Choose /model after that request.".format(error),))
+        finally:
+            self._command_lock.release()
+
+    def _confirm_provider_connection(self, provider: str, *, login_returncode: Optional[int]) -> CommandResponse:
         connection_id = {"claude": "claude-cli", "codex": "codex-cli"}.get(provider)
         if connection_id is None:
             raise InteractiveError("login confirmation supports claude or codex")
@@ -552,7 +877,7 @@ class InteractiveController:
                 raise InteractiveError("history count must be an integer from 1 to 100")
         # The current /history command was persisted before dispatch. Exclude it
         # so asking to inspect history does not make itself the newest result.
-        retained = self.session["messages"][:-1][-count:]
+        retained = self.store.history(self.session["messages"], count + 1)[:-1]
         if not retained:
             return CommandResponse(messages=("No earlier durable transcript entries.",))
         labels = {"human": "you", "orchestrator": "orchestrator", "system": "camol"}
@@ -587,12 +912,19 @@ class InteractiveController:
             else:
                 if remote_plan["plan_digest"] != runbook_digest(plan["runbook"]):
                     raise InteractiveError("another supervisor owns this session state with a different plan")
-                self.session = self.store.update(self.session, status="running")
+                session_status = "terminal" if remote_status["run"]["status"] in {"completed", "blocked"} else "running"
+                self.session = self.store.update(self.session, status=session_status)
                 return self._respond(
                     "Reattached to the existing supervisor without a new provider request or preflight.",
                     "Supervisor reattached pid={}; closing this client will not stop it.".format(remote_status["pid"]),
                 )
-        WorkspaceManager(self.workspace, state_dir).assert_source_ready()
+        workspace = WorkspaceManager(self.workspace, state_dir)
+        workspace.assert_source_ready()
+        if plan.get("source") is not None and (
+            plan["source"]["workspace"] != str(self.workspace)
+            or plan["source"]["revision"] != workspace.head_revision()
+        ):
+            raise InteractiveError("source checkout changed after import; import and approve the current revision again")
         state_dir.mkdir(parents=True, exist_ok=True)
         adapter_kinds = {agent["adapter"]["kind"] for agent in plan["runbook"]["agents"]}
         if adapter_kinds == {"claude_cli"}:
@@ -649,6 +981,35 @@ class InteractiveController:
             if arguments:
                 raise InteractiveError("a local process plan uses `/run` without provider-spend flags")
             readiness_line = "Run accepted for the explicitly approved local process adapter; no hosted-model proof is claimed."
+        elif adapter_kinds in ({"codex_cli"}, {"codex_oss"}):
+            policy = self._codex_launch_policy(plan)
+            digest = canonical_digest(policy)
+            hosted = adapter_kinds == {"codex_cli"}
+            expected = " /run --accept-provider-policy " + digest + (" --accept-spend" if hosted else "")
+            if not arguments:
+                return self._respond(
+                    "PROVIDER POLICY ACKNOWLEDGEMENT — no worker or paid preflight started.\n" + json.dumps(policy, indent=2, sort_keys=True),
+                    "After reviewing these limitations, type:" + expected,
+                )
+            remaining = list(arguments)
+            accepted_digest, accept_spend = None, False
+            while remaining:
+                option = remaining.pop(0)
+                if option == "--accept-provider-policy" and remaining and accepted_digest is None:
+                    accepted_digest = remaining.pop(0)
+                elif option == "--accept-spend" and not accept_spend:
+                    accept_spend = True
+                else:
+                    raise InteractiveError("this provider has no hard spend-capped preflight; use" + expected)
+            if accepted_digest != digest:
+                raise InteractiveError("provider policy requires the exact current acknowledgement digest; review /run")
+            if hosted != accept_spend:
+                raise InteractiveError("hosted Codex requires --accept-spend; local Codex must not imply hosted billing approval")
+            readiness_line = ("Explicit provider limitations acknowledged: " + digest + ". "
+                              "No paid capability probe ran; model identity is requested-only and quota remains unknown. "
+                              "Kernel runtime/login/catalog and exact admission checks still gate all leases. "
+                              + ("Dollar values are reservations, not a hard spend cap; unknown paid usage stops further paid launches."
+                                 if hosted else "Existing catalog presence is not inference, weights-identity, resource-fit, or airgap proof; no model is downloaded or loaded."))
         else:
             raise InteractiveError("Product V0 cannot execute a mixed or unsupported adapter plan")
         runbook_path = self.store.write_runbook(self.session, plan["runbook"])
@@ -666,7 +1027,27 @@ class InteractiveController:
             ),
         )
 
+    def _codex_launch_policy(self, plan: Mapping[str, Any]) -> Dict[str, Any]:
+        if plan.get("source") is None or plan["runbook"]["schema_version"] < 5:
+            raise InteractiveError("Codex launch requires an imported V5+ source-bound runbook")
+        agents = []
+        for agent in sorted(plan["runbook"]["agents"], key=lambda item: item["id"]):
+            if "profile_snapshot" not in agent["adapter"]:
+                raise InteractiveError("Codex launch requires an exact embedded profile_snapshot for every worker")
+            profile = model_profile_for_adapter(self.workspace, agent["adapter"])
+            agents.append({"agent_id": agent["id"], "profile_digest": profile.digest(),
+                           "profile": profile.to_dict()})
+        return {"schema": "camol.interactive_provider_ack", "schema_version": 1,
+                "product_plan_digest": self.session["plan_digest"], "runbook_digest": runbook_digest(plan["runbook"]),
+                "source": dict(plan["source"]), "agents": agents,
+                "limitations": {"resolved_model": "unverified", "quota_available": "unknown",
+                                "hard_usd_cap": "unsupported; configured dollars reserve accounting authority only",
+                                "inner_model_turn_cap": "unsupported", "restricted_egress": "unsupported; ambient network explicitly granted",
+                                "capability_preflight": "none; runtime/login or catalog observation only",
+                                "local_model_load_or_download": "never implicit"}}
+
     def _status(self) -> CommandResponse:
+        self._reconcile_session()
         lines = [
             "session={} status={} model={} effort={}".format(
                 self.session["session_id"], self.session["status"], self.session["model"], self.session["effort"]
@@ -727,34 +1108,90 @@ class InteractiveController:
         return self._respond("\n".join(lines))
 
     def _box(self, arguments: Sequence[str]) -> CommandResponse:
-        if len(arguments) != 1:
-            raise InteractiveError("usage: /box ID|NUMBER")
+        if not 1 <= len(arguments) <= 2:
+            raise InteractiveError("usage: /box ID|NUMBER [status|context|tools|diff|evals|events|evidence|transcript]")
         boxes = self.box_summaries()
         target = arguments[0]
+        if target in {"next", "previous"} and boxes:
+            ids = [item["box_id"] for item in boxes]
+            current = ids.index(self.session["selected_box"]) if self.session["selected_box"] in ids else -1
+            target = ids[(current + (1 if target == "next" else -1)) % len(ids)]
         if target.isdigit() and 1 <= int(target) <= len(boxes):
             target = boxes[int(target) - 1]["box_id"]
         if target not in {item["box_id"] for item in boxes}:
             raise InteractiveError("unknown box")
+        subview = arguments[1] if len(arguments) == 2 else "events"
+        if subview not in {"status", "context", "tools", "diff", "evals", "events", "evidence", "transcript"}:
+            raise InteractiveError("unknown box view; use status, context, tools, diff, evals, events, evidence, or transcript")
         self.session = self.store.update(self.session, selected_box=target)
+        rendered = self.inspect_box(target, subview)
+        return CommandResponse(messages=(rendered,), box_id=target, box_view=subview)
+
+    def inspect_box(self, target: str, subview: str = "events") -> str:
+        """Read a box snapshot without changing authority or writing chat history."""
+        stale = False
         try:
             view = self._control(
-                "box", {"box_id": target, "after_seq": 0, "limit": 100, "tail": True}
+                "box", {"box_id": target, "after_seq": 0, "limit": 200, "tail": True}
             )
-        except SupervisorError:
-            return self._respond("BOX {} is dormant; no workspace, lease, commands, or evidence exist yet.".format(target))
+            self._box_cache[target] = view
+        except (SupervisorError, OSError):
+            view = self._box_cache.get(target)
+            if view is None:
+                return "BOX {} is dormant or unavailable; no live evidence snapshot is available.".format(target)
+            stale = True
         lines = [
-            "BOX {} adapter={} tasks={} workspace={}".format(
-                target, view["adapter_kind"], ",".join(view["task_ids"]) or "none",
+            "BOX {} / {} {}adapter={} tasks={} workspace={}".format(
+                target, subview, "STALE — supervisor disconnected; " if stale else "",
+                view["adapter_kind"], ",".join(view["task_ids"]) or "none",
                 view["workspace"]["path"] if view["workspace"] else "not prepared",
-            )
+            ),
+            "Read-only snapshot; messages in the composer always go to the orchestrator.",
         ]
-        for event in view["events"][-30:]:
-            lines.append("#{:<4} {:<30} {}".format(
-                event["seq"], event["type"], json.dumps(event["payload"], sort_keys=True)[:500]
+        if subview == "status":
+            lines.append(json.dumps(view.get("task_states", {}), indent=2, sort_keys=True))
+        elif subview == "context":
+            lines.append(json.dumps(view.get("task_contracts", []), indent=2, sort_keys=True))
+        channels = {
+            "context": {"context-packet"},
+            "diff": {"workspace-diff", "diff", "candidate-patch"},
+            "transcript": {"stdout", "stderr", "agent-result", "provider-stdout", "provider-stderr"},
+        }
+        matched = 0
+        for retained in view.get("artifacts", {}).values():
+            reference = retained["reference"]
+            channel = reference.get("producer", {}).get("channel", "")
+            selected = (
+                subview == "evidence"
+                or channel in channels.get(subview, set())
+                or (subview == "diff" and "diff" in channel)
+                or (subview == "tools" and any(word in channel for word in ("tool", "invocation", "command")))
+                or (subview == "evals" and any(word in channel for word in ("verif", "eval", "test")))
+            )
+            if selected:
+                matched += 1
+                lines.append("ARTIFACT {} {}{}".format(
+                    channel, reference["digest"], " [preview truncated]" if retained.get("preview_truncated") else "",
+                ))
+                lines.append(retained.get("preview", "unavailable: " + retained.get("error", "unknown")))
+        event_types = {
+            "tools": {"EVIDENCE_RECORDED", "AGENT_TURN_RECORDED"},
+            "evals": {"TASK_VERIFICATION_RECORDED", "COUNTEREXAMPLE_RECORDED", "DEBUG_CASE_OPENED", "DEBUG_CASE_VERIFIED", "EVAL_PROMOTED"},
+            "diff": {"CANDIDATE_CAPTURED", "INTEGRATION_ACCEPTED"},
+        }
+        events = view["events"] if subview in {"events", "evidence"} else [
+            event for event in view["events"] if event["type"] in event_types.get(subview, set())
+        ]
+        for event in events:
+            payload = json.dumps(event["payload"], sort_keys=True)
+            lines.append("#{} {} {}{}".format(
+                event["seq"], event["type"], payload[:8000],
+                " [display truncated; full payload is in /events export]" if len(payload) > 8000 else "",
             ))
-        if not view["events"]:
-            lines.append("No box events yet.")
-        return self._respond("\n".join(lines))
+        if not matched and not events and subview not in {"status", "context"}:
+            lines.append("No recorded {} in this snapshot.".format(subview))
+        lines.append("Snapshot includes the latest 200 events and 16 artifact previews; full retained content is available through camol export.")
+        return "\n".join(lines)
 
     def _events(self, arguments: Sequence[str]) -> CommandResponse:
         if arguments:

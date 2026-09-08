@@ -7,8 +7,15 @@ from .admission import AdmissionBundle
 from .effects import EffectOutcome, EffectRequest
 from .evaluation import CandidateRecord, CounterexampleRecord, IntegrationReceipt
 from .evidence import EvidenceRecord
+from .debugger import DEBUG_EVENTS, apply_debug_event
+from .watchers import WATCHER_EVENTS, apply_watcher_event
+from .usage import _trusted_receipts
+from .gate_runtime import GATE_EVENTS, apply_gate_event, require_integration_gate
+from .revisions import REVISION_EVENTS, apply_revision_event
+from .capacity_runtime import CAPACITY_EVENTS, apply_capacity_event, capacity_for_task
 from .readiness import LeaseFence, ReadinessReceipt, WaitingReason
-from .schema import reject_unknown_fields, require_digest, require_string
+from .leases import validate_authorization
+from .schema import reject_unknown_fields, require_digest, require_string, parse_timestamp
 from .workspace import SalvageReceipt
 
 
@@ -24,6 +31,7 @@ def empty_state() -> Dict[str, Any]:
         "evidence": {},
         "messages": [],
         "debug_cases": {},
+        "watchers": {},
         "evals": {},
         "hillclimbs": [],
         "readiness_receipts": {},
@@ -31,6 +39,7 @@ def empty_state() -> Dict[str, Any]:
         "reservations": {},
         "released_reservation_ids": [],
         "lease_epochs": {},
+        "lease_authorizations": {},
         "heartbeats": {},
         "effects": {},
         "salvages": [],
@@ -39,6 +48,9 @@ def empty_state() -> Dict[str, Any]:
         "integrations": [],
         "integration_head": None,
         "total_tokens": 0,
+        "accounted_usage_invocations": [],
+        "gate_assessments": {},
+        "gate_approvals": {},
         "last_seq": 0,
     }
 
@@ -47,8 +59,16 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     next_state = deepcopy(state)
     payload = event["payload"]
     event_type = event["type"]
+    if state["status"] == "superseded":
+        raise ValueError("superseded run is sealed; continue its linked successor")
 
-    if event_type == "RUN_CREATED":
+    if event_type in CAPACITY_EVENTS:
+        apply_capacity_event(next_state, event)
+    elif event_type in REVISION_EVENTS:
+        apply_revision_event(next_state, event)
+    elif event_type in GATE_EVENTS:
+        apply_gate_event(next_state, event)
+    elif event_type == "RUN_CREATED":
         runbook = deepcopy(payload["runbook"])
         next_state["run_id"] = event["run_id"]
         next_state["status"] = "draft"
@@ -83,11 +103,15 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
             for task in runbook["tasks"]
         }
     elif event_type == "PLAN_APPROVED":
+        if next_state.get("revision") and payload["approved_by"] != next_state["revision"]["approved_by"]:
+            raise ValueError("revision approval owner changed")
         next_state["status"] = "ready"
         next_state["approved_by"] = payload["approved_by"]
     elif event_type == "RUN_STARTED":
         next_state["status"] = "running"
     elif event_type in {"RUN_COMPLETED", "RUN_BLOCKED"}:
+        if event_type == "RUN_COMPLETED" and next_state["runbook"]["schema_version"] >= 5:
+            raise ValueError("schema v5 requires explicit human final acceptance")
         next_state["status"] = "completed" if event_type == "RUN_COMPLETED" else "blocked"
         next_state["terminal"] = deepcopy(payload)
     elif event_type == "TASK_LEASED":
@@ -102,6 +126,9 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         if admission_payload is None:
             raise ValueError("TASK_LEASED has no persisted admission bundle")
         admission = AdmissionBundle.from_dict(admission_payload)
+        shared_capacity = capacity_for_task(next_state, task["id"], agent["id"], now=fence.issued_at, local_reservation_id=admission.reservation.reservation_id)
+        if shared_capacity is not None and parse_timestamp(fence.expires_at, "fence expiry") > parse_timestamp(shared_capacity["expires_at"], "capacity expiry"):
+            raise ValueError("TASK_LEASED fence outlives shared global capacity")
         if admission.digest() != payload["admission_digest"]:
             raise ValueError("TASK_LEASED admission digest is invalid")
         if admission.reservation.reservation_id in next_state["released_reservation_ids"]:
@@ -156,6 +183,16 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     elif event_type == "AGENT_TURN_RECORDED":
         task = next_state["tasks"][payload["task_id"]]
         agent = next_state["agents"][payload["agent_id"]]
+        invocation_id = payload.get("usage_invocation_id")
+        if invocation_id is not None:
+            record = _trusted_receipts(next_state["evidence"].values()).get(invocation_id)
+            if (record is None or invocation_id in next_state["accounted_usage_invocations"]
+                    or (record.run_id, record.task_id, record.agent_id, record.lease_id,
+                        record.turn_number, record.input_tokens, record.output_tokens) !=
+                    (event["run_id"], task["id"], agent["id"], payload.get("lease_id"),
+                     task["turn_count"] + 1, payload["input_tokens"], payload["output_tokens"])):
+                raise ValueError("AGENT_TURN_RECORDED has a foreign, reused or mismatched usage receipt")
+            next_state["accounted_usage_invocations"].append(invocation_id)
         used_tokens = payload["input_tokens"] + payload["output_tokens"]
         task["turn_count"] += 1
         task["completed_step_ids"] = list(
@@ -184,6 +221,11 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
                     raise ValueError("EVIDENCE_RECORDED does not match the active fenced lease")
             elif record.debug_case_id not in next_state["debug_cases"]:
                 raise ValueError("EVIDENCE_RECORDED names an unknown debug case")
+            elif record.epistemic_status == "EXECUTED":
+                from .debug_execution import EXECUTOR, validate_executed_evidence
+                if event.get("actor_id") != EXECUTOR:
+                    raise ValueError("executed debug evidence must come from the kernel executor")
+                validate_executed_evidence(next_state, next_state["debug_cases"][record.debug_case_id], record)
             normalized_payload = record.to_dict()
         else:
             # Historical v0 ledgers used an unversioned payload. They remain
@@ -209,6 +251,11 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         task["verification_history"].append(deepcopy(payload))
     elif event_type == "TASK_SUCCEEDED":
         task = next_state["tasks"][payload["task_id"]]
+        if next_state["runbook"]["schema_version"] >= 5:
+            receipts = [item for item in next_state["integrations"] if item["task_id"] == task["id"]]
+            if not receipts:
+                raise ValueError("schema v5 task has no gated integration")
+            require_integration_gate(next_state, IntegrationReceipt.from_dict(receipts[-1]))
         agent = next_state["agents"][task["agent_id"]]
         task.update(
             status="succeeded", lease_id=None, lease_fence=None, fence_digest=None,
@@ -235,6 +282,10 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         )
         if agent:
             agent.update(status="idle", task_id=None)
+    elif event_type in DEBUG_EVENTS:
+        apply_debug_event(next_state, event)
+    elif event_type in WATCHER_EVENTS:
+        apply_watcher_event(next_state, event)
     elif event_type == "DEBUG_CASE_OPENED":
         next_state["debug_cases"][payload["case_id"]] = dict(
             deepcopy(payload), status="open", evidence_ids=[]
@@ -344,6 +395,18 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         ):
             raise ValueError("LEASE_HEARTBEAT does not match the active fenced lease")
         next_state["heartbeats"][payload["lease_id"]] = deepcopy(payload)
+    elif event_type == "LEASE_AUTHORIZATION_REFRESHED":
+        refreshed = validate_authorization(state, payload)
+        task = next_state["tasks"][payload["task_id"]]
+        previous = next_state["lease_authorizations"].get(task["lease_id"])
+        current = AdmissionBundle.from_dict(
+            previous["bundle"] if previous else next_state["admissions"]["{}:{}".format(task["id"], task["agent_id"])]
+        )
+        if current.reservation.reservation_id not in next_state["released_reservation_ids"]:
+            next_state["released_reservation_ids"].append(current.reservation.reservation_id)
+        next_state["reservations"][refreshed.reservation.reservation_id] = refreshed.reservation.to_dict()
+        next_state["readiness_receipts"][refreshed.receipt.receipt_id] = refreshed.receipt.to_dict()
+        next_state["lease_authorizations"][task["lease_id"]] = deepcopy(payload)
     elif event_type == "LEASE_RENEWED":
         task = next_state["tasks"][payload["task_id"]]
         fence = LeaseFence.from_dict(payload["fence"])
@@ -468,6 +531,7 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         next_state["counterexamples"].append(record.to_dict())
     elif event_type == "INTEGRATION_ACCEPTED":
         receipt = IntegrationReceipt.from_dict(payload["receipt"])
+        require_integration_gate(next_state, receipt)
         if receipt.digest() != require_digest(payload.get("receipt_digest"), "integration receipt digest"):
             raise ValueError("INTEGRATION_ACCEPTED digest is invalid")
         candidate = next_state["candidates"].get(receipt.candidate_id)

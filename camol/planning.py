@@ -357,6 +357,14 @@ class GrillState:
             raise PlanningError("grill is already complete")
         answer = _required_text(text, "grill answer")
         name = QUESTIONS[self.question_index][0]
+        if name in {"outcome", "exclusions", "invariants"} and not _items(answer):
+            raise PlanningError("{} must contain at least one item".format(name))
+        if name == "topology":
+            _task_lines(answer, _items(self.answers["outcome"]))
+        elif name == "verification":
+            _verification_argv(answer)
+        elif name == "resources":
+            _resource_limits(answer)
         answers = dict(self.answers)
         answers[name] = answer
         position = self.question_index + 1

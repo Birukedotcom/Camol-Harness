@@ -7,8 +7,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock
 
 from camol.sandbox import process_start_fingerprint
 from camol.schema import canonical_digest
@@ -27,6 +28,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_capacity_wait_wakes_on_cursor_local_control_or_deadline(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        supervisor._wake = asyncio.Event()
+        supervisor.runner = Mock()
+        supervisor.runner.capacity.change_cursor.return_value = 5
+        supervisor.orchestrator = Mock(clock=lambda: datetime.now(timezone.utc))
+        waiting = asyncio.create_task(supervisor._wait_capacity_change({"capacity_waits": {"task": {}}}, 5))
+        await asyncio.sleep(0.03)
+        self.assertFalse(waiting.done(), "unchanged broker must not restart readiness probes")
+        supervisor.runner.capacity.change_cursor.return_value = 6
+        await asyncio.wait_for(waiting, timeout=1.2)
+        supervisor.runner.capacity.change_cursor.return_value = 5
+        waiting = asyncio.create_task(supervisor._wait_capacity_change({"capacity_waits": {"task": {}}}, 5))
+        supervisor._wake.set()
+        await asyncio.wait_for(waiting, timeout=0.1)
+        supervisor._wake.clear()
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        await asyncio.wait_for(supervisor._wait_capacity_change({"capacity_waits": {"task": {"wake_at": expired}}}, 5), timeout=0.1)
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
@@ -96,6 +116,31 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(SupervisorError, "control token"):
             await send_control(self.state, "status")
         self.assertFalse((self.state / "control/control.token").exists())
+
+    async def test_driver_exception_is_visible_and_control_remains_responsive(self):
+        supervisor = Supervisor(ROOT / "examples/three-agent-runbook.json", self.source, self.state)
+        serving = asyncio.create_task(supervisor.serve())
+        await self._wait_for(supervisor.paths.socket)
+        try:
+            supervisor.runner.run_until_terminal = AsyncMock(side_effect=RuntimeError("injected driver failure"))
+            await send_control(self.state, "approve", requested_by="human-owner")
+            for _ in range(100):
+                status = (await send_control(self.state, "status"))["result"]
+                if status["mode"] == "operator_attention":
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(status["mode"], "operator_attention")
+            self.assertIn("injected driver failure", status["last_error"])
+            self.assertTrue((await send_control(self.state, "ping"))["ok"])
+            await send_control(self.state, "resume")
+            for _ in range(100):
+                if supervisor.runner.run_until_terminal.await_count == 2:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(supervisor.runner.run_until_terminal.await_count, 2)
+        finally:
+            await send_control(self.state, "stop")
+            await asyncio.wait_for(serving, timeout=5)
 
     async def test_long_state_path_uses_private_hashed_runtime_socket(self):
         state = Path(self.temporary.name) / ("nested-" + "x" * 90) / "state"

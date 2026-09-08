@@ -196,13 +196,24 @@ class ArtifactStore:
         original_bytes = len(content) if source_bytes is None else source_bytes
         require_digest(original_digest, "artifact source_sha256")
         require_non_negative_int(original_bytes, "artifact source_bytes")
-        retained = content[: self.max_retained_bytes]
-        truncated = truncated or len(content) > len(retained) or original_bytes > len(retained)
+        upstream_truncated = truncated or original_bytes > len(content)
         if redact:
-            text = retained.decode(encoding, "replace")
-            stored = self.redactor.text(text).encode(encoding)
+            # Redact before applying our own bound: truncating a known secret
+            # first would turn it into an unrecognizable, leaked prefix.
+            text = content.decode(encoding, "replace")
+            if upstream_truncated:
+                # Incomplete input cannot establish that the final token/line
+                # is harmless. Exclude that fragment from ordinary retention.
+                text = text.rsplit("\n", 1)[0] + "\n" if "\n" in text else ""
+                begin, end = text.rfind("-----BEGIN "), text.rfind("-----END ")
+                if begin > end and "PRIVATE KEY-----" in text[begin:].splitlines()[0]:
+                    text = text[:begin] + "[REDACTED]"
+            clean = self.redactor.text(text, truncated=upstream_truncated).encode(encoding)
+            stored = clean[: self.max_retained_bytes]
+            truncated = upstream_truncated or len(clean) > len(stored)
         else:
-            stored = retained
+            stored = content[: self.max_retained_bytes]
+            truncated = upstream_truncated or len(content) > len(stored)
         digest = _sha256(stored)
         self._atomic_write(self.path_for(digest), stored)
         return ArtifactRef(
@@ -293,7 +304,16 @@ class RunArchive:
         events: Sequence[Dict[str, Any]],
         store: ArtifactStore,
         destination: Path,
+        *,
+        lineage_events: Optional[Mapping[str, List[Dict[str, Any]]]] = None,
     ) -> Dict[str, Any]:
+        from .revisions import RevisionError, verify_revision_lineage
+        lineage = dict(lineage_events or {})
+        if lineage or any(event.get("type") == "REVISION_LINKED" for event in events):
+            try:
+                verify_revision_lineage(list(events), lineage)
+            except (ValueError, RevisionError) as error:
+                raise ArtifactError("revision archive needs its verified complete source lineage: " + str(error)) from error
         target = Path(destination)
         if target.is_symlink() or (target.exists() and any(target.iterdir())):
             raise ArtifactError("archive destination must be absent or an empty real directory")
@@ -302,13 +322,17 @@ class RunArchive:
             raise ArtifactError("archive destination must not be a symlink")
         if any(event.get("run_id") != run_id for event in events):
             raise ArtifactError("archive events must all belong to the selected run")
-        if store.redactor.value(list(events)) != list(events):
+        all_events = list(events) + [event for values in lineage.values() for event in values]
+        if store.redactor.value(all_events) != all_events:
             raise ArtifactError("event ledger contains material requiring redaction; export refused")
         encoded_events = b"".join(
             json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
             for event in events
         )
-        references = {reference.digest: reference for event in events for reference in artifact_refs(event)}
+        all_references = [reference for event in all_events for reference in artifact_refs(event)]
+        references = {reference.digest: reference for reference in all_references}
+        for reference in all_references:
+            store.verify(reference)
         for digest, reference in references.items():
             content = store.read(reference)
             hexadecimal = digest.split(":", 1)[1]
@@ -323,6 +347,15 @@ class RunArchive:
             "events_sha256": _sha256(encoded_events),
             "artifact_digests": sorted(references),
         }
+        if lineage:
+            inventory = {}
+            for identifier, values in sorted(lineage.items()):
+                require_identifier(identifier, "lineage run ID")
+                encoded = b"".join(json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n" for event in values)
+                cls._write_export_file(target / "lineage" / (identifier + ".jsonl"), encoded)
+                inventory[identifier] = {"event_count": len(values), "events_sha256": _sha256(encoded)}
+            core["schema_version"] = 2
+            core["lineage"] = inventory
         manifest = dict(core, manifest_digest=canonical_digest(core))
         cls._write_export_file(
             target / "manifest.json",
@@ -350,7 +383,9 @@ class RunArchive:
             "schema", "schema_version", "run_id", "event_count", "events_sha256",
             "artifact_digests", "manifest_digest",
         }
-        if set(manifest) != expected_fields or manifest.get("schema") != cls.MANIFEST_SCHEMA or manifest.get("schema_version") != cls.MANIFEST_VERSION:
+        if manifest.get("schema_version") == 2:
+            expected_fields.add("lineage")
+        if set(manifest) != expected_fields or manifest.get("schema") != cls.MANIFEST_SCHEMA or type(manifest.get("schema_version")) is not int or manifest["schema_version"] not in {1, 2}:
             raise ArtifactError("run archive manifest is invalid")
         core = {name: value for name, value in manifest.items() if name != "manifest_digest"}
         if canonical_digest(core) != manifest["manifest_digest"] or _sha256(encoded_events) != manifest["events_sha256"]:
@@ -361,22 +396,46 @@ class RunArchive:
             raise ArtifactError("run archive event stream contains invalid JSON") from error
         if len(events) != manifest["event_count"] or any(event.get("run_id") != manifest["run_id"] for event in events):
             raise ArtifactError("run archive event count or run identity is invalid")
-        references = {
-            reference.digest: reference
-            for event in events
-            for reference in artifact_refs(event)
-        }
+        lineage = {}
+        inventory = manifest.get("lineage", {})
+        if not isinstance(inventory, dict):
+            raise ArtifactError("run archive lineage inventory is invalid")
+        for identifier, record in inventory.items():
+            require_identifier(identifier, "lineage run ID")
+            if not isinstance(record, dict) or set(record) != {"event_count", "events_sha256"}:
+                raise ArtifactError("run archive lineage entry is invalid")
+            path = root / "lineage" / (identifier + ".jsonl")
+            if path.is_symlink() or path.parent.is_symlink():
+                raise ArtifactError("run archive lineage cannot use symlinks")
+            try:
+                encoded = path.read_bytes()
+                values = [json.loads(line) for line in encoded.splitlines() if line]
+            except (OSError, json.JSONDecodeError) as error:
+                raise ArtifactError("run archive lineage is unreadable") from error
+            if _sha256(encoded) != record["events_sha256"] or len(values) != record["event_count"] or any(event.get("run_id") != identifier for event in values):
+                raise ArtifactError("run archive lineage hash, count, or identity is invalid")
+            lineage[identifier] = values
+        if lineage or any(event.get("type") == "REVISION_LINKED" for event in events):
+            from .revisions import verify_revision_lineage
+            try:
+                verify_revision_lineage(events, lineage)
+            except ValueError as error:
+                raise ArtifactError("run archive lineage is not replayable: " + str(error)) from error
+        all_events = list(events) + [event for values in lineage.values() for event in values]
+        all_references = [reference for event in all_events for reference in artifact_refs(event)]
+        references = {reference.digest: reference for reference in all_references}
         discovered = sorted(references)
         if discovered != manifest["artifact_digests"]:
             raise ArtifactError("run archive artifact inventory is invalid")
-        for digest in discovered:
+        for reference in all_references:
+            digest = reference.digest
             hexadecimal = digest.split(":", 1)[1]
             blob = root / "blobs" / "sha256" / hexadecimal[:2] / hexadecimal[2:]
             content = blob.read_bytes() if blob.is_file() and not blob.is_symlink() else None
             if (
                 content is None
                 or _sha256(content) != digest
-                or len(content) != references[digest].stored_bytes
+                or len(content) != reference.stored_bytes
             ):
                 raise ArtifactError("run archive artifact is missing or corrupt: {}".format(digest))
         return manifest, events

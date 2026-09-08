@@ -22,9 +22,11 @@ from .orchestrator import Orchestrator, StateTransitionError
 from .runner import HarnessRunner, summary
 from .runbook import load_runbook
 from .sandbox import SandboxError, process_start_fingerprint, validate_process_invocation
-from .schema import SchemaError, reject_unknown_fields
+from .schema import SchemaError, reject_unknown_fields, parse_timestamp, canonical_digest
 from .store import SQLiteEventStore
 from .workspace import WorkspaceManager
+from .watchers import Watcher, WatcherError, WatchSpec
+from .watch_runtime import WatchRuntime
 
 
 class SupervisorError(RuntimeError):
@@ -204,8 +206,12 @@ class Supervisor:
         self._shutdown = None
         self._wake = None
         self._driver_task = None
+        self._watch_task = None
+        self.watch_runtime = None
+        self.watch_error = None
         self._force_task = None
         self.orphans = []
+        self.last_error = None
 
     def _write_pid(self) -> None:
         descriptor = os.open(str(self.paths.pid), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -296,6 +302,9 @@ class Supervisor:
             "pid": os.getpid(),
             "mode": self.mode,
             "draining": self.draining,
+            "last_error": self.last_error,
+            "watch_error": self.watch_error,
+            "watchers": self.watch_runtime.inspect() if self.watch_runtime else {},
             "run": summary(state),
             "unknown_effects": sorted(
                 effect_id for effect_id, effect in state.get("effects", {}).items()
@@ -331,6 +340,8 @@ class Supervisor:
         return False
 
     def _box(self, box_id: str, after_seq: int, limit: int, *, tail: bool = False) -> Dict[str, Any]:
+        from .artifacts import ArtifactStore, artifact_refs
+        from .probes import Redactor
         state = self.orchestrator.state(self.run_id)
         worker = next((item for item in self.runbook["agents"] if item["id"] == box_id), None)
         if worker is None:
@@ -373,6 +384,20 @@ class Supervisor:
             (item for item in self._boxes()["boxes"] if item.get("box_id") == box_id),
             None,
         )
+        retained = {}
+        references = [reference for event in relevant for reference in artifact_refs(event)]
+        if references:
+            artifacts = ArtifactStore(self.paths.state_dir)
+            for reference in references[-16:]:
+                try:
+                    content = artifacts.read(reference)
+                    preview = Redactor().text(content.decode("utf-8", "replace"))[:16000]
+                    retained[reference.digest] = {
+                        "reference": reference.to_dict(), "preview": preview,
+                        "preview_truncated": len(content) > 16000,
+                    }
+                except (OSError, ValueError, RuntimeError) as error:
+                    retained[reference.digest] = {"reference": reference.to_dict(), "error": type(error).__name__}
         return {
             "schema": "camol.control_box",
             "schema_version": 1,
@@ -382,15 +407,18 @@ class Supervisor:
             "adapter_kind": worker["adapter"]["kind"],
             "task_ids": task_ids,
             "eligible_task_ids": configured_tasks,
+            "task_states": {task_id: state["tasks"][task_id] for task_id in historical_tasks if task_id in state["tasks"]},
+            "task_contracts": [task for task in self.runbook["tasks"] if task["id"] in historical_tasks],
             "workspace": workspace,
             "events": relevant,
+            "artifacts": retained,
             "next_seq": relevant[-1]["seq"] if relevant else after_seq,
         }
 
     async def _events(self, after_seq: int, limit: int, wait_ms: int) -> Dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + (wait_ms / 1000)
         while True:
-            events = self.store.read(self.run_id, after_seq=after_seq)[:limit]
+            events = self.store.read(self.run_id, after_seq=after_seq, limit=limit)
             if events or wait_ms == 0 or asyncio.get_running_loop().time() >= deadline:
                 return {
                     "schema": "camol.control_events",
@@ -399,6 +427,24 @@ class Supervisor:
                     "next_seq": events[-1]["seq"] if events else after_seq,
                 }
             await asyncio.sleep(0.1)
+
+    async def _watch_driver(self) -> None:
+        while not self._shutdown.is_set():
+            if not self.draining and not self.orphans and self.orchestrator.state(self.run_id)["status"] not in {"draft", "superseded"}:
+                try:
+                    before = self.orchestrator.state(self.run_id)["watchers"]
+                    await self.watch_runtime.tick()
+                    after = self.orchestrator.state(self.run_id)["watchers"]
+                    if any(before[key]["status"] != item["status"] or before[key]["observations"] != item["observations"]
+                           for key, item in after.items() if key in before):
+                        self._wake.set()
+                    self.watch_error = None
+                except Exception as error:
+                    self.watch_error = self.orchestrator.redactor.text("{}: {}".format(type(error).__name__, error))
+            try:
+                await asyncio.wait_for(self._shutdown.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
 
     async def _driver(self) -> None:
         while not self._shutdown.is_set():
@@ -423,6 +469,11 @@ class Supervisor:
                 self._wake.clear()
                 await self._wake.wait()
                 continue
+            if state["status"] == "awaiting_acceptance":
+                self.mode = "awaiting_acceptance"
+                self._wake.clear()
+                await self._wake.wait()
+                continue
             if state["status"] == "draft":
                 self.mode = "awaiting_approval"
                 self._wake.clear()
@@ -430,19 +481,54 @@ class Supervisor:
                 continue
             self.mode = "running"
             before = state["last_seq"]
-            state = await self.runner.run_until_terminal(
-                self.run_id, should_drain=lambda: self.draining
-            )
-            if state["status"] in {"completed", "blocked"}:
+            # Requests arriving while the driver awaits must remain set; clearing
+            # this after a run could lose a concurrent resume or capacity signal.
+            self._wake.clear()
+            try:
+                capacity_cursor = (self.runner.capacity.change_cursor()
+                    if state["runbook"].get("schema_version", 0) >= 6 else None)
+                # Reached only after startup orphan reconciliation; expired
+                # unused slots cannot be reclaimed while their process lives.
+                if self.runner.capacity is not None:
+                    self.runner.capacity.release_finished(self.run_id, processes_stopped=True)
+                state = await self.runner.run_until_terminal(
+                    self.run_id, should_drain=lambda: self.draining
+                )
+            except Exception as error:
+                self.last_error = self.orchestrator.redactor.text("{}: {}".format(type(error).__name__, error))
+                self.mode = "operator_attention"
+                self._wake.clear()
+                await self._wake.wait()
+                continue
+            self.last_error = None
+            if state["status"] in {"completed", "blocked", "awaiting_acceptance"}:
                 continue
             if self.draining:
                 continue
-            self.mode = "waiting"
-            self._wake.clear()
+            gate_wait = any(task.get("gate_wait") for task in state["tasks"].values())
+            self.mode = "awaiting_gate" if gate_wait else "waiting"
             # A waiting run requires an external-state change or operator retry;
             # do not busy-loop probes against an unchanged world.
-            if state["last_seq"] == before or any(task["status"] == "waiting" for task in state["tasks"].values()):
+            if state.get("capacity_waits") and capacity_cursor is not None and not gate_wait:
+                await self._wait_capacity_change(state, capacity_cursor)
+            elif gate_wait or state["last_seq"] == before or any(task["status"] == "waiting" for task in state["tasks"].values()):
                 await self._wake.wait()
+
+    async def _wait_capacity_change(self, state, before_cursor):
+        """Wake for another controller's supply/release without probe polling."""
+        deadlines = [parse_timestamp(item["wake_at"], "capacity wake")
+            for item in state.get("capacity_waits", {}).values() if item.get("wake_at")]
+        while not self._wake.is_set():
+            if self.runner.capacity.change_cursor() != before_cursor:
+                return
+            now = self.orchestrator.clock()
+            if deadlines and min(deadlines) <= now:
+                return
+            delay = min(1.0, max(0.01, (min(deadlines) - now).total_seconds())) if deadlines else 1.0
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
 
     async def _force_shutdown(self, requested_by: str) -> None:
         if self._driver_task is not None:
@@ -551,6 +637,57 @@ class Supervisor:
         if version == 2 and command == "plan":
             reject_unknown_fields(params, (), "control plan params")
             return {"ok": True, "result": self._plan()}
+        if version == 2 and command.startswith("watch-"):
+            fields = {
+                "watch-inspect": set(),
+                "watch-create": {"spec", "approval_digest", "approved_by"},
+                "watch-schedule": {"schedule", "approval_digest", "approved_by"},
+                "watch-stop": {"watcher_id", "reason", "approved_by"},
+                "watch-reopen": {"watcher_id", "reason", "cursor", "approved_by"},
+            }
+            if command not in fields or set(params) != fields[command]:
+                raise SupervisorError("invalid watcher control command or fields")
+            if command != "watch-inspect" and params["approved_by"] != request.get("requested_by"):
+                raise SupervisorError("watcher approval identity must match the control request actor")
+            if command == "watch-inspect":
+                result = self.watch_runtime.inspect()
+            elif command == "watch-create":
+                spec = WatchSpec.from_dict(params["spec"])
+                if params["approval_digest"] != canonical_digest(spec.to_dict()):
+                    raise SupervisorError("approve the exact watcher specification digest")
+                result = Watcher.create(self.orchestrator, self.run_id, spec, approved_by=params["approved_by"]).inspect()
+            elif command == "watch-schedule":
+                result = self.watch_runtime.configure(params["schedule"], approved_by=params["approved_by"], approval_digest=params["approval_digest"])
+            elif command == "watch-stop":
+                result = self.watch_runtime.stop(params["watcher_id"], approved_by=params["approved_by"], reason=params["reason"])
+            else:
+                result = Watcher(self.orchestrator, self.run_id, params["watcher_id"]).reopen(approved_by=params["approved_by"], reason=params["reason"], cursor=params["cursor"])
+            return {"ok": True, "result": result}
+        if version == 2 and command == "acceptance":
+            reject_unknown_fields(params, (), "control acceptance params")
+            state = self.orchestrator.state(self.run_id)
+            return {"ok": True, "result": {
+                "run_id": self.run_id, "status": state["status"], "plan_digest": state["plan_digest"],
+                "integration_head": state.get("integration_head"), "acceptance": state.get("acceptance"),
+                "pending_gates": {task_id: task["gate_wait"] for task_id, task in state["tasks"].items() if task.get("gate_wait")},
+            }}
+        if version == 2 and command in {"accept", "gate-approve"}:
+            fields = ("approved_by", "outcome_digest") if command == "accept" else ("approved_by", "task_id", "assessment_digest")
+            if set(params) != set(fields) or any(not isinstance(params.get(name), str) or not params[name] for name in fields):
+                raise SupervisorError("{} requires exact fields: {}".format(command, ", ".join(fields)))
+            if params["approved_by"] != request.get("requested_by"):
+                raise SupervisorError("approval identity must match the authenticated control request actor")
+            try:
+                if command == "accept":
+                    self.orchestrator.accept_run(self.run_id, params["approved_by"], params["outcome_digest"])
+                else:
+                    if params["task_id"] not in self.orchestrator.state(self.run_id)["tasks"]:
+                        raise SupervisorError("unknown gate task")
+                    self.orchestrator.approve_task_gate(self.run_id, params["task_id"], params["approved_by"], params["assessment_digest"])
+            except ValueError as error:
+                raise SupervisorError(str(error)) from error
+            self._wake.set()
+            return {"ok": True, "result": {"status": self.orchestrator.state(self.run_id)["status"], **params}}
         if version == 2 and command == "events":
             reject_unknown_fields(params, ("after_seq", "limit", "wait_ms"), "control events params")
             after_seq = params.get("after_seq", 0)
@@ -603,7 +740,7 @@ class Supervisor:
             if not isinstance(request, dict):
                 raise SupervisorError("control request must be an object")
             response = await self._dispatch(request)
-        except (json.JSONDecodeError, SupervisorError, StateTransitionError, SchemaError, OSError) as error:
+        except (json.JSONDecodeError, SupervisorError, StateTransitionError, SchemaError, WatcherError, OSError) as error:
             response = {"ok": False, "error": str(error)}
         writer.write((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
         await writer.drain()
@@ -629,11 +766,13 @@ class Supervisor:
             if state["status"] == "running":
                 self.orchestrator.mark_interrupted_effects_unknown(self.run_id)
             self.runner = HarnessRunner(self.orchestrator, self.workspace, state_dir=self.paths.state_dir)
+            self.watch_runtime = WatchRuntime(self.orchestrator, self.run_id)
             self.orphans = self._scan_invocations()
             self.server = await asyncio.start_unix_server(self._handle_client, path=str(self.paths.socket))
             os.chmod(self.paths.socket, 0o600)
             self._write_pid()
             self._driver_task = asyncio.create_task(self._driver())
+            self._watch_task = asyncio.create_task(self._watch_driver())
             loop = asyncio.get_running_loop()
             for caught in (signal.SIGINT, signal.SIGTERM):
                 try:
@@ -643,6 +782,12 @@ class Supervisor:
             async with self.server:
                 await self._shutdown.wait()
         finally:
+            if self._watch_task is not None and not self._watch_task.done():
+                self._watch_task.cancel()
+                try:
+                    await self._watch_task
+                except asyncio.CancelledError:
+                    pass
             if self._driver_task is not None and not self._driver_task.done():
                 self._driver_task.cancel()
                 try:
@@ -652,6 +797,8 @@ class Supervisor:
             if self.server is not None:
                 self.server.close()
                 await self.server.wait_closed()
+            if self.runner is not None:
+                self.runner.close()
             if self.store is not None:
                 self.store.close()
             for path in (self.paths.socket, self.paths.pid):

@@ -18,6 +18,10 @@ writer and keeps running.
 4. Start `/grill GOAL` and answer every question. The topology answer uses one line
    per task: `id | goal | after=dependency,dependency`. One line creates one task;
    many lines create an arbitrary N-task graph.
+   Answers are validated at each question, so invalid input can be corrected
+   immediately. `/import PATH` also supports an existing executable runbook,
+   including local process workers. Imports preserve the exact kernel contract and
+   bind approval to this clean checkout's path and source revision.
 5. Inspect `/plan`. It shows outcomes, exclusions, invariants, resource ceilings,
    task dependencies, evaluator argv, the product-plan digest, the complete canonical
    product-plan JSON, and (when executable) the kernel runbook digest.
@@ -31,6 +35,10 @@ writer and keeps running.
    admission bundle, reservation, grant, and fence.
 8. Inspect `/status`, `/boxes`, `/box ID`, and `/events`. `Alt+0` returns to the
    orchestrator, `Alt+1` through `Alt+9` select visible boxes, and `[` / `]` cycle.
+   `/box ID status|context|tools|diff|evals|events|evidence|transcript` selects a
+   separately refreshed read-only pane. Artifact previews are hash-verified;
+   truncation and disconnected cached views are explicitly labeled. `camol export`
+   retains access to the full stored evidence.
 9. `/quit` detaches. Running `camol` again in the same repository reloads the session
    and reconnects. `/stop` drains and stops the supervisor without deleting evidence.
 
@@ -44,6 +52,46 @@ Camol protocols. `/history [COUNT]` displays retained transcript entries, and
 explicit reattach summary and does not flood the new terminal with old output. The
 V0 terminal theme is deep matrix green, charcoal, gray, and white. Ctrl+C is the
 primary safe-detach shortcut and leaves any authoritative supervisor running.
+It cancels the client-owned planning request. `/cancel` cancels planning while
+keeping the terminal open; another command cannot race an active request. A local
+HTTP endpoint may finish an already submitted request after cancellation, so that
+call's unreported usage stays unknown.
+
+`/usage` reports durable planning-call tokens and durations; `/usage run` reports
+worker/evaluator accounting by task, box and model. Missing provider costs are
+unknown, never zero. `/debug list` and `/debug show CASE_ID` inspect retained debug
+cases; `/debug inbox` shows rejected-candidate counterexamples without activating
+a blocking debug protocol automatically. The full transcript is archived outside the bounded session/context window.
+`/models [list|status DIGEST]` reads the passive model-artifact catalog without
+downloading, loading, or rehashing large files. `/watch [list|show ID]` replays
+recorded watcher state without polling any source. `/repo` renders a fresh bounded
+static repository graph; `impact PATH`, `why FROM TO`, and `cycles` inspect source
+relationships. Static declarations are not runtime readiness. These commands do
+not substitute for the kernel CLI's explicit model and watcher mutations.
+Completed runs are reconciled automatically before a new plan, and each new plan
+gets a distinct run directory so a second build cannot collide with the first.
+
+Explicit schema-V5 runbooks imported through `/import` carry invariant/evaluator
+mappings and a final human acceptance gate. `/gate TASK_ID` displays a pending state
+assessment; `/gate TASK_ID DIGEST` approves that exact assessment. `/accept` displays
+the integrated final outcome and its digest, and `/accept DIGEST` accepts it. These
+commands go through the authoritative supervisor. The existing six-question grill
+still creates a legacy V4 contract; it does not infer that a passing command proves
+arbitrary human-written prose invariants.
+
+Homogeneous Codex CLI or Codex OSS V5+ runbooks can be imported when every adapter
+contains its exact `profile_snapshot`. After plan approval, `/run` displays the
+full per-worker profile and a separate provider-policy acknowledgement digest.
+Use `/run --accept-provider-policy DIGEST --accept-spend` for hosted Codex, or
+omit `--accept-spend` for local Codex OSS. No paid capability preflight runs in
+this path. Read-only runtime/login/catalog checks still gate kernel admission.
+The owner explicitly accepts requested-only model identity, unknown quota, ambient
+network authority, and unsupported hard USD/inner-turn caps. Configured dollars
+are accounting reservations, not a provider-enforced spending ceiling. An unknown
+paid charge stops further paid launches. Local catalog presence is not inference,
+weights-identity, resource-fit or airgap proof, and never triggers a download/load.
+Mixed-provider launches remain outside this terminal command's supported scope.
+See [the Codex worker tier](codex-workers.md) for its exact limitations.
 
 Changing `/model` or `/effort` after a proposal clears that proposal and its approval.
 `/btw` is durable context but intentionally cannot mutate a frozen plan. If a note
@@ -105,13 +153,15 @@ adapter, provider capability where required, and expiry.
 |---|---:|---:|---|
 | Manual/offline | deterministic `/grill` only | no | testable, no model evidence |
 | Claude CLI | yes, planning-only call | yes, Fable profile | implementation present; live account proof pending |
-| Codex CLI | yes, read-only ephemeral `codex exec` | no | planning-only |
-| Local OpenAI-compatible | yes, loopback `/chat/completions` | no | planning-only |
+| Codex CLI | yes, read-only ephemeral `codex exec` | yes, imported explicit weaker tier | fake-CLI proof; live account proof pending |
+| Local OpenAI-compatible | yes, loopback `/chat/completions` | via imported Codex OSS and a compatible local Responses host | catalog/fake-CLI proof; live inference pending |
 | OpenAI Platform key reference | no | no | presence discovery only |
 
-Automatic model downloads, a fenced Codex/local worker, OpenAI Responses execution,
-containers/VMs/GCP targets, repository-graph views, and the spatial build visualizer
-remain post-V0 work.
+Explicit owner-manifest model downloads and static repository-graph inspection
+are implemented. Automatic downloads, model-host loading, direct OpenAI Platform
+Responses execution, container/VM/GCP execution targets, an interactive graph pane,
+and the spatial build visualizer remain follow-up work. Watcher observations do
+not provide execution-target authority.
 
 ## State and recovery
 

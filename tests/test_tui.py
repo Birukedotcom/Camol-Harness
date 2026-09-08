@@ -1,4 +1,5 @@
 import tempfile
+import asyncio
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
@@ -88,6 +89,20 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.2)
             self.assertEqual(app.selected, "builder-2")
             self.assertIn("BOX builder-2", str(app.query_one("#context").render()))
+            self.assertTrue(app.query_one("#box-transcript").display)
+            self.assertFalse(app.query_one("#transcript").display)
+            app.action_orchestrator()
+            self.assertTrue(app.query_one("#transcript").display)
+
+    async def test_stream_waits_for_split_secret_then_redacts_before_display(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await asyncio.to_thread(app._stream_chunk, "response sk-live-abc")
+            self.assertNotIn("sk-live-abc", str(app.query_one("#stream").render()))
+            await asyncio.to_thread(app._stream_chunk, "defghijklmnopqrstuvwxyz123456 ")
+            rendered = str(app.query_one("#stream").render())
+            self.assertNotIn("abcdefghijklmnopqrstuvwxyz", rendered)
+            self.assertIn("[REDACTED]", rendered)
 
     async def test_connection_inventory_refreshes_in_background_on_startup(self):
         records = [

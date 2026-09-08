@@ -140,9 +140,9 @@ class RunbookV1CompatibilityTests(unittest.TestCase):
             validate_runbook(leaked)
 
     def test_unknown_schema_versions_are_rejected_clearly(self):
-        self.assertEqual(SUPPORTED_SCHEMA_VERSIONS, (1, 2, 3, 4))
-        self.assertEqual(LATEST_SCHEMA_VERSION, 4)
-        for version in (0, 5, "1", None, True, 1.0):
+        self.assertEqual(SUPPORTED_SCHEMA_VERSIONS, (1, 2, 3, 4, 5, 6))
+        self.assertEqual(LATEST_SCHEMA_VERSION, 6)
+        for version in (0, 7, "1", None, True, 1.0):
             invalid = copy.deepcopy(self.raw)
             invalid["schema_version"] = version
             with self.assertRaisesRegex(RunbookError, "unsupported schema_version"):

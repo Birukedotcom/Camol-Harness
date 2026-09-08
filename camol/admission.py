@@ -32,8 +32,9 @@ from .readiness import (
 )
 from .sandbox import SandboxError, SandboxPolicy, select_backend, system_read_paths
 from .providers import ModelProfile, model_profile_for_adapter
-from .schema import canonical_digest, require_bool, require_digest
+from .schema import canonical_digest, require_bool, require_digest, parse_timestamp
 from .workspace import WorkspaceHandle, WorkspaceManager
+from .git_view import ENVIRONMENT_NAMES, GitInspectionProbe, GitViewError, prepare_view, scratch_path
 
 
 class AdmissionError(RuntimeError):
@@ -193,12 +194,14 @@ class AdmissionController:
     def _ttl(self) -> int:
         return self.runbook["run"].get("readiness_policy", {}).get("receipt_ttl_seconds", 300)
 
-    def _sandbox_policy(self, handle: WorkspaceHandle, task: Dict[str, Any], agent: Dict[str, Any]) -> SandboxPolicy:
+    def _sandbox_policy(self, handle: WorkspaceHandle, task: Dict[str, Any], agent: Dict[str, Any], *, git_view=None) -> SandboxPolicy:
         packet_dir = self.state_dir / "packets" / _safe(self.runbook["run"]["id"]) / _safe(task["id"])
         packet_dir.mkdir(parents=True, exist_ok=True)
+        worker_output = packet_dir / "worker-output"
         profile: Optional[ModelProfile] = None
         if agent["adapter"]["kind"] == "process":
             argv0 = agent["adapter"]["argv"][0]
+            worker_output.mkdir(parents=True, exist_ok=True)
         else:
             profile = model_profile_for_adapter(handle.path, agent["adapter"])
             if profile.adapter_kind != agent["adapter"]["kind"]:
@@ -214,15 +217,25 @@ class AdmissionController:
             credential_reads = tuple(
                 item.replace("{home}", home) for item in profile.credential_read_paths
             )
+        inspection_reads, scratch_writes, readonly = (), (), ()
+        if git_view is not None:
+            scratch = scratch_path(self.state_dir, handle.receipt.workspace_id)
+            scratch.mkdir(parents=True, exist_ok=True)
+            if scratch.resolve() != scratch:
+                raise GitViewError("worker scratch must not be a symlink")
+            inspection_reads = (str(git_view), str(scratch))
+            scratch_writes = (str(scratch),)
+            readonly = (str(git_view),) if trust_tier != "developer_trusted" else ()
         return SandboxPolicy(
             policy_id="sandbox-{}-{}-{}".format(_safe(self.runbook["run"]["id"]), _safe(task["id"]), _safe(agent["id"])),
             workspace=str(handle.path),
-            read_paths=(str(handle.path), str(packet_dir)) + system_read_paths(executable) + credential_reads,
-            write_paths=(str(handle.path), str(packet_dir)),
-            environment_names=("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL"),
+            read_paths=(str(handle.path), str(packet_dir)) + system_read_paths(executable) + credential_reads + inspection_reads,
+            write_paths=(str(handle.path),) + ((str(worker_output),) if profile is None else ()) + scratch_writes,
+            environment_names=("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL") + (ENVIRONMENT_NAMES if git_view is not None else ()),
             network_destinations=network,
             credential_refs=credential_refs,
             trust_tier=trust_tier,
+            readonly_paths=readonly,
         )
 
     def prepare(
@@ -253,7 +266,8 @@ class AdmissionController:
             workspace_digest=workspace.digest(),
             bound_at=observed_at,
         )
-        sandbox_policy = self._sandbox_policy(handle, task, agent)
+        git_root, git_manifest = prepare_view(self.workspaces.source, self.state_dir, handle)
+        sandbox_policy = self._sandbox_policy(handle, task, agent, git_view=git_root)
         capabilities = ["execute", "read", "write"]
         if sandbox_policy.network_destinations:
             capabilities.append("network")
@@ -297,6 +311,7 @@ class AdmissionController:
 
         registry = self.registry_factory()
         registry.register(SandboxBoundaryProbe(sandbox_policy))
+        registry.register(GitInspectionProbe(git_root, git_manifest))
         context = ProbeContext.guarded(
             runbook=self.runbook,
             workspace=handle.path,
@@ -407,7 +422,10 @@ class AdmissionController:
             probes=results,
             status=status,
             observed_at=observed_at,
-            expires_at=expires_at,
+            expires_at=min(
+                [parse_timestamp(expires_at, "receipt expiry")]
+                + [parse_timestamp(result.expires_at, "probe expiry") for result in results if result.expires_at is not None]
+            ).isoformat(timespec="microseconds"),
             clock="system",
         )
         control_ready = all(

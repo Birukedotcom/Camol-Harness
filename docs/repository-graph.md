@@ -1,6 +1,21 @@
 # Dependency rail and repository graph
 
-Status: specified, not implemented.
+Status: initial static slice implemented; runtime readiness overlays, remote signed
+fragments, Terraform/CI/Compose scanners, and the interactive graph pane remain
+specified follow-up work.
+
+`camol.repository_graph` exposes `crawl_repository`, an extensible scanner protocol,
+strict content-hashed snapshots, `GraphStore`, and shared impact/why/cycle/diff/layout
+queries. The built-in scanners cover Git inventory, Python AST imports and available
+TOML packaging, npm package/workspace declarations, Dockerfile base images, and
+Camol task/box/evaluator declarations. DOT and GraphML export need no renderer.
+
+This first slice records static evidence references with source hashes, not live
+capability proof. It never executes project code, reads `.env` or credential files,
+or follows source symlinks. Ignored/excluded files are intentionally outside the
+snapshot; byte/file ceilings, parser failures, and unresolved dynamic imports make
+the result `OBSERVATION_INCOMPLETE`. On Python 3.9/3.10, packaging requires an
+installed `tomli` outside the crawled repository; otherwise the omission is visible.
 
 This subsystem gives the human and orchestrator two immediate answers:
 

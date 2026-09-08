@@ -723,42 +723,37 @@ not assume that a timed-out deployment, migration, message, or payment failed.
 
 ## 15. Current implementation and gaps
 
-The repository already contains an executable local control-plane slice:
+Implementation status is recorded per capability, not by marking this whole
+specification complete. The active acceptance ledger is
+[`docs/full-implementation-progress.md`](docs/full-implementation-progress.md);
+its exact-commit test evidence and remaining proof gates take precedence over a
+feature-name checklist.
 
-- a JSON runbook;
-- an arbitrary non-empty configured process-worker pool;
-- a positive per-run `max_concurrency` ceiling;
-- a task DAG and capability scheduler;
-- SQLite event replay;
-- frozen plan digests and human approval;
-- task leases, compact checkpoints, evidence requirements, verifier commands,
-  retries, token budgets, and restart recovery;
-- debugger-case promotion; and
-- vector-based hill-climb comparison.
+The local implementation now includes isolated N-box task execution, fresh fenced
+admission, a detached supervisor, replayable events/artifacts, a terminal UI and an
+embeddable Python API. Versioned additions include explicit invariant/obligation
+gates and final human acceptance, conservative linked plan revisions, shared
+capacity reservations, approved durable local observers, executed debugger
+experiments, cost/usage investigation, static repository graphs, pinned model
+downloads, and benchmark campaign/SWE-bench adapter protocols. Claude, Codex and
+Codex-local worker adapters have local protocol tests; a passing fake-provider test
+does not establish a live account, model entitlement, quota or inference result.
 
-The following specification areas are not yet implemented and remain speculative:
+Important remaining implementation or live-validation gates include:
 
-- first-class invariant and obligation records;
-- `basic`, `backed`, and `critical` gate compilation;
-- plan revisions and state migrations;
-- the full tool-invocation envelope and artifact store;
-- epistemic evidence status, observer-readiness gates, and evidence-conflict states;
-- durable cursor-based watchers and cross-system identity correlation;
-- connected-capacity inventory, reservations, and suitability-based agent/model selection;
-- dynamic worker discovery, authenticated adoption, and provisioning;
-- marginal-value scale-out, admission control, drain, and backpressure policies;
-- salvage-gated teardown and remote-effect reconciliation;
-- versioned deployment identities, CI waivers, and VCS integration relationships;
-- interactive `/grill` and terminal UI;
-- isolated Git worktree execution;
-- real Codex, Claude, local-model, cmux, SSH, and GCP adapters;
-- adaptive differential evaluation;
-- adaptive box-topology policy and first-class candidate/comparison groups;
-- external coding-suite adapters, canary campaigns, and benchmark ablations;
-- read-only box attachment and explicit takeover;
-- voice-agent evidence ingestion;
-- dependency readiness inventory and repository graph crawling/rendering; and
-- Homebrew distribution.
+- conversation-generated, human-reviewed state plans and interactive amendments;
+- mixed-provider interactive orchestration and automatic suitability selection;
+- authenticated remote worker adoption, distribution and provisioning;
+- exact external deployment/voice identities and live cloud observation/readback;
+- marginal-value scale-out and general candidate/comparison-group orchestration;
+- automatic adaptive probe generation and scheduled/full public benchmark evidence;
+- model loading, residency, actual local inference and offline-environment proof;
+- complete content-retention enforcement and sensitive voice-evidence policy;
+- explicit takeover and full VCS/deployment integration relationships; and
+- public licensing, signed release packaging and multi-platform installation proof.
+
+There is no production, public-safety or whole-spec maturity claim implied by these
+local implementations. The spatial visualizer remains explicitly post-v1.
 
 ## 16. Build sequence
 

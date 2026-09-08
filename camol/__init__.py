@@ -1,5 +1,7 @@
 """Camol: a persistent, plan-driven multi-agent orchestration harness."""
 
+from ._version import __version__
+
 from .hillclimb import compare_vectors
 from .orchestrator import Orchestrator
 from .readiness import (
@@ -25,8 +27,18 @@ from .runbook import (
 )
 from .schema import SchemaError, canonical_digest, canonical_json_bytes
 from .store import SQLiteEventStore
+from .api import Harness
+from .debugger import Debugger, DebuggerError
+from .watchers import ObserverReceipt, Watcher, WatcherError, WatchSpec
 
 __all__ = [
+    "Harness",
+    "Debugger",
+    "DebuggerError",
+    "ObserverReceipt",
+    "Watcher",
+    "WatcherError",
+    "WatchSpec",
     "AuthorityPolicy",
     "BoxBinding",
     "CapabilityGrant",

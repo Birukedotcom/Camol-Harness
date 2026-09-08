@@ -1,0 +1,119 @@
+# Camol full implementation and adversarial review
+
+Goal started 2026-09-07 from `codex/product-v0` at `d6cbfae`.
+Implementation branch: `codex/v0-full-pass`. The authoritative scope is `SPEC.md`
+and the milestone dependencies in `docs/v0-build-plan.md`. The spatial visualizer
+remains post-v1 as explicitly specified.
+
+## Acceptance ledger
+
+Each row needs implementation, negative-path tests, replay/recovery evidence, and
+usable Python/CLI entry points. A fixture cannot establish live provider maturity.
+
+| Area | Status | Evidence / next gate |
+| --- | --- | --- |
+| Existing V0 baseline | Passed | Original 325 tests passed; expanded suite/reviews continue |
+| Lease liveness and long-run recovery | Implemented; local soak passed | Reproof preserves original fence identity; 170-task/eight-box soak, verification restart and process cancellation tests |
+| Repeated interactive projects | Implemented; regression tested | Separate run ledgers; reconcile stopped daemon; public `/import` two-run E2E |
+| Usage and tool observability | Implemented; integration ongoing | Failed-call usage, unknown reservations, deduped accounting, content-free profile/hotspots and bounded JSONL logger; no invented CPU/memory |
+| Debugger protocol and experiment ratchet | Real execution implemented; adversarial tests ongoing | Reviewed argv/source/executable/environment binding; sandboxed red/green/guardrail receipts; counterexample inbox |
+| Embeddable Python harness API | Implemented; extended integration ongoing | `Harness` executes isolated N-box fixture, locks ownership, resumes, revises and exports; failure cleanup and bounded event cursors tested |
+| Invariants, obligations, thresholds, final acceptance | Implemented V5; integration ongoing | Explicit evaluator mappings, candidate+integration gates, exact owner acceptance; 5 E2E gate tests passed |
+| Plan amendment / migration | Conservative mode implemented | Exact owner-approved linked successor, atomic source seal, all tasks reverified, inherited costs, self-contained lineage export; public API E2E passed |
+| Real provider execution | Claude/Codex/local adapter code implemented; live gates pending | Explicit capability tiers, frozen profiles and crash-safe invocation intents; no live paid/inference validation |
+| Box inspection and build workflow | In progress | Read-only context, transcript, tool, diff, evaluation and evidence views |
+| Capacity / heterogeneous N boxes | Implemented; integration ongoing | Shared broker, fresh observed/owner-declared pools, suspect reservations, real two-run single-slot fairness/cancellation and broker-cursor wake; V6 |
+| Watchers and correctable evidence | Local scheduled source implemented | Durable approved polling, normalized JSONL source, daemon restart, interleaving/expiry/cursor/cancellation tests; live cloud source adapters pending |
+| Repository dependency graph | Implemented; adversarial tests ongoing | Safe static Python/packaging/npm/Docker/runbook scans, evidence-linked impact/path/cycle queries; JSON/DOT/GraphML |
+| Local model lifecycle | Download slice implemented | Exact owner manifests, pinned HTTPS bytes, resumable/cancellable payload accounting, read-only inventory; no model loader/inference proof |
+| Evaluator compiler / benchmark campaigns | Core protocols and offline SWE-bench adapter implemented | Explicit V5 mapping; pinned 3-arm campaign, real gold/no-op fixtures, crash/cleanup reconciliation, protected official-grader protocol; live public trials pending |
+| Remote targets / workflow profiles | Pending | Authenticated transport, adoption, salvage, explicit external-effect readback |
+| Public packaging / portability | In progress | Wheel/sdist built; independent Python 3.12 wheel install+line CLI passed; Homebrew resource hashes verified; OS CI/license/retention remain |
+| Extended final verification | Pending | Repeated DAGs, failure/refinement, process interruption, package and UI tests |
+
+## Review findings repaired (final integration verification pending)
+
+- Long calls now reprove admission before the effective authorization expires;
+  failed reproof cancels, salvages and records a typed wait without widening grants.
+- Completed interactive sessions reconcile stored/daemon status; each new plan
+  has a distinct ledger and `/import` binds source revision before launch.
+- Provider failures preserve incurred usage; unknown spend remains explicitly
+  unknown and conservatively reserved. Cancellation handling remains under review.
+- Debug verification now requires the full experiment protocol and independent
+  executed target/guardrail evidence, not evidence-kind labels alone.
+- Adversarial Git review reproduced a clean-filter execution from an ostensibly
+  read-only status command. Central Git conversion/config hardening and raw source
+  identity probes now pass hostile clean/process/smudge/included-config regressions.
+- A Python 3.12 sandbox failure exposed an interpreter symlink-chain/read-root gap;
+  bounded runtime paths fixed it without granting the full home directory.
+- Observer results are now rebased only when their own watch is unchanged, so a
+  busy worker cannot accidentally starve a watch. Late scheduled observations fail
+  closed at ingestion and replay; repeated approval cannot refill the poll budget.
+- Packet-directory worker write access exposed a control-evidence integrity risk;
+  separate untrusted result slots now keep trusted invocation/usage records outside
+  write grants. Actual sandbox overwrite/unlink traps pass.
+- Hardened verifier/debugger measurement uses read-only source plus separate scratch,
+  rejecting transient oracle mutation and parent rename. `developer_trusted` is
+  explicitly unenforced; before/after hashes alone are not equivalent protection.
+- Worker Git inspection uses a private shallow snapshot of the approved baseline,
+  not the shared repository metadata. Real sandbox tests permit status/diff and
+  scratch while denying shared configuration, private metadata writes, other-box
+  objects and Git mutation. Its exact manifest is part of admission.
+- Trusted Git operations disable replacement refs as well as executable callbacks;
+  a replacement-ref fixture can no longer substitute code behind an approved SHA.
+- Legacy provider bills now reconcile with budget counters and diagnostic profiles;
+  missing measurements and timing stay explicit. Duplicate legacy/versioned receipts
+  are counted once only when their invocation identity and observations agree.
+- Journal parsing rejects duplicate keys and ambiguous metadata before advancing a
+  cursor. Replay checks the dedicated observer actor separately from owner approvals.
+- Benchmark review found that reconciling an in-flight trial could corrupt replay.
+  Exclusive execution ownership, transactional transition validation, explicit
+  crash recovery and known-overspend failure reconciliation now have regressions.
+
+Initial local soak: 3 disposable four-box runs, 27 tasks total, one verification
+restart, unchanged source checkout and exact archive replay for every run. A larger
+10-run/eight-box campaign passed all 170 tasks with five verification restarts,
+5,598 events, unchanged source checkouts and equal replay in every run (563.252
+seconds total). The exact report is `full-pass-soak.json`. No live paid-model or production cloud
+validation has been performed in this pass; fixture results do not establish it.
+
+Expanded whole-suite checkpoint: 408 tests passed in 191.543 seconds on Python 3.9
+before the latest debugger executor, campaign, revisions and capacity additions.
+A later Python 3.12 checkpoint ran 453 tests and found the sandbox runtime-path
+failure plus an outdated schema compatibility expectation. Both have targeted fixes;
+the whole suite must be rerun after the current additions. Always read the final
+exact-commit verification record before treating this development branch as ready.
+
+A subsequent Python 3.9 whole-suite checkpoint passed **506 tests in 370.028
+seconds**. This is a development checkpoint, not the final exact-commit result:
+the strongest oracle isolation changes, profiler and public-suite adapter work
+were still integrating while it ran.
+
+The next Python 3.12 development checkpoint ran 532 tests in 358.820 seconds and
+failed 15 scenarios. They exposed a mismatch between raw integration-check hashes
+and the normalized/redacted evidence consumed by gates and debugger receipts.
+After using one normalization, 41 focused runtime/gate/Codex/capacity/revision
+tests passed on Python 3.12. A further 67 Git/workspace/probe/SWE tests and 21
+sandbox/private-Git/evidence tests passed. A fresh 27-task/four-box recovery soak
+also passed in 104.689 seconds; final whole-suite checks still follow this snapshot.
+
+## Remaining product and validation gates
+
+- The six-question manual grill produces a legacy V4 runbook. Conversation-driven
+  proposals with explicit reviewed invariants/evaluator bindings are not yet wired.
+- V5/V6 imported plans support kernel gates; interactive Codex/OSS launch-policy
+  acknowledgement is implemented. A real fake-Codex subprocess test covers terminal
+  import through detached build/evaluation/integration and final human acceptance.
+  Mixed-provider UI launch and interactive plan
+  amendments remain separate gaps; the Python/CLI revision path already exists.
+- Local download receipts are not model loading, GPU residency, inference readiness
+  or an air-gap guarantee. Hosting lifecycle adapters remain missing.
+- Public benchmark adapter protocol tests are not public coding-suite performance.
+  Official pinned datasets/images and a budget-enforcing executor still need live
+  environment validation; no paid trial has been authorized/run here.
+- Remote worker authentication/distribution, live cloud/voice profiles, complete
+  retention enforcement, multi-platform CI evidence and the owner's public license
+  decision remain open. The spatial visualizer is explicitly post-v1.
+
+This ledger is a progress record, not a claim that the entire specification is
+implemented. Current limitations remain open until backed by the named gate.

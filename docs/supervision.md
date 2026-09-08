@@ -63,6 +63,19 @@ then revokes each lease fence. It does not remove the worktree.
 
 ## Crash and replay rules
 
+During active execution the runner periodically heartbeats and obtains fresh admission
+proof. `LEASE_AUTHORIZATION_REFRESHED` extends the effective expiry without changing
+the original packet's fence digest or lease epoch. Every refresh preserves the exact
+authority, sandbox, evaluator, runtime, workspace identity, and reserved budget; only
+fresh observations and the workspace's current dirty state may change. The receipt
+cannot outlive any required probe or provider capability. An expired active lease
+cannot be silently revived. Failed refresh cancels its process, retains salvage, and
+creates a typed wait instead of leaving an idle scheduler labeled running.
+
+Unexpected driver errors remain visible as `mode=operator_attention` and a redacted
+`last_error` in supervisor status. The control socket remains usable for inspection
+and explicit resume or stop.
+
 Every agent subprocess runs in its own process group and has a packet-bound invocation
 record containing PID, PGID, OS start fingerprint, arguments digest, policy digest,
 and terminal state. On restart:

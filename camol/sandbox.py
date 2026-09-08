@@ -132,6 +132,7 @@ class SandboxPolicy:
     network_destinations: Tuple[str, ...]
     credential_refs: Tuple[str, ...]
     trust_tier: str
+    readonly_paths: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.policy_id or any(character.isspace() for character in self.policy_id):
@@ -144,8 +145,14 @@ class SandboxPolicy:
         names = tuple(sorted(set(self.environment_names)))
         network = tuple(sorted(set(self.network_destinations)))
         credentials = tuple(sorted(set(self.credential_refs)))
-        if workspace not in reads or workspace not in writes:
-            raise SandboxError("sandbox workspace must be explicitly readable and writable")
+        readonly = tuple(sorted(set(_real(item) for item in self.readonly_paths)))
+        if readonly and self.trust_tier == "developer_trusted":
+            raise SandboxError("developer_trusted cannot enforce read-only path exclusions")
+        for item in readonly:
+            if not any(Path(item) == Path(root) or Path(item).is_relative_to(Path(root)) for root in reads):
+                raise SandboxError("read-only exclusions must be inside explicitly readable roots")
+        if workspace not in reads:
+            raise SandboxError("sandbox workspace must be explicitly readable")
         if any(not name or "=" in name for name in names):
             raise SandboxError("environment allowlist contains an invalid name")
         if network not in ((), ("*",)):
@@ -156,11 +163,12 @@ class SandboxPolicy:
         object.__setattr__(self, "environment_names", names)
         object.__setattr__(self, "network_destinations", network)
         object.__setattr__(self, "credential_refs", credentials)
+        object.__setattr__(self, "readonly_paths", readonly)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "schema": self.SCHEMA,
-            "schema_version": self.SCHEMA_VERSION,
+            "schema_version": 2 if self.readonly_paths else self.SCHEMA_VERSION,
             "policy_id": self.policy_id,
             "workspace": self.workspace,
             "read_paths": list(self.read_paths),
@@ -170,6 +178,9 @@ class SandboxPolicy:
             "credential_refs": list(self.credential_refs),
             "trust_tier": self.trust_tier,
         }
+        if self.readonly_paths:
+            payload["readonly_paths"] = list(self.readonly_paths)
+        return payload
 
     def digest(self) -> str:
         return canonical_digest(self.to_dict())
@@ -178,15 +189,23 @@ class SandboxPolicy:
     def from_dict(cls, payload: Mapping[str, Any]) -> "SandboxPolicy":
         if not isinstance(payload, dict):
             raise SandboxError("sandbox policy must be an object")
-        require_schema_header(payload, cls.SCHEMA, cls.SCHEMA_VERSION, "sandbox policy")
-        reject_unknown_fields(payload, cls.FIELDS, "sandbox policy")
-        missing = sorted(set(cls.FIELDS) - set(payload))
+        version = payload.get("schema_version")
+        if type(version) is not int or version not in {1, 2}:
+            raise SandboxError("unsupported sandbox policy version")
+        require_schema_header(payload, cls.SCHEMA, version, "sandbox policy")
+        fields = cls.FIELDS + (("readonly_paths",) if version == 2 else ())
+        reject_unknown_fields(payload, fields, "sandbox policy")
+        missing = sorted(set(fields) - set(payload))
         if missing:
             raise SandboxError("sandbox policy is missing fields: {}".format(", ".join(missing)))
         for field in (
             "read_paths", "write_paths", "environment_names", "network_destinations", "credential_refs"
         ):
             require_string_list(payload[field], "sandbox policy " + field)
+        if version == 2:
+            require_string_list(payload["readonly_paths"], "sandbox policy readonly_paths")
+            if not payload["readonly_paths"]:
+                raise SandboxError("sandbox policy v2 requires explicit read-only exclusions")
         return cls(
             policy_id=payload["policy_id"],
             workspace=payload["workspace"],
@@ -196,6 +215,7 @@ class SandboxPolicy:
             network_destinations=tuple(payload["network_destinations"]),
             credential_refs=tuple(payload["credential_refs"]),
             trust_tier=payload["trust_tier"],
+            readonly_paths=tuple(payload.get("readonly_paths", ())),
         )
 
     def environment(self, overrides: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
@@ -229,6 +249,7 @@ class SandboxResult:
 class SandboxBackend:
     name = "sandbox"
     max_capture_bytes = 1 << 20
+    invocation_root = None
 
     async def _drain(self, stream: asyncio.StreamReader) -> Tuple[bytes, str, int, bool]:
         retained = bytearray()
@@ -326,19 +347,41 @@ class SandboxBackend:
                     raise
             stdout_task = asyncio.create_task(self._drain(process.stdout))
             stderr_task = asyncio.create_task(self._drain(process.stderr))
-            if stdin_bytes is not None:
-                process.stdin.write(stdin_bytes)
-                await process.stdin.drain()
-                process.stdin.close()
+
+            async def communicate_bounded():
+                if stdin_bytes is not None:
+                    try:
+                        process.stdin.write(stdin_bytes)
+                        await process.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError):
+                        # An early provider rejection can close stdin before
+                        # accepting the complete prompt. Preserve its output.
+                        pass
+                    finally:
+                        process.stdin.close()
+                await process.wait()
+                return await asyncio.gather(stdout_task, stderr_task)
+
+            async def finish_stdin():
+                if process.stdin is not None:
+                    process.stdin.close()
+                    try:
+                        await process.stdin.wait_closed()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+
             try:
-                await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+                stdout_capture, stderr_capture = await asyncio.wait_for(
+                    communicate_bounded(), timeout=timeout_seconds
+                )
             except asyncio.TimeoutError as error:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 await process.wait()
-                await asyncio.gather(stdout_task, stderr_task)
+                await finish_stdin()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
                 if invocation_record is not None:
                     self._finish_invocation(invocation_record, "timed_out", process.returncode)
                 raise SandboxError("sandboxed process timed out") from error
@@ -355,11 +398,12 @@ class SandboxBackend:
                     except ProcessLookupError:
                         pass
                     await process.wait()
-                await asyncio.gather(stdout_task, stderr_task)
+                await finish_stdin()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
                 if invocation_record is not None:
                     self._finish_invocation(invocation_record, "terminated", process.returncode)
                 raise
-            stdout_capture, stderr_capture = await asyncio.gather(stdout_task, stderr_task)
+            await finish_stdin()
             if invocation_record is not None:
                 self._finish_invocation(invocation_record, "completed", process.returncode)
         except OSError as error:
@@ -385,8 +429,7 @@ class SandboxBackend:
             process_group_id=process.pid,
         )
 
-    @staticmethod
-    def _write_invocation(path: Path, policy: SandboxPolicy, payload: Dict[str, Any]) -> None:
+    def _write_invocation(self, path: Path, policy: SandboxPolicy, payload: Dict[str, Any]) -> None:
         payload = validate_process_invocation(payload)
         destination = Path(path)
         if destination.exists() and destination.is_symlink():
@@ -400,11 +443,15 @@ class SandboxBackend:
                 raise SandboxError("an earlier invocation is still unresolved; supervisor reconciliation is required")
         destination.parent.mkdir(parents=True, exist_ok=True)
         parent = Path(_real(str(destination.parent)))
+        # Logging is a controller capability, not child write authority. The
+        # host selects this root out-of-band; it is never added to the sandbox
+        # policy. Legacy standalone backend callers may log in their workspace.
+        roots = (str(self.invocation_root),) if self.invocation_root is not None else policy.write_paths
         if not any(
             parent == Path(root) or parent.is_relative_to(Path(root))
-            for root in policy.write_paths
+            for root in roots
         ):
-            raise SandboxError("invocation record must be inside a frozen write path")
+            raise SandboxError("invocation record must be inside its explicit controller logging root")
         descriptor, temporary = tempfile.mkstemp(prefix=destination.name + ".", dir=str(parent))
         temporary_path = Path(temporary)
         try:
@@ -491,6 +538,18 @@ class MacOSSandboxBackend(SandboxBackend):
             rules.append('(allow file-read* (subpath "{}"))'.format(_escape_profile(path)))
         for path in policy.write_paths:
             rules.append('(allow file-write* (subpath "{}"))'.format(_escape_profile(path)))
+        protected_parents = set()
+        for path in policy.readonly_paths:
+            rules.append('(deny file-write* (subpath "{}"))'.format(_escape_profile(path)))
+            # Renaming an enclosing writable directory must not replace a
+            # protected oracle via a fresh pathname. Protect ancestor entries
+            # themselves without denying writes to unrelated child outputs.
+            cursor = Path(path).parent
+            while cursor != Path("/"):
+                protected_parents.add(str(cursor))
+                cursor = cursor.parent
+        for path in sorted(protected_parents):
+            rules.append('(deny file-write* (literal "{}"))'.format(_escape_profile(path)))
         if policy.network_destinations == ("*",):
             rules.append("(allow network*)")
         return " ".join(rules)
@@ -514,14 +573,53 @@ def system_read_paths(executable: Optional[str] = None) -> Tuple[str, ...]:
     if executable:
         lexical = Path(os.path.abspath(executable))
         resolved = Path(_real(executable))
-        candidates.append(str(lexical.parent))
-        candidates.append(str(resolved.parent))
+        for binary in (lexical, resolved):
+            candidates.append(str(binary if binary.parent in {Path("/"), Path.home()} else binary.parent))
+        # A venv may traverse several executable symlinks (venv -> shim ->
+        # managed runtime). Seatbelt must read each intermediate link, not
+        # merely the final image; granting a home-wide root is unnecessary.
+        pending, traversed = lexical, set()
+        for _ in range(64):
+            if str(pending) in traversed:
+                raise SandboxError("runtime executable symlink chain is cyclic")
+            traversed.add(str(pending))
+            changed = False
+            cursor = Path(pending.anchor)
+            parts = pending.parts[1:]
+            for index, part in enumerate(parts):
+                cursor = cursor / part
+                if cursor.is_symlink():
+                    if cursor.parent not in {Path("/"), Path.home()}:
+                        candidates.append(str(cursor.parent))
+                    target = Path(os.readlink(cursor))
+                    target = target if target.is_absolute() else cursor.parent / target
+                    pending = Path(os.path.abspath(str(target.joinpath(*parts[index + 1:]))))
+                    changed = True
+                    break
+            if not changed:
+                break
+        else:
+            raise SandboxError("runtime executable symlink chain exceeds the safety bound")
+        # Managed Python/venv and similar CLI runtimes keep standard libraries
+        # beside bin/, outside platform /usr roots. Read only those runtime
+        # directories and config, never their entire parent or user's home.
+        for binary in (lexical, resolved):
+            if binary.parent.name in {"bin", "Scripts"}:
+                prefix = binary.parent.parent
+                for name in ("lib", "lib64", "Lib", "pyvenv.cfg"):
+                    candidate = prefix / name
+                    if candidate.exists():
+                        candidates.append(str(candidate))
     return tuple(sorted({_real(item) for item in candidates if Path(item).exists()}))
 
 
-def select_backend(policy: SandboxPolicy) -> SandboxBackend:
+def select_backend(policy: SandboxPolicy, *, invocation_root=None) -> SandboxBackend:
     if policy.trust_tier == "developer_trusted":
-        return DeveloperTrustedBackend()
-    if MacOSSandboxBackend.available():
-        return MacOSSandboxBackend()
-    raise SandboxError("no enforcing sandbox backend is available for trust tier {}".format(policy.trust_tier))
+        backend = DeveloperTrustedBackend()
+    elif MacOSSandboxBackend.available():
+        backend = MacOSSandboxBackend()
+    else:
+        raise SandboxError("no enforcing sandbox backend is available for trust tier {}".format(policy.trust_tier))
+    if invocation_root is not None:
+        backend.invocation_root = Path(invocation_root).resolve()
+    return backend
