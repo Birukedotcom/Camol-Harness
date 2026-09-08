@@ -37,6 +37,46 @@ provider supplies correlation IDs. Missing per-tool timings remain null. Existin
 ledgers without receipts remain readable and report their incomplete coverage;
 Camol does not retroactively invent bills or timings.
 
+## Shared hosted-worker admission
+
+Claude and hosted Codex reserve against one run-wide balance before launching a
+new process. Admission takes a short cross-process owner-state lock, reads the
+existing immutable invocation intents/outcomes, merges their identities with
+trusted event-ledger receipts, and atomically publishes the new intent. The lock
+is released before execution; multiple boxes can overlap. A 30-cent run with a
+pending 20-cent call can allocate at most 10 cents to the next call, regardless of
+the stale balance a scheduler previously read.
+
+Run/plan and per-task budget policies cannot disagree across hosted workers. A
+known bill replaces its reservation, including actual provider overspend. An
+unfinished intent retains its full ceiling across process restart; a terminal
+unknown bill blocks new hosted launches. Cached successful results do not reserve
+or launch again. Local Codex/OSS calls do not consume this hosted envelope.
+
+The runner includes verified revision-ancestor ledgers and their journals. A
+successor cannot discard an unreported ancestor charge or inherit a known-zero
+cost from an uncertain outcome. Standalone adapter embedders must supply the
+trusted `budget_baselines` for existing event history and complete revision
+lineage; a model-supplied context packet is never a billing baseline. Reuse the
+same persistent owner state directory; copying only a runbook is a new run, not
+recovery of the old budget.
+
+The scan is bounded (32 MiB of records across the selected lineage; 20,000 entries
+per run) and refuses corrupt, linked, inconsistent or unavailable journals. A
+held/exhausted allowance or busy accounting lock becomes visible operator
+attention without launching a provider or consuming another provider attempt.
+This initial conservative policy does not automatically wake a task paused by
+an in-flight hold when another call settles; explicit resume rechecks admission.
+There is no automatic refund, unknown-charge reconciliation or journal deletion.
+Retain the `packets` tree and budget lock with the run's recovery state.
+
+These are allocation guarantees within Camol, not an account-level billing cap.
+Claude's client stop can overrun, and hosted Codex has no hard dollar control.
+Preflight and planning envelopes remain separate. Event-only usage reports do
+not include an intent whose observation has not yet reached the event ledger;
+the admission journal still charges that intent. A unified live reservation
+inspection/reconciliation UI remains a separate implementation gate.
+
 Finished debugger reproduction/guardrail receipts contribute command counts and a
 separate `debugger_duration_ms` sum, deduplicated by case and execution identity.
 Their derived test-result evidence does not count the same subprocess twice, and

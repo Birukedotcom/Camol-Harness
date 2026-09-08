@@ -337,6 +337,7 @@ class _RootContext(_Root):
 PROTECTED = {
     "control": ("control_or_credential", "process_authority"),
     "packets": ("state_shared", "invocation_accounting_and_recovery"),
+    "provider-budget.lock": ("state_shared", "invocation_accounting_and_recovery"),
     "records": ("state_shared", "workspace_authority"),
     "workspaces": ("state_shared", "workspace_authority"),
     "worktrees": ("state_shared", "recovery_required"),

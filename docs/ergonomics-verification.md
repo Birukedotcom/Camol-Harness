@@ -63,6 +63,27 @@ changes are not covered by that result; their focused tests and remaining
 whole-suite gates must be read separately. The shared in-flight hosted-budget
 race remains a required runtime repair before complete acceptance.
 
+## Shared worker-budget repair (isolated development checkpoint)
+
+The repair adds atomic cross-process admission over existing immutable provider
+journals, with known/unknown settlement, revision-ancestor charges, strict run/task
+policies and no lock held during provider execution. A real two-process fake-Claude
+barrier fixture requires overlapping execution and verifies requested reservations
+of 20 + 10 cents against a 30-cent run. A separate four-process admission race
+cannot allocate more than that shared allowance. No live paid provider was used.
+
+The development adapter/usage/invocation/runtime/revision/retention group passed
+86 tests on Python 3.12 (116.833 seconds) and Python 3.9 (125.124 seconds). A later
+legacy-unknown accounting guard and its regression passed with all 12 budget tests
+on both runtimes (0.770 / 0.871 seconds). An earlier stricter ancestry check rejected
+macOS's normal `/var` alias in direct API fixtures; canonical ancestry validation
+repaired it while retaining linked-state/lock/journal rejection tests.
+
+These focused results are not a substitute for the frozen successor's full suite
+and installed-package checks. Temporary holds currently require explicit resume;
+automatic wake and unified live reservation inspection/reconciliation remain
+documented product gaps. Provider-side hard billing guarantees remain unavailable.
+
 ## Pane overview checkpoint: 8234efb
 
 The focused controller/TUI/overview group passed 60 tests on both Python 3.9 and

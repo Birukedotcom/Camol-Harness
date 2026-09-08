@@ -148,7 +148,17 @@ class CodexCLIAdapter(ProcessAgentAdapter):
             packet_sha256=packet_hash, profile_digest=profile.digest(), assignment=assignment,
             run_id=self.run_id, turn_number=turn_number, workspace=self.workspace)
         await self._authorize_launch(assignment, turn_number)
-        journal.reserve([usage_evidence()])
+        if local:
+            journal.reserve([usage_evidence()])
+        else:
+            from .provider_budget import reserve_hosted
+            def reservation_evidence(allocated):
+                nonlocal ceiling
+                ceiling = allocated
+                return [usage_evidence()]
+            ceiling = reserve_hosted(journal, state_dir=self.state_dir, profile=profile,
+                plan_digest=packet.get("run", {}).get("plan_digest"), requested_cents=ceiling,
+                evidence_factory=reservation_evidence, baselines=getattr(self, "budget_baselines", ()))
         self.sandbox_backend.max_capture_bytes = max(self.sandbox_backend.max_capture_bytes, 16 << 20)
         try:
             process = await self.sandbox_backend.run(argv, cwd=box, policy=self.sandbox_policy,

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from .adapter import AdapterError
 from .schema import canonical_digest
+from .json_contracts import decode_contract
 
 
 def _publish_once(path, payload):
@@ -55,7 +56,7 @@ class InvocationJournal:
                 raw = stream.read((32 << 20) + 1)
             if len(raw) > 32 << 20:
                 raise ValueError("oversized record")
-            payload = json.loads(raw)
+            payload = decode_contract(raw, max_bytes=32 << 20)
             expected = self._payload(payload["observed_evidence"])
             if payload != expected or not isinstance(payload["observed_evidence"], list):
                 raise ValueError("different invocation identity")

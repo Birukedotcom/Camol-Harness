@@ -38,9 +38,11 @@ bounded native probes, contention-aware read-only host checks, and a read-only
 retention inventory/CLI. Whole-suite verification follows those merges.
 
 An independent mixed-launch review reproduced a run-wide budget race: concurrent
-hosted calls saw the same remaining committed balance. The repair requires
-atomic in-flight reservation and crash-safe settlement before this flow is
-accepted; per-invocation caps and provider overrun caveats do not fix it.
+hosted calls saw the same remaining committed balance. Atomic admission now uses
+the existing immutable invocation journals under a cross-process lock, retaining
+pending ceilings, deduplicating known bills and carrying ancestor charges.
+Focused and whole-suite results for this repair must be read at its own checkpoint;
+per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
@@ -151,7 +153,9 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   acknowledgement is implemented. A real fake-Codex subprocess test covers terminal
   import through detached build/evaluation/integration and final human acceptance.
   Mixed-provider UI launch is implemented with exact manifest review and durable
-  deduplicated preflights; its run-wide in-flight worker budget repair remains open.
+  deduplicated preflights and atomic shared worker-budget admission. Integrated
+  verification, automatic wake after a temporary budget hold, and unified live
+  reservation inspection/reconciliation remain open.
   `/revise` now reviews, applies and recovers a stopped source-bound ProductV3/V4/V5
   session through the kernel revision service, with independent execution approval
   and real detached successor build/final-acceptance tests. Legacy ProductV1/V2

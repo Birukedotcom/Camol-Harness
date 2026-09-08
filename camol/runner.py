@@ -27,6 +27,7 @@ from .schema import canonical_digest
 from .schema import parse_timestamp
 from .leases import effective_expiry
 from .usage import provider_cost_used
+from .provider_budget import ProviderBudgetError, budget_baseline
 from .gates import GateError
 from .probes import AdapterBinaryProbe, ProbeContext
 from .capacity import CapacityError
@@ -114,6 +115,8 @@ class HarnessRunner:
     def _provider_cost_remaining(state: Dict[str, Any], agent: Dict[str, Any], task_id: str, workspace: Path) -> Optional[int]:
         if agent["adapter"]["kind"] == "process":
             return None
+        if (state.get("revision") or {}).get("inherited_usage", {}).get("unknown_usage"):
+            return 0
         if any(item.get("kind") == "model_usage" and item.get("producer") == "adapter"
                and item.get("epistemic_status") == "OBSERVED"
                and item.get("data", {}).get("cost_usd_micros") is None
@@ -722,6 +725,12 @@ class HarnessRunner:
                 self._ensure_source_binding(run_id)
                 if self.state_dir is not None:
                     adapter.execution_environment = execution_environment(self.state_dir, execution_workspace, bundle)
+            if agent["adapter"]["kind"] not in {"process", "codex_oss"}:
+                from .revisions import collect_revision_lineage
+                from .state import project
+                latest = self.orchestrator.state(run_id)
+                ancestors = collect_revision_lineage(self.orchestrator.store, run_id) if latest.get("revision") else {}
+                adapter.budget_baselines = [budget_baseline(latest)] + [budget_baseline(project(events)) for events in ancestors.values()]
         adapter.before_launch = authorize_launch
         task_status = state["tasks"][assignment["task_id"]]["status"]
         if task_status == "leased":
@@ -774,6 +783,9 @@ class HarnessRunner:
                 raise
             except CapacityError as error:
                 self._pause_assignment(run_id, assignment, "CAPACITY_EXHAUSTED", str(error))
+                return
+            except ProviderBudgetError as error:
+                self._pause_assignment(run_id, assignment, "OPERATOR_ATTENTION", str(error))
                 return
             except (AdapterError, SandboxError, ArtifactError, ProviderError, OSError) as error:
                 for observed in getattr(error, "observed_evidence", ()):

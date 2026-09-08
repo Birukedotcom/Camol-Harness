@@ -105,9 +105,15 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(AdapterError, "already launched") as recovered:
                 await adapter.execute_turn(self.agent, self.assignment, self.packet, 1, cost_budget_cents=5)
         self.assertEqual(recovered.exception.observed_evidence, first_evidence)
+        with patch.object(adapter.sandbox_backend, "run", side_effect=AssertionError("unknown charge must hold the run")):
+            with self.assertRaisesRegex(AdapterError, "unknown provider charge"):
+                await adapter.execute_turn(self.agent, self.assignment, self.packet, 2, cost_budget_cents=5)
+
+    async def test_cancellation_preserves_reservation(self):
+        adapter = self.prepare()
         with patch.object(adapter.sandbox_backend, "run", side_effect=asyncio.CancelledError()):
             with self.assertRaises(asyncio.CancelledError) as caught:
-                await adapter.execute_turn(self.agent, self.assignment, self.packet, 2, cost_budget_cents=5)
+                await adapter.execute_turn(self.agent, self.assignment, self.packet, 1, cost_budget_cents=5)
         self.assertEqual(caught.exception.observed_evidence[0]["data"]["outcome"], "cancelled")
 
     async def test_local_worker_selects_catalogued_model_without_bootstrap_or_credentials(self):

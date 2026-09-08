@@ -51,6 +51,14 @@ upstream billing can exceed it. Codex provides observed-only cost accounting and
 hard dollar/inner-turn cap. Unknown paid usage remains unknown and blocks further
 paid launches under the existing policy.
 
+New worker invocations use atomic shared journal admission, so concurrent boxes
+cannot each allocate the same remaining worker envelope. In-flight holds remain
+charged across restart, and known settlement is deduplicated against event
+receipts. See [usage accounting](usage-accounting.md#shared-hosted-worker-admission)
+for the conservative pause/resume policy, bounded scan and remaining live
+reservation-inspection limitations. This does not convert the provider's declared
+weak controls into a hard upstream billing guarantee.
+
 After exact acknowledgement, Claude preflights run sequentially. Each has a stable
 operation ID derived from the launch scope, exact profile and target. A repeated
 operation cannot spend again or silently renew its receipt. A currently fresh,
