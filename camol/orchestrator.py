@@ -25,13 +25,14 @@ from .revisions import RevisionOrchestratorMixin, prior_effect_reuse
 from .capacity import CapacityError
 from .capacity_runtime import capacity_for_task
 from .projection_copy import clone_projection
+from .vcs import VCSMixin
 
 
 class StateTransitionError(RuntimeError):
     pass
 
 
-class Orchestrator(GateOrchestratorMixin, RevisionOrchestratorMixin):
+class Orchestrator(GateOrchestratorMixin, RevisionOrchestratorMixin, VCSMixin):
     def __init__(
         self,
         store: SQLiteEventStore,

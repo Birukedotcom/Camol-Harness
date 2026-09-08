@@ -109,6 +109,7 @@ usable Python/CLI entry points. A fixture cannot establish live provider maturit
 | Capacity / heterogeneous N boxes | Implemented; integration ongoing | Shared broker, fresh observed/owner-declared pools, suspect reservations, real two-run single-slot fairness/cancellation and broker-cursor wake; V6 |
 | Watchers and correctable evidence | Local scheduled source implemented | Durable approved polling, normalized JSONL source, daemon restart, interleaving/expiry/cursor/cancellation tests; live cloud source adapters pending |
 | Repository dependency graph | Implemented; adversarial tests ongoing | Safe static Python/packaging/npm/Docker/runbook scans, evidence-linked impact/path/cycle queries; JSON/DOT/GraphML |
+| VCS integration lineage | Same-run relationships and prospective impact implemented | Owner-reviewed replay/export, exact code receipts, seven relationship kinds, iterative candidate/task impact and `/vcs`; push/PR observations, cross-run objects and Git mutations remain open |
 | Local model lifecycle | Download foundation; owned loader in next wave | Exact owner manifests and pinned bytes; one-shot owned llama.cpp lifecycle with local protocol fixtures. No actual model/inference or planner/worker handoff proof |
 | Evaluator compiler / benchmark campaigns | Core protocols and offline SWE-bench adapter implemented | Explicit V5 mapping; pinned 3-arm campaign, real gold/no-op fixtures, crash/cleanup reconciliation, protected official-grader protocol; live public trials pending |
 | Remote targets / workflow profiles | Pinned SSH control, read-only terminal monitor and owner mailbox relay implemented | Exact host/bridge/target/run scope, durable uncertain mutations and content-free RPC usage; no distributed worker adoption, provisioning or live cloud/voice proof |
@@ -256,6 +257,9 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 - Recorded completed-run evidence/code recovery does not close operational restore
   or retention. Independent archive reconstruction cannot authorize reuse of old
   leases, credentials, budgets, remote effects, or removal of the original stores.
+- Same-run VCS relationships now support owner review and prospective rerun sets.
+  They do not observe actual Git changes, transfer historical green gates, or
+  collect remote push/PR receipts. Full SPEC §19.6 remains open; see [VCS scope](vcs-lineage.md).
 
 This ledger is a progress record, not a claim that the entire specification is
 implemented. Current limitations remain open until backed by the named gate.

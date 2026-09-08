@@ -1375,3 +1375,35 @@ outside the repository and byte-compared `rpc_audit.py`, `ssh_transport.py` and
 `cli.py` against source before adding test fixtures. The installed log is
 `/tmp/camol-rpc-audit-installed.log`; the isolated environment is
 `/tmp/camol-rpc-audit-package.h6tVjY29/venv`. The later full suites remain active.
+
+## Candidate VCS relationship checkpoint
+
+The isolated `codex/v0-vcs-lineage` branch adds owner-reviewed same-run candidate
+relationships, exact code/integration observations, iterative prospective impact
+and a paginated `/vcs` view. New events bind the exact graph/event cursor and
+owner, reject active leases, and use optimistic append. They cannot alter task
+states, budgets, code, existing gates or final-acceptance digests.
+
+The initial nine tests had three fixture errors on each interpreter (11.457
+seconds on Python 3.12, 12.632 on 3.9): the new tests called a nonexistent store
+sequence helper and passed the artifact subdirectory instead of its state root.
+Corrected fixtures read the recorded sequence and use the actual ArtifactStore
+constructor. The expanded group then passed 29 tests in 36.566 seconds on 3.12
+and 39.632 seconds on 3.9.
+
+Final source checks, including the slash view and 1,200-candidate iterative-graph
+case, passed **73 tests in 56.556 seconds on Python 3.12**, and **61.527 seconds on
+Python 3.9**. Real local N-box execution supplies captured candidate/integration
+receipts for review, restart, CLI/embedding and export/replay tests. Negative tests
+cover worker forgery, stale/changed/foreign proposals, cycles, append races, secret
+redaction, active leases and missing state. An exact old add retry cannot restore
+a removed relation. The synthetic 1,200-node projection tests the graph algorithm,
+not 1,200 real worker executions. Installed and full-suite gates follow separately.
+No real provider account, remote host, push or PR mutation was involved.
+
+A final review routed `/vcs` through the bounded exact-run inspector instead of
+the older unbounded pane-state loader. The slash test now reads a real retained
+ledger instead of mocking its state, and confirms a missing ledger cannot become
+a planned healthy view. The 18 VCS/overview tests passed again in 13.088 seconds
+on Python 3.12 and 14.628 seconds on 3.9. The final source was rebuilt through
+sdist into a fresh wheel; the installed integration group is the next gate.

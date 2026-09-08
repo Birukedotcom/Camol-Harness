@@ -37,6 +37,7 @@ Connected transport, account observation and task readiness are separate indicat
 | `/boxes`, `/box ID VIEW` | Stable box selection and existing context/tools/diff/evals/evidence/transcript views | Implemented |
 | `/box next`, `/box previous` | Traverse worker views from the terminal | Implemented |
 | `/usage run`, `/debug inbox`, `/gate TASK` | Accounting, failed-evaluator inbox and gate detail | Implemented |
+| `/vcs [OFFSET]`, `camol vcs inspect\|impact\|propose\|apply` | Recorded candidate relationships, owner review and prospective rerun sets | Implemented for same-run candidates; remote PR/push and cross-run scope remain open |
 | `/switch [WORDS]`, `Alt+B` | Search current-run box/task/status/adapter metadata, grouped by orchestrator/attention/workers; arrows/Enter, preserved draft | Implemented |
 | `/pin [BOX [on\|off]]`, `/group [BOX NAME\|BOX --clear]` | Persistent current-plan pins and display groups | Implemented; no authority change |
 | `/layout focus\|split\|grid` | Composer plus paginated box monitoring; detail selection is scope-checked | Implemented; metadata tiles, not mirrored PTYs |

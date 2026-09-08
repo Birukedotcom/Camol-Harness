@@ -23,6 +23,7 @@ from .budget_wait import EVENTS as BUDGET_WAIT_EVENTS, apply as apply_budget_wai
 from .mailbox import EVENTS as MAILBOX_EVENTS, apply as apply_mailbox
 from .peer_tools import EVENT as PEER_READ_EVENT, apply as apply_peer_read
 from .peer_telemetry import EVENTS as PEER_CALL_EVENTS, apply as apply_peer_call
+from .vcs import EVENT as VCS_EVENT, apply as apply_vcs
 
 
 def empty_state() -> Dict[str, Any]:
@@ -68,7 +69,9 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     if state["status"] == "superseded":
         raise ValueError("superseded run is sealed; continue its linked successor")
 
-    if event_type in PEER_CALL_EVENTS:
+    if event_type == VCS_EVENT:
+        apply_vcs(next_state, event)
+    elif event_type in PEER_CALL_EVENTS:
         apply_peer_call(next_state, event)
     elif event_type == PEER_READ_EVENT:
         apply_peer_read(next_state, event)

@@ -129,6 +129,11 @@ content-free RPC counts, durations and byte measurements without connecting.
 These measurements include monitor reads, not provider billing. See
 [coverage and failure rules](docs/ssh-control.md#local-rpc-usage-audit).
 
+`/vcs` shows recorded candidate/integration relationships in the orchestrator pane.
+`camol vcs inspect`, `propose`, `apply` and `impact` provide ledger-backed owner
+review and prospective verification impact without Git mutations or model calls.
+See [candidate relationships and remaining VCS scope](docs/vcs-lineage.md).
+
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference
 readiness. `camol watch` supports approved durable polling of a normalized local

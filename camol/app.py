@@ -93,6 +93,7 @@ SLASH_COMMANDS = (
     SlashCommand("/status", "Inspect session and supervisor", run_from_palette=True),
     SlashCommand("/boxes", "List the N-box worker pool", run_from_palette=True),
     SlashCommand("/overview", "See boxes, dependencies and attention together", run_from_palette=True),
+    SlashCommand("/vcs", "Inspect recorded candidate relationships; optional page offset", takes_value=True, run_from_palette=True),
     SlashCommand("/switch", "Search and switch read-only box panes", takes_value=True, run_from_palette=True),
     SlashCommand("/layout", "Choose focus, split or paginated grid monitoring", takes_value=True),
     SlashCommand("/pin", "Pin/unpin an exact box; no arguments lists pins", takes_value=True, run_from_palette=True),
@@ -167,6 +168,7 @@ HELP = """Commands
   /reply MESSAGE_ID TEXT  reply only to the original worker lease
   /outbox [REQUEST_ID]    inspect durable send/acceptance records
   /overview [--attention] [--json] [--offset N] [--limit N]
+  /vcs [OFFSET]           recorded candidate/integration relationships; 50 rows per page
                             inspect boxes and task dependencies without starting work
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
   /box ID VIEW             status | context | tools | diff | evals | events | evidence | transcript
@@ -658,6 +660,26 @@ class InteractiveController:
             return self._history(arguments)
         if command == "/overview":
             return self._overview(arguments)
+        if command == "/vcs":
+            from .vcs import snapshot, render_snapshot, VCSError
+            from .box_inspection import BoxInspector
+            if len(arguments) > 1 or (arguments and (not arguments[0].isascii() or not arguments[0].isdecimal() or len(arguments[0]) > 9)):
+                raise InteractiveError("usage: /vcs [NONNEGATIVE_OFFSET]")
+            state_dir = Path(self.session["state_dir"])
+            database = SupervisorPaths.under(state_dir).database
+            if not database.exists() and not database.is_symlink():
+                raise InteractiveError("VCS history requires an existing run ledger; this plan has not run")
+            if not self.session.get("run_id"):
+                raise InteractiveError("VCS history requires an exact selected run")
+            state, _, _ = BoxInspector(state_dir, database=database)._cut(self.session["run_id"])
+            plan = self.session.get("plan")
+            if plan and plan.get("runbook") and state["plan_digest"] != runbook_digest(plan["runbook"]):
+                raise InteractiveError("VCS ledger differs from the selected plan")
+            try:
+                message = render_snapshot(snapshot(state), offset=int(arguments[0]) if arguments else 0)
+            except VCSError as error:
+                raise InteractiveError(str(error)) from error
+            return replace(self._respond(message), focus_orchestrator=True)
         if command == "/switch":
             return self._switch(arguments)
         if command in {"/pin", "/group"}:

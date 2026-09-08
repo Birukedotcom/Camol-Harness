@@ -152,6 +152,24 @@ class Harness:
     def status(self) -> Dict[str, Any]:
         return summary(self.state())
 
+    def vcs_snapshot(self):
+        run_id = self._require_run()
+        return self.orchestrator.vcs_snapshot(run_id)
+
+    def propose_vcs_relation(self, **kwargs):
+        run_id = self._require_run()
+        return self.orchestrator.propose_vcs_relation(run_id, **kwargs)
+
+    def apply_vcs_relation(self, proposal, *, by, review_digest):
+        run_id = self._require_run()
+        if self._running:
+            raise StateTransitionError("stop embedded execution before changing VCS relationships")
+        return self.orchestrator.apply_vcs_relation(run_id, proposal, by=by, review_digest=review_digest)
+
+    def vcs_impact(self, *, candidates, change):
+        from .vcs import impact
+        return impact(self.state(), candidates=candidates, change=change)
+
     def events(self, *, after_seq: int = 0, limit: Optional[int] = None) -> list:
         """Read one durable cursor page; omit limit for a complete legacy snapshot.
 

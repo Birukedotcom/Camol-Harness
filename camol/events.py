@@ -66,6 +66,7 @@ EVENT_TYPES = frozenset(
         "WORKSPACE_SALVAGED",
         # Frozen evaluator, candidate, counterexample, and integration lineage.
         "CANDIDATE_CAPTURED",
+        "VCS_RELATION_CHANGED",
         "COUNTEREXAMPLE_RECORDED",
         "INTEGRATION_ACCEPTED",
         "GATE_ASSESSED",
@@ -113,6 +114,7 @@ LEGACY_EVENT_TYPES = frozenset(
         "EFFECT_UNKNOWN",
         "WORKSPACE_SALVAGED",
         "CANDIDATE_CAPTURED",
+        "VCS_RELATION_CHANGED",
         "COUNTEREXAMPLE_RECORDED",
         "INTEGRATION_ACCEPTED",
         "GATE_ASSESSED",

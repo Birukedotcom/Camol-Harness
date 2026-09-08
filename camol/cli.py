@@ -44,6 +44,7 @@ from .retention import RetentionError, RetentionPolicy, inspect_retention
 from .overview import fleet_overview, render_overview
 from .box_inspection import BoxInspector, BoxInspectionError
 from .recovery import RecoveryError
+from .vcs import VCSError, RELATIONS as VCS_RELATIONS, CHANGES as VCS_CHANGES
 
 
 def _write_json(value: Any) -> None:
@@ -176,6 +177,29 @@ def command_overview(args: argparse.Namespace) -> int:
         _write_json(report)
     else:
         print(render_overview(report))
+    return 0
+
+
+def command_vcs(args: argparse.Namespace) -> int:
+    from .vcs import snapshot, propose, impact
+    # Reuse the bounded, noncreating exact-run reader, including unsafe-path and
+    # malformed-ledger checks. Applying also acquires the execution leader lock.
+    inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+    state, _, _ = inspector._cut(args.run_id)
+    if args.vcs_action == "inspect":
+        result = snapshot(state)
+    elif args.vcs_action == "impact":
+        result = impact(state, candidates=args.candidate, change=args.change)
+    elif args.vcs_action == "propose":
+        result = propose(state, source=args.source, target=args.target, relation=args.relation,
+                         action=args.action, reason=args.reason)
+    else:
+        proposal = load_contract(args.proposal, max_bytes=65536)
+        with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+            if harness.run_id != args.run_id:
+                raise VCSError("VCS apply requires the exact current run of this state directory")
+            result = harness.apply_vcs_relation(proposal, by=args.by, review_digest=args.review_digest)
+    _write_json(result)
     return 0
 
 
@@ -913,6 +937,29 @@ def build_parser() -> argparse.ArgumentParser:
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(handler=command_overview)
 
+    vcs = subparsers.add_parser("vcs", help="record candidate relationships and inspect prospective verification impact; never Git mutation")
+    vcs_commands = vcs.add_subparsers(dest="vcs_action", required=True)
+    for name in ("inspect", "impact", "propose", "apply"):
+        operation = vcs_commands.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--db", help="existing database inside state-dir; default camol.sqlite3")
+        operation.add_argument("--run-id", required=True)
+        if name == "impact":
+            operation.add_argument("--candidate", action="append", required=True, help="exact captured candidate ID; repeat for multiple candidates")
+            operation.add_argument("--change", choices=VCS_CHANGES, required=True)
+        elif name == "propose":
+            operation.add_argument("--source", required=True)
+            operation.add_argument("--target", required=True)
+            operation.add_argument("--relation", choices=VCS_RELATIONS, required=True)
+            operation.add_argument("--action", choices=("add", "remove"), default="add")
+            operation.add_argument("--reason", required=True)
+        elif name == "apply":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--proposal", required=True, help="exact saved proposal JSON")
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--review-digest", required=True)
+        operation.set_defaults(handler=command_vcs)
+
     box = subparsers.add_parser("box", help="inspect exact boxes or send lease-scoped data messages through a live controller")
     box_commands = box.add_subparsers(dest="box_command", required=True)
     for name in ("list", "resolve", "read"):
@@ -1216,7 +1263,7 @@ def main(argv: Any = None) -> int:
     except (
         ArtifactError, RecoveryError, RunbookError, SchemaError, StateTransitionError, SourceBindingError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
         WorkspaceError, ProviderError, SupervisorError, BenchmarkError, OSError, json.JSONDecodeError,
-        ConnectionError, ConversationError, SessionError, InteractiveError, RetentionError, BoxInspectionError,
+        ConnectionError, ConversationError, SessionError, InteractiveError, RetentionError, BoxInspectionError, VCSError,
     ) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2
