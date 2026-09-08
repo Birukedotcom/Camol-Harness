@@ -63,6 +63,14 @@ changes are not covered by that result; their focused tests and remaining
 whole-suite gates must be read separately. The shared in-flight hosted-budget
 race remains a required runtime repair before complete acceptance.
 
+## Revision and pane-overview checkpoint: fc76dc889a189e118e49ba5d71bf0b78dd670941
+
+The full Python 3.12 suite passed **808 tests in 840.307 seconds** on the frozen
+checkpoint, including exact `/revise` review/apply/recover, actual detached
+successor execution/final acceptance, mixed launch and read-only pane overview.
+The separately developed shared worker-budget repair is not covered by that run.
+No live provider, model download, SSH host or cloud deployment was exercised.
+
 ## Shared worker-budget repair (isolated development checkpoint)
 
 The repair adds atomic cross-process admission over existing immutable provider
