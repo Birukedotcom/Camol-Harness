@@ -1077,7 +1077,8 @@ def command_source_handoff(args: argparse.Namespace) -> int:
         if args.handoff_action == "plan":
             result = propose(state, generation=args.generation, adoption_digest=args.adoption_digest,
                 destination_workspace=args.destination_workspace, request_id=args.request_id, by=args.by,
-                issued_at=datetime.now(timezone.utc).isoformat(), expires_at=args.expires_at)
+                issued_at=datetime.now(timezone.utc).isoformat(), expires_at=args.expires_at,
+                task_id=args.task_id, source_workspace=args.source_workspace)
         elif args.handoff_action == "inspect":
             records = state.get("source_handoffs", {})
             result = records if args.request_id is None else records.get(args.request_id)
@@ -1637,6 +1638,8 @@ def build_parser() -> argparse.ArgumentParser:
             operation.add_argument("--db")
             operation.add_argument("--run-id", required=True)
         if name == "plan":
+            operation.add_argument("--task-id", help="bind pending task and current accepted integration head (V2); otherwise baseline-only V1")
+            operation.add_argument("--source-workspace", help="existing clean checkout of an inherited revision; never substitutes a different commit")
             operation.add_argument("--generation", required=True)
             operation.add_argument("--adoption-digest", required=True)
             operation.add_argument("--destination-workspace", required=True)

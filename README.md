@@ -166,7 +166,10 @@ the prior uncertainty or retrying automatically.
 
 `camol source-handoff plan`, `export`, `receive` and `inspect` support encrypted
 copy of an approved source baseline to an exact adopted target generation and
-destination. This verifies copied code, not remote worker readiness or execution.
+destination. `plan --task-id TASK` selects the pending task's current accepted
+integration head, including prior work; linked revisions can name an existing
+checkout using `--source-workspace`. This verifies copied code, not remote worker
+readiness or execution.
 See [source handoff scope](docs/source-handoff.md).
 
 `camol models` separates download planning, exact approval, transfer and verified

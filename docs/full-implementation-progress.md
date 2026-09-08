@@ -284,9 +284,13 @@ The isolated `codex/v0-source-handoff` follow-up adds an encrypted, owner-review
 approved-baseline package with target-generation and destination binding. Export
 revalidates source/adoption, independent receiving reconstructs exact Git/tree/file
 identity, and a lost export-event append can recover the original ciphertext.
-This provides source preparation, not remote transport or execution. Per-task
-integration-head handoff, target admission, dispatch and trusted result/accounting
-promotion still need their own gates; see [source handoff](source-handoff.md).
+The `codex/v0-task-source-handoff` successor adds a V2 task-contract and exact
+current-head selection, dependency checks, accepted-integration receipt binding,
+and inherited revision source selection. A newer head or task transition rejects
+stale export approval. This provides full selected-source preparation, not remote
+transport or execution. Incremental artifacts, target admission, dispatch and
+trusted result/accounting promotion still need their own gates; see
+[source handoff](source-handoff.md).
 
 The isolated `codex/v0-vcs-push` follow-up implements an exact completed-integration
 push proposal, owner approval, durable pre-effect intent, isolated object-only Git

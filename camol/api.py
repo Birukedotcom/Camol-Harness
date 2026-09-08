@@ -198,6 +198,8 @@ class Harness:
 
     def propose_source_handoff(self, **kwargs):
         from .source_handoff import propose
+        if self._running:
+            raise StateTransitionError("stop embedded execution before synchronous source handoff planning")
         return propose(self.state(), **kwargs)
 
     def export_source_handoff(self, proposal, *, by, review_digest, key, output):

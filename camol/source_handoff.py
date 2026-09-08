@@ -39,11 +39,18 @@ def _path(value):
 
 
 def validate_proposal(value):
-    _fields(value, {"schema", "schema_version", "request_id", "owner", "source_binding", "target",
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    fields = {"schema", "schema_version", "request_id", "owner", "source_binding", "target",
         "adoption_digest", "destination_workspace", "issued_at", "expires_at", "include_reachable_history",
-        "allow_encrypted_source", "execution_authority", "digest"})
-    if value["schema"] != "camol.source_handoff_proposal" or type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        "allow_encrypted_source", "execution_authority", "digest"}
+    if type(version) is int and version == 2:
+        fields.add("selection")
+    _fields(value, fields)
+    if value["schema"] != "camol.source_handoff_proposal" or type(version) is not int or version not in (1, 2):
         raise RecoveryError("invalid source handoff proposal schema")
+    if version == 2:
+        from .task_source import validate_selection
+        validate_selection(value["selection"])
     for name in ("request_id", "owner"):
         require_identifier(value[name], name)
         if len(value[name]) > 128:
@@ -76,10 +83,13 @@ def authorize(state, proposal, by, now):
     moment = parse_timestamp(now, "source authorization time")
     if not parse_timestamp(proposal["issued_at"], "issued") <= moment < parse_timestamp(proposal["expires_at"], "expires"):
         raise RecoveryError("source handoff approval is expired or future issued")
+    if proposal["schema_version"] == 2:
+        from .task_source import authorize_selection
+        authorize_selection(state, proposal["selection"])
     return proposal
 
 
-def propose(state, *, generation, adoption_digest, destination_workspace, request_id, by, issued_at, expires_at):
+def propose(state, *, generation, adoption_digest, destination_workspace, request_id, by, issued_at, expires_at, task_id=None, source_workspace=None):
     _owner(state, by)
     require_identifier(generation, "source target generation")
     record = state.get("execution_targets", {}).get(generation)
@@ -90,6 +100,11 @@ def propose(state, *, generation, adoption_digest, destination_workspace, reques
         adoption_digest=adoption_digest, destination_workspace=destination_workspace,
         issued_at=issued_at, expires_at=expires_at, include_reachable_history=True,
         allow_encrypted_source=True, execution_authority=False)
+    if task_id is not None:
+        from .task_source import select
+        value.update(schema_version=2, selection=select(state, task_id, source_workspace=source_workspace))
+    elif source_workspace is not None:
+        raise RecoveryError("an explicit source workspace requires a task-bound handoff")
     value["digest"] = canonical_digest(value)
     authorize(state, value, by, issued_at)
     if Redactor().value(value) != value:
@@ -97,9 +112,13 @@ def propose(state, *, generation, adoption_digest, destination_workspace, reques
     return value
 
 
+def captured_source(proposal):
+    return proposal["selection"]["source"] if proposal["schema_version"] == 2 else proposal["source_binding"]["source"]
+
+
 def _scaffold(proposal):
     """Internal empty-diff input to the existing decoder, not a salvage claim."""
-    source = proposal["source_binding"]["source"]
+    source = captured_source(proposal)
     return SalvageReceipt(salvage_id="source-handoff", workspace_id="source-handoff",
         workspace_digest=canonical_digest(proposal["source_binding"]), base_revision=source["revision"],
         head_revision=source["revision"], patch_digest=EMPTY_DIGEST, patch_bytes=0,
@@ -109,7 +128,7 @@ def _scaffold(proposal):
 def _restore(git, output, proposal, bundle):
     tree = _materialize(git, output, _scaffold(proposal), bundle, {EMPTY_DIGEST: b""})
     actual = source_identity(Path(output))
-    expected = dict(proposal["source_binding"]["source"], workspace=str(Path(output).resolve()))
+    expected = dict(captured_source(proposal), workspace=str(Path(output).resolve()))
     if actual != expected or tree != expected["tree"]:
         raise RecoveryError("received source differs from the approved commit, tree or working bytes")
     return actual
@@ -186,27 +205,30 @@ def export_source(*, proposal, by, review_digest, get_state, key, output, clock=
     check = lambda: authorize(get_state(), proposal, by, clock().isoformat())
     check()
     cipher = _crypto(key)
-    source = Path(proposal["source_binding"]["source"]["workspace"])
-    _separate(output, (source,))
+    source = Path(captured_source(proposal)["workspace"])
+    baseline = proposal["source_binding"]["source"]
+    _separate(output, (source, baseline["workspace"]))
     if Path(output).exists():
         _, receipt, bundle = _read(output, key, proposal)
         with tempfile.TemporaryDirectory(prefix="camol-source-check-") as scratch:
             _restore(_Git(scratch), Path(scratch) / "check", proposal, bundle)
         check()
         return receipt  # Exact package retry, never another encryption/publication.
-    assert_source(proposal["source_binding"]["source"], source)
+    assert_source(baseline, Path(baseline["workspace"]))
+    assert_source(captured_source(proposal), source)
     with tempfile.TemporaryDirectory(prefix="camol-source-export-") as scratch:
         git = _Git(scratch)
         common = Path(os.fsdecode(git.call(source, "rev-parse", "--git-common-dir")).strip())
         _separate(output, (common if common.is_absolute() else source / common,))
         if git.call(source, "rev-parse", "--is-shallow-repository").strip() != b"false":
             raise RecoveryError("source handoff requires complete captured Git history")
-        revision = proposal["source_binding"]["source"]["revision"]
+        revision = captured_source(proposal)["revision"]
         packed = git.call(source, "pack-objects", "--stdout", "--revs", "--no-reuse-delta",
                           data=(revision + "\n").encode(), maximum=MAX_BUNDLE)
         bundle = _header(_scaffold(proposal)) + packed
         _restore(git, Path(scratch) / "check", proposal, bundle)
-        assert_source(proposal["source_binding"]["source"], source)
+        assert_source(baseline, Path(baseline["workspace"]))
+        assert_source(captured_source(proposal), source)
         check()
         exported_at = clock().isoformat()
         value = dict(schema="camol.source_handoff_payload", schema_version=1, proposal=proposal,

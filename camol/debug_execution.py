@@ -114,7 +114,9 @@ def source_identity(workspace: Path) -> dict:
             path = path / part
             if path.is_symlink():
                 raise DebugExecutionError("debug source paths cannot traverse symlinks")
-        descriptor = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        # Check descriptor type before reading, including a tracked file replaced
+        # by a FIFO. A blocking open would wait for a writer before fstat runs.
+        descriptor = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         digest = hashlib.sha256()
         with os.fdopen(descriptor, "rb") as handle:
             before = os.fstat(handle.fileno())

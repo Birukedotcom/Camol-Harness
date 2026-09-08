@@ -1,7 +1,8 @@
 # Approved source handoff
 
-The source handoff path copies a source-bound run's approved baseline to an exact
-destination workspace for an adopted target generation. It is a prerequisite for
+The source handoff path copies a source-bound run's approved baseline or exact
+task-specific accepted source to a destination workspace for an adopted target
+generation. It is a prerequisite for
 distributed execution, not a remote executor, transport connection, readiness
 receipt or worker grant. The target descriptor is owner-reviewed metadata, not
 hardware identity or a live controller authorization at the receiving machine.
@@ -10,9 +11,56 @@ hardware identity or a live controller authorization at the receiving machine.
 
 The run must already have a source baseline bound before plan approval and an
 active adopted target. Missing source identity is an error, not permission to
-substitute the current checkout. This first handoff version carries the initial
-approved baseline; later accepted integration heads and task-specific incremental
-artifact/source transfer remain a separate distributed-dispatch requirement.
+substitute the current checkout. V1 carries only the initial approved baseline.
+V2 binds a pending task to the current accepted integration head, or the approved
+baseline if no work has been integrated. Incremental artifact transfer remains a
+separate distributed-dispatch requirement.
+
+## Task-specific source (V2)
+
+Add `--task-id TASK` to `camol source-handoff plan` (or `task_id=...` to
+`Harness.propose_source_handoff`) to select task-bound source. The task must be
+pending or waiting, with every dependency succeeded. A succeeded, leased, running,
+verifying, blocked, unknown or dependency-blocked task cannot obtain a new task-copy
+proposal. This is preparation eligibility, not full readiness or permission to run.
+Synchronous embedding planning is refused while that `Harness` is executing, so
+source inventory cannot block its event loop; stop execution before calling it.
+The standalone planning CLI is a separate read-only process and still requires
+fresh export approval afterward.
+
+The proposal adds a versioned `selection`: exact frozen task-contract digest,
+source origin, origin digest, and clean commit/tree/working-byte identity. An
+accepted integration binds its complete kernel receipt and recorded workspace;
+the initial baseline binds its original approval record. This means a dependent
+task receives earlier accepted changes, not a convenient current branch or the
+original repository without those changes. The exporter still checks that the
+original human-approved source remains unchanged.
+
+A linked revised plan may inherit an integration head without having a same-run
+integration receipt. Its selection binds the exact revision lineage record. Supply
+`--source-workspace ABSOLUTE_PATH` (or `source_workspace=...`) naming an existing
+clean checkout of that inherited commit, for example the parent's retained
+integration workspace. If omitted, the baseline checkout is examined and must
+actually contain that exact inherited head; Camol never silently substitutes its
+old HEAD or creates a worktree during planning. For same-run integrations or the
+baseline, an explicitly supplied path must equal the recorded source path.
+
+V2 uses the same explicit export/receive commands and encrypted package envelope as
+V1. The receiver reconstructs the selected commit independently and returns its
+actual source identity. Source/head, task eligibility, contract, target and owner
+are rechecked during export and before ledger append. If another integration or
+task transition makes the selection stale, review a new proposal. A lost event
+append can recover its exact package only while its current authorization remains
+valid; it cannot use an old package to bypass an advanced task or integration head.
+Already-recorded export retries remain historical metadata, not a new copy grant.
+
+The receiver still has no live controller connection. Copy approval can outlive a
+controller-side state change until expiry; a received copy is **not** readiness,
+an authenticated target attestation, or a worker lease. Distributed dispatch must
+revalidate current task/source/target authority before launch. Old evaluator gates,
+billing claims, or task success are never inherited merely by copying source.
+
+## Package commands
 
 `camol source-handoff plan` accepts `--state-dir STATE --run-id RUN --generation
 GEN --adoption-digest DIGEST --destination-workspace ABSOLUTE_PATH --request-id ID
@@ -58,7 +106,7 @@ are essential; a clean current tree is not a historical secret scan.
 
 The existing bounded recovery decoder verifies objects in an isolated repository,
 reconstructs raw tracked bytes without checkout filters/hooks, then checks the
-original commit, tree, executable bits and path-independent checkout digest.
+selected commit, tree, executable bits and path-independent checkout digest.
 Destination path replaces only the source identity's location field. No repository
 remote or source Git configuration is copied. The source checkout remains untouched.
 This version inherits the baseline policy's ordinary-file restriction; symlinks,

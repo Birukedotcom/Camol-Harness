@@ -1,5 +1,76 @@
 # Ergonomics checkpoint verification
 
+## Task-bound accepted source handoff — 2026-09-08
+
+The isolated `codex/v0-task-source-handoff` successor adds V2 proposals binding a
+pending task's frozen contract to its exact current accepted source. Real local
+build fixtures stop between dependent tasks; the independent received repository
+contains the earlier accepted task's files and excludes the later integration.
+Another case creates a real human-approved linked successor, adopts its own target,
+and copies the inherited revision while keeping all successor tasks/gates pending.
+This closes selected-source preparation, not transport, target admission or launch.
+
+The first **15-test** group ended with **seven setup errors in 26.746 seconds**:
+the new fixture incorrectly used SQLiteEventStore as a context manager. Explicit
+close fixed setup. The next group had **two assertion failures in 35.626 seconds**
+because the fixture looked for files at the repository root, although the runbook
+places them under `camol-boxes/strategist` and `camol-boxes/builder`. Inspection of
+the actual accepted commit and salvage confirmed those nested files were retained;
+the assertions now check the exact declared paths. Neither correction weakened
+production copying or approval checks. Logs: `/tmp/camol-task-source-first.log`,
+`-second.log`, and `-diagnosis.log`.
+
+The intermediate expanded groups passed **66 tests in 93.399 seconds on Python
+3.12** and **66 in 93.362 seconds on modern Python 3.9**; logs
+`/tmp/camol-task-source-py312.log` and `-py39.log`. Review then added explicit
+path-type bounds and an active-embedding guard before synchronous source inventory.
+The strengthened stale-head fixture keeps a separate task pending while another
+integration advances, proving the rejection is not merely a completed-task check.
+The final eight focused adversarial tests passed in **22.873 seconds**; log
+`/tmp/camol-task-source-adversarial.log`.
+
+A fresh wheel installed core-only into
+`/tmp/camol-task-source-package.mrAF7m69/venv`. Outside-checkout imports verified
+site-packages ownership, byte equality for **120 product modules**, and absent
+Textual/MCP/cryptography before installing the optional encryption dependency into
+that temporary environment. Installed task-planning help and unchanged V1 example
+validation pass. No account, model, cloud host, global install or main checkout was
+changed. The single full suite remains on frozen `0e5da822` in
+`/tmp/camol-source-handoff-full-py312.log`; it does not cover this successor.
+
+The pre-FIFO-repair groups passed **67 tests in 96.222 seconds on Python 3.12**,
+**67 in 95.710 seconds on modern Python 3.9**, and **67 in 96.680 seconds from
+the installed wheel**. Logs: `/tmp/camol-task-source-checked-py312.log`, `-py39.log`,
+and `/tmp/camol-task-source-installed.log`.
+
+Further adversarial review reproduced a production liveness defect shared by the
+debugger and source handoff: replacing a tracked regular file with a FIFO blocked
+`source_identity` during `open`, before its descriptor-type check. The isolated
+child regression timed out after three seconds (one error in 3.144 seconds;
+`/tmp/camol-task-source-fifo-red.log`). Adding `O_NONBLOCK` permits the existing
+regular-file check to reject that descriptor without waiting for a writer. The
+same test then passed in **0.291 seconds on Python 3.12** and **0.278 seconds on
+modern Python 3.9**; logs `/tmp/camol-task-source-fifo-green-py312.log` and `-py39.log`.
+No timeout was relaxed and no special file was accepted. Earlier groups do not
+cover this one-line production repair; the final debugger-inclusive groups and
+rebuilt package are verified separately below.
+
+The final source-handoff/baseline/target/recovery/revision/debugger groups passed
+**88 tests in 122.724 seconds on Python 3.12** and **88 in 121.399 seconds on
+modern Python 3.9**. Logs: `/tmp/camol-task-source-final-py312.log` and `-py39.log`.
+These groups include the actual FIFO regression and the independent pending-task
+head-advance case. The repaired sdist/wheel was rebuilt into
+`/tmp/camol-task-source-fixed.JHyaiEWZ/venv`; outside-checkout imports again checked
+all **120 product modules** byte-for-byte and core-only operation before adding
+the optional encryption extra. Installed task-planning help and V1 validation pass.
+
+The same **88 tests passed in 121.751 seconds from the repaired installed wheel**,
+including child CLI task planning/export/receive and the FIFO child process;
+log `/tmp/camol-task-source-final-installed.log`. `git diff --check` passes and
+main remains clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`. The user's global
+installation is unchanged. These focused/installed results do not replace a
+whole-suite run against this successor or establish live remote/provider acceptance.
+
 ## Process-intent full-suite checkpoint
 
 Frozen `2da1ee07d7aeee11f6ea98e08f65503b8eac325b` passed **1,265 tests in
