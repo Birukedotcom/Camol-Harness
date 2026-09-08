@@ -87,6 +87,17 @@ class HarnessApiTests(unittest.TestCase):
                 with self.subTest(limit=invalid), self.assertRaises(ValueError):
                     harness.events(limit=invalid)
 
+    def test_box_inspection_same_exact_subject_online_and_offline(self):
+        from camol.box_inspection import BoxInspector
+        with Harness(self.workspace, self.state_dir) as harness:
+            state = harness.prepare(ROOT / "examples/local-n-box-runbook.json")
+            box_id = next(iter(state["agents"]))
+            snapshot = harness.inspect_box(box_id)
+            self.assertEqual(snapshot["run_id"], state["run_id"])
+            self.assertFalse(snapshot["observation"]["task_readiness_proven"])
+            self.assertFalse((self.state_dir / "worktrees").exists())
+        self.assertEqual(BoxInspector(self.state_dir.resolve()).read(state["run_id"], box_id), snapshot)
+
     def test_shared_external_database_cannot_bypass_state_directory_ownership(self):
         database = self.state_dir / "owned.sqlite3"
         with Harness(self.workspace, self.state_dir, database=database):

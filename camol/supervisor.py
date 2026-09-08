@@ -228,25 +228,14 @@ class Supervisor:
             os.fsync(handle.fileno())
 
     def _boxes(self) -> Dict[str, Any]:
-        records = self.paths.state_dir / "records" / "workspaces"
+        state = self.orchestrator.state(self.run_id)
         boxes = []
-        if records.is_dir() and not records.is_symlink():
-            for path in sorted(records.glob("*.json")):
-                if path.is_symlink():
-                    continue
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                    receipt = payload["receipt"]
-                    boxes.append({
-                        "workspace_id": receipt["workspace_id"],
-                        "task_id": payload["task_id"],
-                        "box_id": payload["box_id"],
-                        "path": receipt["path"],
-                        "branch": receipt["branch"],
-                        "integration": payload["integration"],
-                    })
-                except (KeyError, OSError, json.JSONDecodeError):
-                    boxes.append({"record": path.name, "status": "invalid"})
+        for bundle in state.get("admissions", {}).values():
+            binding, receipt = bundle["binding"], bundle["workspace"]
+            if binding["run_id"] == self.run_id and binding["plan_digest"] == state["plan_digest"]:
+                boxes.append(dict(workspace_id=receipt["workspace_id"], task_id=binding["task_id"],
+                    box_id=binding["box_id"], run_id=self.run_id, path=receipt["path"], branch=receipt["branch"],
+                    integration=False, basis="recorded_admission_not_live_probe"))
         return {"boxes": boxes}
 
     @staticmethod
@@ -346,91 +335,17 @@ class Supervisor:
             "runbook": self.runbook,
         }
 
-    @staticmethod
-    def _event_mentions_task(event: Dict[str, Any], task_id: str) -> bool:
-        payload = event.get("payload", {})
-        if not isinstance(payload, dict):
-            return False
-        for name in ("task_id", "evaluated_task_id", "from_task_id", "to_task_id"):
-            if payload.get(name) == task_id:
-                return True
-        return False
-
     def _box(self, box_id: str, after_seq: int, limit: int, *, tail: bool = False) -> Dict[str, Any]:
-        from .artifacts import ArtifactStore, artifact_refs
-        from .probes import Redactor
+        from .box_inspection import box_snapshot, read_artifact_preview, BoxInspectionError
         state = self.orchestrator.state(self.run_id)
-        worker = next((item for item in self.runbook["agents"] if item["id"] == box_id), None)
-        if worker is None:
-            raise SupervisorError("unknown box id")
-        task_ids = sorted(
-            task_id for task_id, task in state["tasks"].items()
-            if task.get("agent_id") == box_id
-        )
-        configured_tasks = sorted(
-            task["id"] for task in self.runbook["tasks"]
-            if set(task["capabilities"]).issubset(set(worker["capabilities"]))
-        )
         history_events = self.store.read(self.run_id, after_seq=0)
-        historical_tasks = set(task_ids)
-        for event in history_events:
-            payload = event.get("payload", {})
-            if not isinstance(payload, dict):
-                continue
-            if event.get("actor_id") == box_id or any(
-                payload.get(name) == box_id for name in ("agent_id", "worker_id", "box_id")
-            ):
-                task_id = payload.get("task_id")
-                if isinstance(task_id, str):
-                    historical_tasks.add(task_id)
-        relevant = [
-            event for event in history_events
-            if event.get("seq", 0) > after_seq
-            and (
-                event.get("actor_id") == box_id
-                or any(
-                    isinstance(event.get("payload"), dict)
-                    and event["payload"].get(name) == box_id
-                    for name in ("agent_id", "worker_id", "box_id")
-                )
-                or any(self._event_mentions_task(event, task_id) for task_id in historical_tasks)
-            )
-        ]
-        relevant = relevant[-limit:] if tail else relevant[:limit]
-        workspace = next(
-            (item for item in self._boxes()["boxes"] if item.get("box_id") == box_id),
-            None,
-        )
-        retained = {}
-        references = [reference for event in relevant for reference in artifact_refs(event)]
-        if references:
-            artifacts = ArtifactStore(self.paths.state_dir)
-            for reference in references[-16:]:
-                try:
-                    content = artifacts.read(reference)
-                    preview = Redactor().text(content.decode("utf-8", "replace"))[:16000]
-                    retained[reference.digest] = {
-                        "reference": reference.to_dict(), "preview": preview,
-                        "preview_truncated": len(content) > 16000,
-                    }
-                except (OSError, ValueError, RuntimeError) as error:
-                    retained[reference.digest] = {"reference": reference.to_dict(), "error": type(error).__name__}
-        return {
-            "schema": "camol.control_box",
-            "schema_version": 1,
-            "box_id": box_id,
-            "role": worker["role"],
-            "capabilities": worker["capabilities"],
-            "adapter_kind": worker["adapter"]["kind"],
-            "task_ids": task_ids,
-            "eligible_task_ids": configured_tasks,
-            "task_states": {task_id: state["tasks"][task_id] for task_id in historical_tasks if task_id in state["tasks"]},
-            "task_contracts": [task for task in self.runbook["tasks"] if task["id"] in historical_tasks],
-            "workspace": workspace,
-            "events": relevant,
-            "artifacts": retained,
-            "next_seq": relevant[-1]["seq"] if relevant else after_seq,
-        }
+        allowance = [8 << 20]
+        try:
+            return box_snapshot(self.run_id, self.runbook, state, history_events, box_id,
+                after_seq=after_seq, limit=limit, tail=tail,
+                preview_reader=lambda reference: read_artifact_preview(self.paths.state_dir, reference, allowance))
+        except BoxInspectionError as error:
+            raise SupervisorError(str(error)) from error
 
     async def _events(self, after_seq: int, limit: int, wait_ms: int) -> Dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + (wait_ms / 1000)

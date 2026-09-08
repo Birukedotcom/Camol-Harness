@@ -166,6 +166,15 @@ class Harness:
         from .usage import usage_report
         return usage_report(self.events())
 
+    def inspect_box(self, box_id: str, *, after_seq: int = 0, limit: int = 200, tail: bool = False) -> Dict[str, Any]:
+        """Inspect the exact selected run without changing its execution state.
+
+        Use BoxInspector directly to inspect retained state after closing Harness.
+        """
+        from .box_inspection import BoxInspector
+        return BoxInspector(self.paths.state_dir, database=self.paths.database).read(
+            self._require_run(), box_id, after_seq=after_seq, limit=limit, tail=tail)
+
     @property
     def debugger(self) -> Debugger:
         run_id = self._require_run()

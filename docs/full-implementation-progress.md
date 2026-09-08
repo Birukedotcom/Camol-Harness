@@ -151,9 +151,9 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   preserve reviewed V5/V6 authority. The new `/grill --draft` path proposes V5 from
   human intent with fixed worker/scope/limits and exact review/approval. Semantic
   oracle adequacy and unrestricted autonomous plan construction are not established.
-- Current pane metadata can be read from a stopped run's ledger, but box details
-  still use the supervisor or this client's stale cache. Durable offline box
-  inspection, task-qualified dependency evidence/selection, custom pins/groups,
+- Pane metadata and bounded box details can now be read from a stopped run's exact
+  ledger, including by a newly opened client. Durable offline inspection is
+  implemented; task-qualified dependency evidence/selection, custom pins/groups,
   split/grid layouts and scoped durable box communication still need their gates.
 - V5/V6 imported plans support kernel gates; interactive Codex/OSS launch-policy
   acknowledgement is implemented. A real fake-Codex subprocess test covers terminal

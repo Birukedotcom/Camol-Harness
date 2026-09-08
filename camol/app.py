@@ -1596,7 +1596,17 @@ class InteractiveController:
     def box_summaries(self) -> List[Dict[str, str]]:
         try:
             status = self._control("status")
-        except SupervisorError:
+        except (SupervisorError, OSError):
+            from .box_inspection import BoxInspector, BoxInspectionError
+            database = SupervisorPaths.under(Path(self.session["state_dir"])).database
+            if database.exists() or database.is_symlink():
+                try:
+                    report = BoxInspector(Path(self.session["state_dir"]), database=database).list(self.session["run_id"])
+                    self._check_box_subject(report)
+                except (BoxInspectionError, InteractiveError, ValueError, RuntimeError, OSError):
+                    return [dict(box, status="unavailable", connected="no", basis="invalid_ledger") for box in self._planned_boxes()]
+                return [dict(box, task_id=box["task_id"] or "unassigned", connected="no", basis="retained_ledger")
+                        for box in report["boxes"]]
             return self._planned_boxes()
         run = status["run"]
         workspace_by_box = {item.get("box_id"): item for item in status.get("boxes", [])}
@@ -1617,10 +1627,11 @@ class InteractiveController:
         if not boxes:
             return self._respond("No boxes exist yet. Complete /grill to derive the N-box pool.")
         attention = {"blocked", "waiting"}
-        lines = ["BOXES — ■ workspace connected, □ dormant/unprepared, ! attention"]
+        lines = ["BOXES — ■ recorded workspace, □ no live connection proven, ! attention"]
         for index, box in enumerate(boxes, 1):
-            mark = "!" if box["status"] in attention else "■" if box.get("connected") == "yes" else "□"
-            lines.append("{} {:>2} {:<18} {:<12} {}".format(mark, index, box["box_id"], box["status"], box["task_id"]))
+            mark = "!" if box["status"] in attention | {"unavailable"} else "■" if box.get("connected") == "yes" else "□"
+            lines.append("{} {:>2} {:<18} {:<12} {}{}".format(mark, index, box["box_id"], box["status"], box["task_id"],
+                " [" + box["basis"] + "]" if box.get("basis") else ""))
         return self._respond("\n".join(lines))
 
     def _box(self, arguments: Sequence[str]) -> CommandResponse:
@@ -1643,27 +1654,53 @@ class InteractiveController:
         rendered = self.inspect_box(target, subview)
         return CommandResponse(messages=(rendered,), box_id=target, box_view=subview)
 
+    def _check_box_subject(self, view):
+        if self.session.get("run_id") and view.get("run_id") != self.session["run_id"]:
+            raise InteractiveError("box snapshot differs from the selected run")
+        plan = self.session.get("plan")
+        if plan and plan.get("runbook") and view.get("plan_digest") != runbook_digest(plan["runbook"]):
+            raise InteractiveError("box snapshot differs from the selected frozen plan")
+
     def inspect_box(self, target: str, subview: str = "events") -> str:
         """Read a box snapshot without changing authority or writing chat history."""
         stale = False
+        retained = False
+        scope = (self.session["session_id"], self.session["state_dir"], self.session.get("run_id"), self.session.get("plan_digest"), target)
         try:
             view = self._control(
                 "box", {"box_id": target, "after_seq": 0, "limit": 200, "tail": True}
             )
-            self._box_cache[target] = view
+            self._check_box_subject(view)
+            if view.get("box_id", target) != target:
+                raise InteractiveError("box snapshot differs from the exact selected box")
+            self._box_cache[scope] = view
         except (SupervisorError, OSError):
-            view = self._box_cache.get(target)
+            from .box_inspection import BoxInspector, BoxInspectionError
+            database = SupervisorPaths.under(Path(self.session["state_dir"])).database
+            view = None
+            if database.exists() or database.is_symlink():
+                try:
+                    view = BoxInspector(Path(self.session["state_dir"]), database=database).read(
+                        self.session["run_id"], target, limit=200, tail=True)
+                    self._check_box_subject(view)
+                    retained = True
+                except (BoxInspectionError, InteractiveError, ValueError, RuntimeError, OSError):
+                    return "BOX {} unavailable: exact retained ledger is invalid or mismatched; no cached evidence substituted.".format(target)
+            else:
+                view = self._box_cache.get(scope)
+                stale = view is not None
             if view is None:
                 return "BOX {} is dormant or unavailable; no live evidence snapshot is available.".format(target)
-            stale = True
         lines = [
             "BOX {} / {} {}adapter={} tasks={} workspace={}".format(
-                target, subview, "STALE — supervisor disconnected; " if stale else "",
+                target, subview, "RETAINED — supervisor disconnected; " if retained else "STALE — supervisor disconnected; " if stale else "",
                 view["adapter_kind"], ",".join(view["task_ids"]) or "none",
                 view["workspace"]["path"] if view["workspace"] else "not prepared",
             ),
             "Read-only snapshot; messages in the composer always go to the orchestrator.",
         ]
+        if view.get("observation"):
+            lines.append("Ledger cursor={}; inspection does not prove live connection or task readiness.".format(view["observation"]["event_cursor"]))
         if subview == "status":
             lines.append(json.dumps(view.get("task_states", {}), indent=2, sort_keys=True))
         elif subview == "context":

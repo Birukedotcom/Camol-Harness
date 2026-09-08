@@ -1,5 +1,17 @@
 # Ergonomics checkpoint verification
 
+## Pane-switcher full-suite checkpoint
+
+Frozen `4df9a3b4037c3c3cee912408f23bdcbcceb413ee` passed the full 834-test suite
+on Python 3.12 and Python 3.9. The Python 3.9 run took 761.419 seconds. These
+results cover the searchable switcher and ordered terminal input, not the later
+offline box reader. All execution used local/fake fixtures; no paid provider,
+real model download, SSH target or cloud deployment was used.
+
+## Earlier ergonomics checkpoint
+
+The chronological results below retain their original checkpoint scope.
+
 Exact checkpoint: `41d5824940cb803089194999eaa0de6285c6d22b`.
 
 | Check | Result |
@@ -126,3 +138,27 @@ The focused controller/TUI/overview group passed 60 tests on both Python 3.9 and
 started none of its six jobs; the inspected GitHub check again reports account
 payments/spending-limit failure. There are no test steps or hosted verification
 results for this checkpoint. Local progress does not clear that external gate.
+
+## Exact-run offline box reader (development checkpoint)
+
+The new reader, embedding API, CLI, controller, supervisor, overview, switcher,
+product flow, TUI and actual terminal group passes **117 tests** on Python 3.12
+in **73.062 seconds** and Python 3.9 in **81.190 seconds**. Twelve new reader
+tests cover exact run selection, cold/live cuts, no missing-state initialization,
+strict metadata/JSON, byte/row bounds, symlinks/FIFOs, producer and artifact hash
+checks, raw withholding, terminal-control escaping, cursor/reassignment/actor-name
+collisions, stale-client scope, corrupt-ledger denial and a real local build whose
+runner and store are closed before inspection. The embedding API adds an exact
+online/offline snapshot parity test.
+
+A fresh source distribution was built, a wheel rebuilt from that distribution,
+then installed with `[tui,graph]` into a new Python 3.12 environment outside the
+source checkout. **15 checks passed in 15.695 seconds** against that installed
+package: the twelve reader tests, embedding parity and two actual PTY tests for
+boot, searchable box selection and Ctrl+C. The child terminal processes ran from
+the separate package-check directory and imported the installed package, not the
+source tree. This does not cover real accounts, models, remote hosts or cloud.
+
+The full-suite result above belongs to predecessor `4df9a3b`; the offline-reader
+successor still requires its own full-suite run. Durable messaging, pins/groups
+and tiled layouts are not implemented by this observation-only bridge.

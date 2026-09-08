@@ -42,6 +42,7 @@ from .ssh_protocol import ALL_COMMANDS as SSH_COMMANDS, MUTATING_COMMANDS as SSH
 from .source_binding import SourceBindingError
 from .retention import RetentionError, RetentionPolicy, inspect_retention
 from .overview import fleet_overview, render_overview
+from .box_inspection import BoxInspector, BoxInspectionError
 
 
 def _write_json(value: Any) -> None:
@@ -174,6 +175,19 @@ def command_overview(args: argparse.Namespace) -> int:
         _write_json(report)
     else:
         print(render_overview(report))
+    return 0
+
+
+def command_box(args: argparse.Namespace) -> int:
+    inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+    if args.box_command == "list":
+        report = inspector.list(args.run_id)
+    elif args.box_command == "resolve":
+        report = inspector.resolve(args.run_id, args.box_id)
+    else:
+        report = inspector.read(args.run_id, args.box_id, after_seq=args.after, limit=args.limit,
+                                tail=args.tail, previews=not args.no_previews)
+    _write_json(report)
     return 0
 
 
@@ -824,6 +838,22 @@ def build_parser() -> argparse.ArgumentParser:
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(handler=command_overview)
 
+    box = subparsers.add_parser("box", help="read exact run/box snapshots without a supervisor or model call")
+    box_commands = box.add_subparsers(dest="box_command", required=True)
+    for name in ("list", "resolve", "read"):
+        operation = box_commands.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--db", help="existing database inside state-dir; default camol.sqlite3")
+        operation.add_argument("--run-id", required=True)
+        if name != "list":
+            operation.add_argument("box_id", help="exact box ID; not a pane index or prefix")
+        if name == "read":
+            operation.add_argument("--after", type=int, default=0)
+            operation.add_argument("--limit", type=int, choices=range(1, 1001), default=200, metavar="1..1000")
+            operation.add_argument("--tail", action="store_true")
+            operation.add_argument("--no-previews", action="store_true")
+        operation.set_defaults(handler=command_box)
+
     retention = subparsers.add_parser("retention", help="inspect bounded cold-state references; never archive or delete")
     retention.add_argument("retention_action", choices=("inspect",))
     retention.add_argument("--state-dir", required=True, help="existing absolute canonical state directory")
@@ -1050,7 +1080,7 @@ def main(argv: Any = None) -> int:
     except (
         ArtifactError, RunbookError, SchemaError, StateTransitionError, SourceBindingError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
         WorkspaceError, ProviderError, SupervisorError, BenchmarkError, OSError, json.JSONDecodeError,
-        ConnectionError, ConversationError, SessionError, InteractiveError, RetentionError,
+        ConnectionError, ConversationError, SessionError, InteractiveError, RetentionError, BoxInspectionError,
     ) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2

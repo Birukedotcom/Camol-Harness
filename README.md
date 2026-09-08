@@ -227,7 +227,8 @@ proves that its exact execution path is ready.
 
 Glyphs are deliberately contextual. The top rail labels cached account/runtime
 observations and local binary presence—it is **not** task readiness. In the bottom
-fleet, `■` means an isolated box workspace exists, `□` means dormant/unprepared, and
+fleet, `■` means a workspace admission was recorded, `□` means no live connection
+is proven (including dormant or retained offline boxes), and
 `!` needs attention. The kernel reports task readiness separately. Selection is a
 separate cursor. The bottom switcher traverses
 the orchestrator and a window over an arbitrary N-box fleet; box numbers are visible
@@ -239,6 +240,12 @@ PageDown. Escape preserves the unsent composer draft. `/overview` shows task
 dependencies and attention alongside the boxes. Both views use recorded snapshots,
 not live connection/readiness proof; selection never starts work. Pins, custom
 groups, split/grid tiling and scoped box messaging remain implementation gates.
+
+`camol box list`, `camol box resolve BOX_ID` and `camol box read BOX_ID` expose
+retained box identity/evidence without a supervisor or TUI. All require an explicit
+`--state-dir` and `--run-id`. A fresh client reopening a stopped run labels its
+`/box` view `RETAINED`; corrupt state is unavailable, not a fresh dormant pool.
+See [pane commands and bounds](docs/pane-orchestration.md#retained-box-inspection).
 
 Provider startup displays cached observations without running account probes.
 `/connections refresh` requests a bounded inspection; `↻` marks that explicit

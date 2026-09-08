@@ -39,7 +39,7 @@ Connected transport, account observation and task readiness are separate indicat
 | `/usage run`, `/debug inbox`, `/gate TASK` | Accounting, failed-evaluator inbox and gate detail | Implemented |
 | `/switch [WORDS]`, `Alt+B` | Search current-run box/task/status/adapter metadata, grouped by orchestrator/attention/workers; arrows/Enter, preserved draft | Implemented |
 | `/layout focus\|split\|grid`, `/pin BOX`, `/group BOX NAME` | Client-only tiling, pinned monitoring and organization | Planned |
-| `camol box list\|resolve\|read` | Machine-readable scoped bridge using explicit run/box IDs | Planned; overview JSON is available now |
+| `camol box list\|resolve\|read` | Scoped observation using explicit run/box IDs, including stopped runs | Implemented; no message delivery or execution grant |
 | `camol box message` | Durable, idempotent, scoped agent/human inbox with acknowledgments | Planned |
 | `/delegate` | Review proposed task allocation; approved plan amendment when scope changes | Planned; kernel leasing remains authoritative |
 
@@ -65,6 +65,46 @@ The scope is navigation identity, not an execution grant or lease read receipt;
 worker progress can change while the picker is open. Close/reopen to refresh its
 metadata snapshot. Line mode prints the first 50 matches and supports `/box ID`
 for selection; it does not pretend to offer a graphical picker.
+
+## Retained box inspection
+
+`camol box list --state-dir STATE_DIR --run-id RUN_ID` lists the exact run's
+workers. `camol box resolve BOX_ID --state-dir STATE_DIR --run-id RUN_ID` resolves
+one exact worker identity; prefixes, display labels and pane numbers are rejected.
+`camol box read BOX_ID --state-dir STATE_DIR --run-id RUN_ID --tail --limit 200`
+returns associated events, task contracts/states, recorded admission workspaces and
+up to 16 artifact previews. Uppercase values are placeholders: use an existing
+absolute state directory and the IDs shown by `/status` and `/boxes`.
+`--db` selects an existing database inside that directory, default `camol.sqlite3`.
+Forward consumers resume with `--after SEQUENCE`; `--no-previews` withholds artifact
+bodies. Reports carry run, plan digest, cut cursor and snapshot digest. These are
+observation records, not authenticated execution receipts.
+
+Python clients use `BoxInspector(state_dir).list(run_id)`, `.resolve(run_id, box_id)`
+and `.read(run_id, box_id)`, or `Harness.inspect_box(box_id)` while the harness is
+open. No TUI, tmux, supervisor connection, model call or worker process is required.
+A newly opened interactive client can display `/box` evidence from a stopped run;
+the header says `RETAINED`. A same-client memory-only fallback says `STALE`, is
+bound to session/run/plan/box, and never substitutes for a corrupt existing ledger.
+Disconnected box lists retain recorded state instead of calling all boxes dormant.
+Workspace identity comes from exact run-bound admission events, not an unscoped
+directory scan. Neither receipts nor retained output prove a currently live
+connection, current filesystem contents or current task readiness.
+
+The offline reader bounds replay to 20,000 events, 2 MiB per row and 64 MiB total
+by default; oversized runs fail explicitly rather than returning partial healthy
+state. The Python API permits bounded increases. Pages contain at most 1,000
+events. Previews verify content hash/length and producer run/task/box identity,
+withhold raw artifacts, reapply credential redaction, escape terminal controls and
+truncate at 16,000 characters. Each object read is capped at 1 MiB, the preview
+batch at 8 MiB. Full retained evidence remains available through exports.
+
+Cold SQLite reads do not initialize state, artifacts or sidecars. Live WAL reads
+may maintain SQLite shared-memory coordination but never append events or repair
+the database. Owner-controlled state is required; selected symlinks, hardlinked or
+special database/artifact files and unsafe sidecars are rejected. This is an
+owner-side diagnostic API, not a sandbox against an attacker controlling the owner
+UID. It supplies no messaging, input injection, lease grant or automatic resume.
 
 ## Next UI implementation
 
