@@ -1127,3 +1127,33 @@ content identity. The changed reader preserves ordinary-file graph semantics;
 it does not resolve dynamic imports or establish runtime readiness. No worktree
 files were rewritten to remove links, and all graph databases/output remained in
 the disposable verification directory.
+
+The prior run-recovery product `fc855ffe04c3ce2b8b50de7fa4e0bcc75d1ee071`
+subsequently passed **1,052 full-suite tests in 917.238 seconds on Python 3.12**
+and **979.600 seconds on Python 3.9**, with three optional skips on 3.9. Those
+results do not establish a gate for the later graph reader or source policy.
+
+## Explicit managed-source graph policy (2026-09-08)
+
+The isolated `codex/v0-graph-source-policy` branch addresses the managed-checkout
+smoke finding with an explicit source-only read policy. Python, standalone CLI
+and interactive `/repo` can permit hard-linked source for one crawl, with a
+configuration-digest change and persistent warning that other aliases can exist
+outside the selected repository. The next command remains strict by default;
+archive/recovery readers remain single-link. No file is rewritten to sever links.
+
+The first expanded runs had one failing assertion: the interactive test compared
+the entire session, including conversation history that commands intentionally
+append. It now compares unchanged authority/settings, requires no persistent
+policy setting, and still requires the next unflagged crawl to exclude the shared
+source. No product guard was weakened. The initial managed-source CLI smoke
+produced **388 nodes and 2,785 edges** with explicit policy/dynamic-import warnings.
+Final source, package and whole-suite verification follow this development result.
+
+After adding an actionable count/hint for strict-mode hard-link omissions, the
+final expanded group passed **107 tests in 42.610 seconds on Python 3.12** and
+**44.284 seconds on Python 3.9**, with one optional stdlib TOML skip. This includes
+the source policy, default/opted-in graph attacks, archive boundary, all captured
+workspace recovery cases, controller state/commands and extended CLI workflows.
+The explicit-policy test confirms that mutation through another alias still
+refuses the snapshot and that later ordinary archive reads stay strict.

@@ -796,12 +796,16 @@ class InteractiveController:
         return self._inspection("RECORDED WATCHERS — read-only ledger inspection; no observer or remote poll was invoked.", result)
 
     def _repo(self, arguments: Sequence[str]) -> CommandResponse:
+        arguments = list(arguments)
+        allow_hardlinks = arguments.count("--allow-hardlinked-source") == 1
+        if allow_hardlinks:
+            arguments.remove("--allow-hardlinked-source")
         if (arguments not in ([], ["summary"], ["cycles"])
                 and not (len(arguments) == 2 and arguments[0] == "impact")
                 and not (len(arguments) == 3 and arguments[0] == "why")):
-            raise InteractiveError("usage: /repo [summary|impact PATH|why FROM TO|cycles]")
-        from .repository_graph import RepositoryGraph, crawl_repository
-        graph = RepositoryGraph(crawl_repository(self.workspace))
+            raise InteractiveError("usage: /repo [summary|impact PATH|why FROM TO|cycles] [--allow-hardlinked-source]")
+        from .repository_graph import CrawlPolicy, RepositoryGraph, crawl_repository
+        graph = RepositoryGraph(crawl_repository(self.workspace, policy=CrawlPolicy(allow_hardlinked_source=allow_hardlinks)))
         if arguments in ([], ["summary"]):
             return CommandResponse(messages=(graph.render_text(),))
         result = (graph.cycles() if arguments == ["cycles"] else graph.impact(arguments[1])

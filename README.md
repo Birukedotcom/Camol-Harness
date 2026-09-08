@@ -98,6 +98,12 @@ camol repo crawl --workspace .
 camol repo impact camol/runner.py --workspace .
 ```
 
+For managed source checkouts that deliberately use hard links, use
+`camol repo crawl --workspace . --allow-hardlinked-source` or
+`/repo --allow-hardlinked-source`. This is a per-crawl read policy, warns about
+aliases outside the repository, and does not relax archive/recovery rules. See
+[source policy and boundaries](docs/repository-graph.md#read-only-crawl-boundary).
+
 Run-ledger tools take the real database path shown by `/status`: `camol usage`,
 `camol debug`, `camol watchers`, `camol profile`, `camol logs`, `camol events`, and `camol export`. No provider
 request is needed to inspect existing evidence. `/usage run` and `/debug list`

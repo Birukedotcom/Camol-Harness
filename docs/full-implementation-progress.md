@@ -123,6 +123,8 @@ usable Python/CLI entry points. A fixture cannot establish live provider maturit
   fixtures. The isolated graph boundary now uses trusted system Git, live output
   bounds, descriptor-anchored reads and end-of-inventory identity checks. Its
   focused/integration tests do not prove the unimplemented runtime graph overlays.
+  The managed-source follow-up adds an explicit per-crawl hard-link opt-in with a
+  policy-bound warning; archive/recovery readers retain their single-link rule.
 - Long calls now reprove admission before the effective authorization expires;
   failed reproof cancels, salvages and records a typed wait without widening grants.
 - Completed interactive sessions reconcile stored/daemon status; each new plan

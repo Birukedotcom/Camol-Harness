@@ -44,7 +44,7 @@ settings explicitly prohibit protocol use and on-demand object fetching. A missi
 local object is not an invitation to fetch data during a graph crawl.
 
 Repository contents are read relative to one open root descriptor. Intermediate
-symlinks, hard-linked files and special files cannot become parser input. A file
+symlinks, special files and (by default) hard-linked files cannot become parser input. A file
 replaced by a FIFO is opened nonblocking and refused before consuming data.
 Accepted file identities are checked again at the end; a change to an already
 read member refuses the inventory. Skipped unsafe/unreadable entries produce an
@@ -53,9 +53,32 @@ rewritten to make a crawl pass.
 
 Some managed checkouts use hard links for their ordinary source files. The strict
 reader skips those files too; a one-node incomplete graph is not a useful complete
-crawl. Use an explicitly chosen independent checkout with ordinary files when that
-boundary is needed. Camol does not automatically copy the project, sever links, or
-weaken the rule. A reviewed policy for such managed source layouts remains open.
+crawl. For an explicitly chosen source layout, the source-policy checkpoint supports:
+
+```sh
+camol repo crawl --workspace . --allow-hardlinked-source
+```
+
+The interactive equivalent is `/repo --allow-hardlinked-source`; it can also be
+combined with `summary`, `impact`, `why` or `cycles`. Embeddings use
+`CrawlPolicy(allow_hardlinked_source=True)`. The option must be an actual boolean
+in Python. It grants permission to read hard-linked files as the chosen project
+input; **other aliases may exist outside the selected repository**. Camol does
+not claim to know every alias or its ownership. Choose this policy only for source
+you intend to inspect, or use an independent checkout with ordinary files.
+
+The opt-in is scoped to that crawl, not retained as a session setting or silently
+inherited by the next command. Its value changes the graph configuration digest;
+an explicit warning remains in the saved snapshot, which is labeled incomplete
+rather than asserting alias isolation. The option cannot reinterpret a stored
+snapshot. Ordinary file limits, excluded paths, symlink/special-file rejection,
+read-only behavior and end-of-read identity checks still apply. Mutation through
+another hard-link name is detected by those checks.
+
+Only the read-only source reader accepts this policy. Archive and recovery readers
+remain single-link, and this command grants no restore, execution, overwrite,
+cleanup or additional filesystem-write authority. Camol does not automatically
+copy the project or sever links to make a crawl pass.
 
 The explicit initial root resolves the caller's selected path (including macOS
 temporary-directory aliases). This is not an atomic filesystem snapshot, a

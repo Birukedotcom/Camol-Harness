@@ -91,6 +91,11 @@ class ArchiveRoot:
             raise ArchiveIOError("archive member escaped its explicit root")
         return parts
 
+    def _link_count_allowed(self, count):
+        # Archive/recovery members are always single-link. The read-only source
+        # inventory has a separate explicit policy, never an archive CLI flag.
+        return count == 1
+
     def read(self, relative, maximum):
         parts = self._parts(relative)
         parent = self._directory(parts[:-1])
@@ -98,7 +103,7 @@ class ArchiveRoot:
         try:
             descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
             before = os.fstat(descriptor)
-            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            if not stat.S_ISREG(before.st_mode) or not self._link_count_allowed(before.st_nlink):
                 raise ArchiveIOError("archive member must be a single-link regular file")
             if before.st_size > maximum:
                 raise ArchiveIOError("archive member exceeds its byte ceiling")

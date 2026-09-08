@@ -301,10 +301,13 @@ def command_watch(args: argparse.Namespace) -> int:
 def command_repo(args: argparse.Namespace) -> int:
     store = None
     try:
+        if args.allow_hardlinked_source and args.db and args.repo_action != "crawl":
+            raise GraphError("--allow-hardlinked-source applies to a new source crawl, not a stored snapshot")
+        policy = CrawlPolicy(max_files=args.max_files, allow_hardlinked_source=args.allow_hardlinked_source)
         if args.repo_action == "crawl":
             if args.selectors or args.snapshot:
                 raise GraphError("crawl does not accept selectors or an existing snapshot")
-            snapshot = crawl_repository(Path(args.workspace), policy=CrawlPolicy(max_files=args.max_files))
+            snapshot = crawl_repository(Path(args.workspace), policy=policy)
             if args.db:
                 store = GraphStore(Path(args.db))
                 store.save(snapshot)
@@ -323,7 +326,7 @@ def command_repo(args: argparse.Namespace) -> int:
         else:
             if args.snapshot or args.repo_action in {"list", "diff"}:
                 raise GraphError("snapshot/list/diff requires --db with a saved graph database")
-            graph = RepositoryGraph(crawl_repository(Path(args.workspace), policy=CrawlPolicy(max_files=args.max_files)))
+            graph = RepositoryGraph(crawl_repository(Path(args.workspace), policy=policy))
         count = {"impact": 1, "why": 2}.get(args.repo_action, 0)
         if len(args.selectors) != count:
             raise GraphError("repo {} requires {} node selectors".format(args.repo_action, count))
@@ -961,6 +964,8 @@ def build_parser() -> argparse.ArgumentParser:
     repo.add_argument("--db", help="optional graph snapshot database; only crawl creates/writes it")
     repo.add_argument("--snapshot", help="saved snapshot ID; otherwise the latest is selected")
     repo.add_argument("--max-files", type=int, default=10000)
+    repo.add_argument("--allow-hardlinked-source", action="store_true",
+                      help="explicitly read hard-linked project files; aliases may exist outside the selected root")
     repo.add_argument("--format", choices=("text", "json", "dot", "graphml"), default="text")
     repo.set_defaults(handler=command_repo)
 

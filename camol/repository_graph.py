@@ -41,6 +41,7 @@ class CrawlPolicy:
     max_file_bytes: int = 1 << 20
     max_total_bytes: int = 32 << 20
     excludes: Tuple[str, ...] = ("node_modules/*", ".venv/*", "venv/*", "dist/*", "build/*", "__pycache__/*")
+    allow_hardlinked_source: bool = False
 
     def __post_init__(self):
         for name in ("max_files", "max_file_bytes", "max_total_bytes"):
@@ -48,6 +49,8 @@ class CrawlPolicy:
                 raise GraphError(name + " must be a positive integer")
         if not isinstance(self.excludes, tuple) or any(not isinstance(value, str) for value in self.excludes):
             raise GraphError("excludes must be a tuple of relative glob strings")
+        if type(self.allow_hardlinked_source) is not bool:
+            raise GraphError("allow_hardlinked_source must be an explicit boolean")
 
 
 @dataclass(frozen=True)
@@ -156,10 +159,20 @@ def _excluded(path: str, policy: CrawlPolicy) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in policy.excludes)
 
 
+class _SourceRoot(ArchiveRoot):
+    """Read-only chosen project input; never used to read/write recovery archives."""
+    def __init__(self, path, policy):
+        self._source_policy = policy
+        super().__init__(path)
+
+    def _link_count_allowed(self, count):
+        return count >= 1 if self._source_policy.allow_hardlinked_source else count == 1
+
+
 def inventory_repository(root: Path, policy: CrawlPolicy) -> RepositoryInventory:
     root = Path(root).resolve()
     try:
-        with ArchiveRoot(root) as reader:
+        with _SourceRoot(root, policy) as reader:
             return _inventory_repository(root, policy, reader)
     except (OSError, ArchiveIOError) as error:
         raise GraphError("repository files changed or became unsafe during inventory") from error
@@ -171,7 +184,9 @@ def _inventory_repository(root: Path, policy: CrawlPolicy, reader: ArchiveRoot) 
         raise GraphError("crawl root must be the Git repository root")
     revision = _git(root, "rev-parse", "HEAD^{commit}").decode().strip()
     candidates = sorted(set(_git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z").decode("utf-8", "surrogateescape").split("\0")) - {""})
-    files, warnings, total = {}, [], 0
+    files, warnings, total, skipped_hardlinks = {}, [], 0, 0
+    if policy.allow_hardlinked_source:
+        warnings.append("hard-linked source explicitly allowed; other aliases may exist outside the selected root")
     for relative in candidates:
         path = Path(relative)
         if path.is_absolute() or ".." in path.parts:
@@ -193,6 +208,9 @@ def _inventory_repository(root: Path, policy: CrawlPolicy, reader: ArchiveRoot) 
             if not stat.S_ISREG(metadata.st_mode):
                 warnings.append("non-regular source skipped: " + relative)
                 continue
+            if metadata.st_nlink > 1 and not policy.allow_hardlinked_source:
+                skipped_hardlinks += 1
+                continue
             if metadata.st_size > policy.max_file_bytes:
                 warnings.append("per-file byte ceiling: " + relative)
                 continue
@@ -207,6 +225,8 @@ def _inventory_repository(root: Path, policy: CrawlPolicy, reader: ArchiveRoot) 
             files[relative] = content
         except (OSError, GraphError, ArchiveIOError) as error:
             warnings.append(str(error) if isinstance(error, GraphError) else "unsafe or unreadable source skipped: " + relative)
+    if skipped_hardlinks:
+        warnings.append("{} hard-linked source files skipped; review aliases before choosing --allow-hardlinked-source".format(skipped_hardlinks))
     dirty = canonical_digest({name: "sha256:" + hashlib.sha256(content).hexdigest() for name, content in files.items()})
     if _git(root, "rev-parse", "HEAD^{commit}").decode().strip() != revision:
         warnings.append("source revision changed during crawl")
