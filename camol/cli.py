@@ -180,6 +180,22 @@ def command_overview(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_target_inventory(args: argparse.Namespace) -> int:
+    from .target_inventory import MAX_BYTES, capabilities, normalize_inventory
+    from .targets import TargetError
+    if args.action == "inventory-formats":
+        _write_json(capabilities())
+        return 0
+    try:
+        report = normalize_inventory(load_contract(args.input, max_bytes=MAX_BYTES),
+            format=args.format, account=args.account, project=args.project)
+    except TargetError as error:
+        print("camol: {}".format(error), file=sys.stderr)
+        return 2
+    _write_json(report)
+    return 2 if report["issues"] or report["coverage"]["more_pages"] or report["coverage"]["unreachable_count"] or report["coverage"]["warning_count"] else 0
+
+
 def command_target(args: argparse.Namespace) -> int:
     from .targets import TargetError, snapshot
     from .target_runtime import local_profile
@@ -1151,6 +1167,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     targets = subparsers.add_parser("target", help="review adopted target identities; never connect, execute, provision or delete")
     target_actions = targets.add_subparsers(dest="action", required=True)
+    from .target_inventory import FORMATS
+    inventory_formats = target_actions.add_parser("inventory-formats", help="list supported offline inventory decoders and limits")
+    inventory_formats.set_defaults(handler=command_target_inventory)
+    inventory = target_actions.add_parser("inventory", help="decode an existing provider JSON dump; never contact a provider")
+    inventory.add_argument("--input", required=True)
+    inventory.add_argument("--format", choices=FORMATS, required=True)
+    inventory.add_argument("--account", required=True, help="declared non-secret account scope, not a credential")
+    inventory.add_argument("--project", required=True)
+    inventory.set_defaults(handler=command_target_inventory)
     for name in ("inspect", "propose", "adopt", "retire", "local-profile", "observe-local"):
         operation = target_actions.add_parser(name)
         operation.add_argument("--state-dir", required=name != "local-profile")

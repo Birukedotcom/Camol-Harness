@@ -1977,3 +1977,48 @@ validation succeeded. `git diff --check` passes and main remains clean/unchanged
 The prior `f284e13` modern-Python-3.9 whole-suite process remains in flight; it does
 not include this usage fix. No latest whole-suite gate, live provider acceptance,
 global installation or main merge is claimed by these targeted checks.
+
+## Target runtime full result and inventory follow-up — 2026-09-08
+
+The exact `f284e131cf3f283f90d2dc4b16d92b0dbe94659a` modern-Python-3.9 full
+process finished successfully: **1,215 tests in 1,228.971 seconds, two skips**.
+Log: `/tmp/camol-native-example-full-py39.log`. The skips are the independent MCP
+SDK environment and the Python-3.11-only stdlib TOML parser test. It was observed
+to completion without restarting on observation timeouts. This gates the earlier
+target-adoption/runtime product, not the subsequent usage/inventory changes.
+
+The isolated `codex/v0-target-inventory` follow-up implements SPEC §19.5's provider
+schema boundary for offline GCP inventory, with explicit versioned decoding,
+partial-page/schema-drift coverage, identity conflict quarantine and an actual
+registry adoption test. It never invokes a provider or turns an imported `RUNNING`
+claim into readiness, a lease, execution or deletion authority. See
+[inventory coverage and limits](target-inventory.md).
+
+The initial test invocation passed 20 tests, but also discovered nine unrelated
+imported fixture tests, which would duplicate them in a whole-suite run. The
+import now names the fixture module instead.
+The first expanded command then named a nonexistent `tests.test_cli` module:
+36 real tests passed on each runtime, and the command failed with one import
+error. Correcting that command to `tests.test_extended_cli` produced **46 tests
+in 15.461 seconds on Python 3.12** and **46 in 15.304 seconds on modern Python
+3.9**, all passed. These were test-command issues, not product regressions.
+
+Further review identified URL parsing that silently drops controls. The decoder
+now rejects non-printable references before parsing. Regression coverage also
+checks protected identity values, malformed URL hosts, uint64 identity limits,
+future/missing optional fields, partial scopes/pages, conflicting duplicate IDs/
+names, no first-wins routing, pipe rejection, no raw metadata/token output, and
+real child CLI operation without a provider executable or new state. Final groups
+passed **46 tests in 15.540 seconds on Python 3.12** and **46 in 15.091 seconds
+on modern Python 3.9**. Logs: `/tmp/camol-target-inventory-checked-py312.log` and
+`-py39.log`.
+
+The sdist-built wheel was installed without dependencies into
+`/tmp/camol-target-inventory-package.FhEzJ8AT/venv`. Isolated imports outside the
+checkout verified site-packages ownership and byte equality for all **113 product
+modules** before loading fixtures; Textual, MCP and cryptography were absent.
+The installed group passed **46 tests in 20.614 seconds**, including real child
+CLI paths. Log: `/tmp/camol-target-inventory-installed.log`. Installed decoder
+discovery/help, V1 example validation and `git diff --check` passed. Main and the
+user installation remain unchanged. These are offline/fixture gates, not live
+GCP discovery, authenticated adoption or distributed execution acceptance.

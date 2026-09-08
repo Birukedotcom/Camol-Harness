@@ -46,6 +46,12 @@ per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
+The `codex/v0-target-inventory` follow-up adds versioned offline GCP inventory
+decoding, scoped identity review and partial-result reporting for SPEC §19.5.
+It feeds the existing owner adoption flow without authenticating or executing a
+target. [Inventory boundaries](target-inventory.md) retain the remaining live
+discovery, worker admission and execution requirements.
+
 The [native acceptance checklist](native-acceptance.md) maps M5–M7 evidence to the
 actual current tests. The opt-in provider smoke only checks capability/model/cost;
 it is not the full build/refine/recover/human-acceptance gate. Executing the shipped

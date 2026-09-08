@@ -13,6 +13,9 @@ result promotion remain open; receiving a report does not authorize execution.
 An [owner-reviewed target registry](target-adoption.md) now records distinct provider,
 harness, generation and transport-profile identities. Registry adoption is not yet
 authenticated machine adoption or execution-backed readiness.
+An [offline provider inventory decoder](target-inventory.md) supplies compatible
+provider identities from GCP dumps while exposing rejected rows, pagination and
+schema drift. Its unauthenticated imported claims do not create targets or leases.
 
 Camol's replaceable orchestration agent may propose as many boxes as a plan can
 justify within its approved resource envelope. The deterministic harness admits and
