@@ -508,3 +508,37 @@ remain future native/remote integration work.
 No paid model request, real login, model-weight download or remote host was used.
 This successor still requires its own complete suites. Native peer transport,
 reviewed delegation and the remaining V0 acceptance gates are not claimed complete.
+
+## Delegation compatibility and review entry point
+
+The isolated `codex/v0-delegation-review` successor to peer telemetry `5277220`
+adds a read-only `/delegate` task/box compatibility view and an entry point to the
+existing stopped-owner revision review. Declared matches are not readiness or
+reserved capacity. No independent approval, automatic dispatch or live migration
+mechanism was added. Main and the user's installed environment were untouched.
+
+The initial **32-test** delegation/revision/overview group passed on Python 3.12
+(**50.353 seconds**) and Python 3.9 (**53.281 seconds**). The final **9 delegation
+tests** passed on Python 3.12 in **13.275 seconds**, including a real detached
+successor build followed by exact human acceptance and a Textual composer check.
+The expanded **34-test** group passed in a fresh Python 3.9/Textual 8.2.8
+environment in **67.154 seconds**. A source distribution rebuilt into a wheel and
+installed with TUI/graph extras passed **22 installed-package checks in 31.345
+seconds**; these include delegation, revision commands and the public overview CLI.
+The final **41-test** delegation/Textual/line-client group also passed on Python
+3.12 in **31.625 seconds**.
+
+Negative cases cover 77 declared boxes, bounded pages, busy-but-compatible workers,
+missing capabilities, unmet dependencies, corrupt ledgers, duplicate/invalid
+options, terminal-control text, unchanged plan/approval/source, live owner locks,
+wrong approval digests and separate launch. The initial live-owner test incorrectly
+mocked a nonexistent helper; it now holds a real Harness owner lock and checks the
+actual denial. No product check was bypassed.
+
+One intermediate Python 3.9 nine-test run failed to import Textual: the older
+temporary environment was found missing Textual and its venv configuration, so a
+new unique environment was created. The cause of that filesystem change was not
+established. The successful fresh-environment result above supersedes that failed
+focused check; the older running full suite is not silently treated as a passing
+gate. Complete telemetry and delegation suites remain separate checkpoints.
+No paid provider request, real login, model-weight download or remote host was used.

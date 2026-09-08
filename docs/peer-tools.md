@@ -138,6 +138,8 @@ or place trusted responses in worker-writable evidence directories. Refreshing
 receipts behind an agent's stale request is not an acceptable substitute.
 
 The current direct-Python fixture proves the adapter interface and local build,
-not a hosted model autonomously calling these tools. Human-gated delegation,
-native/provider tool registration, remote transport, broader read-only peer views
-and live provider acceptance remain separate gates.
+not a hosted model autonomously calling these tools. The owner now has a
+`/delegate` compatibility view and stopped-run revision-review entry point; this
+is not an agent-facing approval tool or automatic proposal generator.
+Native/provider tool registration, remote transport, broader read-only peer views,
+natural-language delegation and live provider acceptance remain separate gates.

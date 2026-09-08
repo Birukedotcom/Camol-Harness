@@ -241,8 +241,8 @@ dependencies and attention alongside the boxes. Both views use recorded snapshot
 not live connection/readiness proof; selection never starts work. `/pin BOX on|off`
 persists exact-box shortcuts and `/group BOX NAME` adds searchable display groups.
 They are scoped to the current run/plan, not execution grants; a revision does not
-inherit pins for reused box names. Split/grid tiling and scoped box messaging remain
-implementation gates.
+inherit pins for reused box names. Split/grid tiling and scoped box messaging are
+available as described below; native agent peer-tool transport remains pending.
 
 `camol box list`, `camol box resolve BOX_ID` and `camol box read BOX_ID` expose
 retained box identity/evidence without a supervisor or TUI. All require an explicit
@@ -269,6 +269,15 @@ tools inside native Claude/Codex CLI processes or provide a remote worker bridge
 Peer-tool attempts, failures, retries and unknown completions are visible in
 `camol profile --db PATH --run-id RUN`, without storing message prose in the
 attempt logger or equating missing timing with zero cost.
+
+`/delegate` lists task dependencies, recorded assignments and declared capability
+matches. `/delegate TASK_ID` inspects matching and excluded boxes; `--json`,
+`--offset N` and `--limit N` support machine-readable and large-fleet views.
+Matches are not readiness, free capacity or reserved assignments. To review new
+work, use `/delegate --from RUNBOOK --reason 'WHY'`: this uses the existing
+stopped-owner revision review, including its source/authority checks. Only
+`/revise apply REVIEW_DIGEST` approves the linked successor; `/run` is separate.
+See [delegation boundaries](docs/pane-orchestration.md#delegation-review).
 
 Provider startup displays cached observations without running account probes.
 `/connections refresh` requests a bounded inspection; `↻` marks that explicit

@@ -44,7 +44,8 @@ Connected transport, account observation and task readiness are separate indicat
 | `camol box observe\|message\|inbox` | Lease-scoped owner CLI and embedding mailbox, idempotent sends and worker consumption receipts | Implemented; automatic peer-tool/remote integration pending |
 | `adapter.peer_tools` / `Harness.peer_tools()` | Current-turn list/observe/own-inbox and read-before-send with replayable observations | Implemented for explicit Python embedding adapters; native tool transport pending |
 | `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX [OFFSET]]`, `/outbox [REQUEST_ID]` | Interactive sends/replies, inbox pane and immutable pending-request inspection | Implemented; explicit `/message retry ID` preserves its original scope |
-| `/delegate` | Review proposed task allocation; approved plan amendment when scope changes | Planned; kernel leasing remains authoritative |
+| `/delegate [TASK] [--json] [--offset N] [--limit N]` | Inspect declared capability matches and recorded assignments | Implemented; not readiness or a scheduling decision |
+| `/delegate --from RUNBOOK --reason TEXT [--effects POLICY.json]` | Review new/redistributed work through the existing stopped-owner revision workflow | Implemented; exact `/revise apply DIGEST` and separate `/run` remain required |
 
 The overview is a ledger snapshot, not an active transport probe. Its digest and
 event cursor identify what was observed. Before a ledger exists it explicitly
@@ -219,9 +220,46 @@ stable identity during reorder/removal; label collisions; keyboard-only navigati
 narrow terminals; redaction and terminal-control injection; reconnect without
 duplicate messages; stale generation/cursor denial; restart-safe inboxes; client
 closure without worker termination; and exact plan approval for new delegated work.
-Overview and switcher tests cover metadata/projection and keyboard navigation. Tiled panes,
-Automatic peer-tool messaging and external tmux attachment are not claimed
-implemented. The durable mailbox core has its own local execution/CLI tests.
+Overview and switcher tests cover metadata/projection and keyboard navigation.
+Tiled metadata monitoring and explicit Python peer tools are implemented as
+described above. Native/remote peer-tool transport and external tmux attachment
+are not claimed implemented. The durable mailbox core has its own local
+execution/CLI tests.
+
+## Delegation review
+
+`/delegate` lists tasks, recorded assignments, unmet dependencies and counts of
+workers whose declared capabilities cover the task. `/delegate EXACT_TASK_ID`
+shows each box's match or missing capabilities, recorded lifecycle and current
+task. Both accept `--json`, `--offset N` and `--limit N` (1..200); pagination is
+over tasks in the summary and over boxes in task detail. Display labels are not
+alternative addresses. This projection is also available as
+`camol.delegation.delegation_snapshot(state, ...)` for trusted Python callers.
+
+A matching busy box remains a capability match, not a free slot. Requested
+resources, dependency completion, provider access, money, freshness, workspace,
+authority and human gates still require normal admission. The report explicitly
+labels `declared_capabilities_only`, reports no readiness proof, and neither
+reserves a box nor changes the scheduler. It uses the same exact selected-run
+ledger/plan-only source as `/overview`; corrupt state cannot become a dormant
+healthy-looking pool. It does not inspect other terminals or contact a model.
+
+New tasks, changed commands, evaluator changes or redistribution outside the
+frozen plan use `/delegate --from RUNBOOK --reason 'WHY' [--effects POLICY.json]`.
+This routes to the existing stopped-owner `/revise` review, rather than creating
+a second approval mechanism. The full successor, policy/task delta, inherited
+usage, effects and invalidated evidence are reviewed together. The current plan
+remains active during review. `/revise apply REVIEW_DIGEST` seals the old run and
+approves the exact linked successor; `/run` separately starts it subject to fresh
+admission. `/delegate apply` is not an approval command. This path retains the
+existing source-bound V5+ revision requirements, quiescence checks, recovery and
+conservative reverify-all policy; it does not migrate legacy unbound sessions.
+
+This is human-reviewed runbook delegation, not automatic task generation,
+force-assignment to a selected pane, live migration or an agent-facing authority
+tool. Natural-language delegation proposals and native peer tool registration
+remain separate work. A message can carry a discovery to the orchestrator but
+cannot amend the plan or grant execution by itself.
 
 The overview/controller/TUI group passes 60 tests on Python 3.9 (15.337 seconds)
 and Python 3.12 (14.006 seconds), including the real composer route. The new slice

@@ -83,6 +83,7 @@ SLASH_COMMANDS = (
     SlashCommand("/draft", "Review and confirm a goal-creation envelope", takes_value=True),
     SlashCommand("/review", "Review exact proposed commands and oracle coverage", takes_value=True),
     SlashCommand("/revise", "Review, apply or recover an exact stopped-run amendment", takes_value=True),
+    SlashCommand("/delegate", "Inspect task/box compatibility or review a successor plan", takes_value=True, run_from_palette=True),
     SlashCommand("/import", "Review an existing executable runbook", takes_value=True),
     SlashCommand("/plan", "Inspect the exact candidate plan", run_from_palette=True),
     SlashCommand("/approve", "Confirm the exact visible plan", takes_value=True),
@@ -139,6 +140,10 @@ HELP = """Commands
                             review a stopped-run amendment; does not execute work
   /revise [apply DIGEST|recover]
                             inspect, approve, or recover the exact linked successor
+  /delegate [TASK] [--json] [--offset N] [--limit N]
+                            inspect declared matches, not readiness or assignments
+  /delegate --from RUNBOOK --reason TEXT [--effects POLICY.json]
+                            review new work through the stopped-run revision gate
   /propose --from SEED.json GOAL
                             one disclosed no-tools invocation; unapproved V5/V6 seed refinement
   /import PATH             import an exact runbook, bound to this checkout revision
@@ -585,6 +590,8 @@ class InteractiveController:
             return self._review_creation(arguments)
         if command == "/revise":
             return self._revise(arguments)
+        if command == "/delegate":
+            return self._delegate(arguments)
         if command == "/plan":
             if self.session["plan"] is None:
                 raise InteractiveError("there is no plan; start with /grill GOAL")
@@ -1263,6 +1270,34 @@ class InteractiveController:
         review = service._propose_locked(self.session, options["--from"],
             reason=options["--reason"], owner=owner, effect_reruns=effects)
         return replace(self._respond(render_review(review)), focus_orchestrator=True)
+
+    def _delegate(self, arguments: Sequence[str]) -> CommandResponse:
+        from .delegation import delegation_snapshot, render_delegation
+        if any(option in {"--from", "--reason", "--effects"} for option in arguments):
+            # Reuse the exact revision review and its stopped-owner/source checks.
+            # This command cannot apply a review or start the resulting work.
+            if not arguments or arguments[0] in {"apply", "recover"}:
+                raise InteractiveError("delegation review cannot apply; use /revise apply REVIEW_DIGEST")
+            return self._revise(arguments)
+        options, remaining, seen = dict(offset=0, limit=50), list(arguments), set()
+        task_id, as_json = None, False
+        while remaining:
+            option = remaining.pop(0)
+            if option == "--json" and option not in seen:
+                as_json = True
+            elif option in {"--offset", "--limit"} and option not in seen and remaining:
+                value = remaining.pop(0)
+                if not value.isascii() or not value.isdecimal() or len(value) > 9:
+                    raise InteractiveError("delegation page values must be bounded nonnegative integers")
+                options[option[2:]] = int(value)
+            elif not option.startswith("--") and task_id is None:
+                task_id = option
+            else:
+                raise InteractiveError("usage: /delegate [EXACT_TASK_ID] [--json] [--offset N] [--limit N]")
+            seen.add(option)
+        state, basis = self._pane_state()
+        report = delegation_snapshot(state, task_id=task_id, basis=basis, **options)
+        return replace(self._respond(json.dumps(report, indent=2, sort_keys=True) if as_json else render_delegation(report)), focus_orchestrator=True)
 
     def _overview(self, arguments: Sequence[str]) -> CommandResponse:
         from .overview import fleet_overview, render_overview
