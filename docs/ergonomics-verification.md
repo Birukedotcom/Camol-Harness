@@ -1,5 +1,56 @@
 # Ergonomics checkpoint verification
 
+## Process-intent full-suite checkpoint
+
+Frozen `2da1ee07d7aeee11f6ea98e08f65503b8eac325b` passed **1,265 tests in
+1,529.600 seconds on Python 3.12**. The completed log is
+`/tmp/camol-process-intents-full-py312.log`. This verifies the process-intent and
+fixture repairs recorded below; it does not retroactively change the failed
+`7c0ea467` result or cover the later VCS publication, uncertainty acknowledgment,
+or source-handoff changes. Those follow-ups require their own whole-suite gate.
+
+## Approved baseline source handoff — 2026-09-08
+
+The isolated `codex/v0-source-handoff` follow-up adds exact owner-reviewed,
+authenticated-encrypted baseline source export and independent receiver-side
+reconstruction. It binds the approved run/plan/source to an active adopted target
+generation and an exact destination, without granting execution or recording green
+readiness. It neither transports the package nor dispatches remote workers; later
+integration-head transfer and live target-side authorization remain open. See
+[source handoff scope](source-handoff.md).
+
+The first eight-test run had one fixture failure: mocking global `os.urandom`
+to forbid repeated encryption also prevented event UUID generation. The corrected
+fixture rejects cipher encryption while permitting decryption and UUID creation;
+production retry behavior was unchanged. The expanded source-handoff, source-binding,
+target and recovery groups passed **50 tests in 56.855 seconds on Python 3.12**
+and **50 in 56.543 seconds on modern Python 3.9**. Logs are
+`/tmp/camol-source-handoff-py312.log` and `-py39.log`.
+
+Adversarial cases include changed source/owner/authority, key and receipt tampering,
+target/path/expiry mismatch, target retirement during capture, lost event append
+with ciphertext-preserving retry, nonempty receiver output, hook traps and forged
+worker/readiness events. A real child CLI exports, receives and inspects the copy;
+another fixture makes the original checkout unavailable and executes a harmless
+proof script from the independently reconstructed repository. This does not prove
+remote execution or authorize a production workload.
+
+A fresh sdist/wheel was built and installed into
+`/tmp/camol-source-handoff-package.5sOYXAxo/venv`. Outside-checkout imports verified
+site-packages ownership and byte equality for **119 product modules**, with
+Textual/MCP/cryptography absent. Core source-handoff metadata imports passed before
+installing the optional cryptography dependency into that temporary environment.
+The installed 50-test group then passed in **65.328 seconds**, including the real
+child CLI; log `/tmp/camol-source-handoff-installed.log`. Installed command help,
+V1 runbook validation and `git diff --check` pass. No model, account, cloud target,
+global install or original main checkout was changed.
+
+The current-checkpoint overview, pane organization/layout/switcher, delegation,
+linked proposals and box-inspection group passed **61 tests in 62.496 seconds on
+Python 3.12**; log `/tmp/camol-source-handoff-pane-review.log`. This covers the
+implemented tmax/smux-inspired interfaces, not installation of either multiplexer
+or native provider acceptance.
+
 ## Offline box reader full-suite checkpoint
 
 Frozen `644a560575d68da3ecf464dc045a462213e1fa79` passed **847 tests** on

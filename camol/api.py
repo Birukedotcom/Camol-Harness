@@ -196,6 +196,39 @@ class Harness:
             raise StateTransitionError("stop embedded execution before acknowledging push uncertainty")
         return VCSPush(self.orchestrator, self._require_run()).acknowledge(proposal, **kwargs)
 
+    def propose_source_handoff(self, **kwargs):
+        from .source_handoff import propose
+        return propose(self.state(), **kwargs)
+
+    def export_source_handoff(self, proposal, *, by, review_digest, key, output):
+        from . import source_handoff
+        from .events import new_event
+        from .schema import canonical_digest
+        from .state import apply_event
+        from .recovery import RecoveryError, _separate
+        if self._running:
+            raise StateTransitionError("stop embedded execution before synchronous source handoff export")
+        state = self.state()
+        proposal = source_handoff.validate_proposal(proposal)
+        if review_digest != proposal["digest"] or by != state.get("approved_by"):
+            raise RecoveryError("source handoff requires exact owner approval")
+        prior = state.get("source_handoffs", {}).get(proposal["request_id"])
+        if prior is not None:
+            if canonical_digest(prior["proposal"]) != canonical_digest(proposal):
+                raise RecoveryError("source request identity names another package")
+            return prior  # Historical receipt, not a claim output still exists.
+        if len(state.get("source_handoffs", {})) >= source_handoff.MAX_EXPORTS:
+            raise RecoveryError("source handoff history is full")
+        _separate(output, (self.paths.state_dir, self.workspace))
+        receipt = source_handoff.export_source(proposal=proposal, by=by, review_digest=review_digest,
+            get_state=self.state, key=key, output=output, clock=self.orchestrator.clock)
+        current = self.state()
+        event = new_event(self._require_run(), source_handoff.EVENT, by, dict(proposal=proposal, receipt=receipt),
+                          occurred_at=self.orchestrator._now())
+        apply_event(current, dict(event, seq=current["last_seq"] + 1))
+        self.orchestrator.store.append(event, expected_seq=current["last_seq"])
+        return dict(proposal=proposal, receipt=receipt)
+
     @property
     def targets(self):
         from .targets import TargetRegistry

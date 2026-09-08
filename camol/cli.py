@@ -1063,6 +1063,36 @@ def command_interactive(args: argparse.Namespace) -> int:
     return run_line_ui(workspace, state_root=state_root, show_boot=not args.no_boot)
 
 
+def command_source_handoff(args: argparse.Namespace) -> int:
+    from .source_handoff import propose, receive_source
+    from .recovery import load_recovery_key
+    from datetime import datetime, timezone
+    if args.handoff_action == "receive":
+        result = receive_source(archive=Path(args.archive), key=load_recovery_key(path=Path(args.key_file)),
+            proposal=load_contract(args.proposal, max_bytes=65536), review_digest=args.review_digest,
+            target_id=args.target_id, generation=args.generation, by=args.by, output=Path(args.output))
+    else:
+        inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+        state, _, _ = inspector._cut(args.run_id)
+        if args.handoff_action == "plan":
+            result = propose(state, generation=args.generation, adoption_digest=args.adoption_digest,
+                destination_workspace=args.destination_workspace, request_id=args.request_id, by=args.by,
+                issued_at=datetime.now(timezone.utc).isoformat(), expires_at=args.expires_at)
+        elif args.handoff_action == "inspect":
+            records = state.get("source_handoffs", {})
+            result = records if args.request_id is None else records.get(args.request_id)
+            if result is None:
+                raise RecoveryError("unknown exact source handoff request")
+        else:
+            with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+                if harness.run_id != args.run_id:
+                    raise RecoveryError("source handoff requires the exact current run")
+                result = harness.export_source_handoff(load_contract(args.proposal, max_bytes=65536), by=args.by,
+                    review_digest=args.review_digest, key=load_recovery_key(path=Path(args.key_file)), output=Path(args.output))
+    _write_json(result)
+    return 0
+
+
 def command_recovery(args: argparse.Namespace) -> int:
     from .recovery import (export_workspace_recovery, generate_recovery_key,
                            load_recovery_key, restore_workspace_recovery, verify_workspace_recovery)
@@ -1598,6 +1628,34 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("--by")
     revise.add_argument("--digest", help="exact revision proposal digest being approved")
     revise.set_defaults(handler=command_revise)
+    handoff = subparsers.add_parser("source-handoff", help="review encrypted source copy to an adopted target; never execution authority")
+    handoff_actions = handoff.add_subparsers(dest="handoff_action", required=True)
+    for name in ("plan", "export", "receive", "inspect"):
+        operation = handoff_actions.add_parser(name)
+        if name != "receive":
+            operation.add_argument("--state-dir", required=True)
+            operation.add_argument("--db")
+            operation.add_argument("--run-id", required=True)
+        if name == "plan":
+            operation.add_argument("--generation", required=True)
+            operation.add_argument("--adoption-digest", required=True)
+            operation.add_argument("--destination-workspace", required=True)
+            operation.add_argument("--request-id", required=True)
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--expires-at", required=True)
+        elif name == "inspect":
+            operation.add_argument("--request-id")
+        else:
+            for flag in ("proposal", "by", "review-digest", "key-file", "output"):
+                operation.add_argument("--" + flag, required=True)
+            if name == "export":
+                operation.add_argument("--workspace", required=True)
+            else:
+                operation.add_argument("--archive", required=True)
+                operation.add_argument("--target-id", required=True)
+                operation.add_argument("--generation", required=True)
+        operation.set_defaults(handler=command_source_handoff)
+
     recovery = subparsers.add_parser("recovery", help="explicit encrypted workspace backup and reconstruction; never resume or purge authority")
     recovery_actions = recovery.add_subparsers(dest="recovery_action", required=True)
     keygen = recovery_actions.add_parser("keygen", help="create a private key directory; never display key bytes")

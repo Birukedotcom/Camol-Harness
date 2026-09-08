@@ -26,6 +26,7 @@ from .peer_telemetry import EVENTS as PEER_CALL_EVENTS, apply as apply_peer_call
 from .vcs import EVENT as VCS_EVENT, apply as apply_vcs
 from .vcs_observations import EVENTS as VCS_OBSERVATION_EVENTS, apply as apply_vcs_observation
 from .vcs_push import EVENTS as VCS_PUSH_EVENTS, apply as apply_vcs_push
+from .source_handoff import EVENT as SOURCE_HANDOFF_EVENT, apply as apply_source_handoff
 from .worker_enrollment import EVENTS as WORKER_ENROLLMENT_EVENTS, apply as apply_worker_enrollment
 from .worker_import import EVENT as WORKER_IMPORT_EVENT, apply as apply_worker_import
 from .worker_gateway import EVENTS as WORKER_GATEWAY_EVENTS, apply as apply_worker_gateway
@@ -93,6 +94,8 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
         apply_vcs_observation(next_state, event)
     elif event_type in VCS_PUSH_EVENTS:
         apply_vcs_push(next_state, event)
+    elif event_type == SOURCE_HANDOFF_EVENT:
+        apply_source_handoff(next_state, event)
     elif event_type == VCS_EVENT:
         apply_vcs(next_state, event)
     elif event_type in PEER_CALL_EVENTS:

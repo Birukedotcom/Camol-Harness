@@ -164,6 +164,11 @@ Uncertain publication can be explicitly acknowledged with `propose-push-ack` and
 `acknowledge-push`; this permits a separately reviewed new request without erasing
 the prior uncertainty or retrying automatically.
 
+`camol source-handoff plan`, `export`, `receive` and `inspect` support encrypted
+copy of an approved source baseline to an exact adopted target generation and
+destination. This verifies copied code, not remote worker readiness or execution.
+See [source handoff scope](docs/source-handoff.md).
+
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference
 readiness. `camol watch` supports approved durable polling of a normalized local

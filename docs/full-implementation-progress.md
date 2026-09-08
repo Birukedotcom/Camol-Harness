@@ -280,6 +280,14 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 
 ## Remaining product and validation gates
 
+The isolated `codex/v0-source-handoff` follow-up adds an encrypted, owner-reviewed
+approved-baseline package with target-generation and destination binding. Export
+revalidates source/adoption, independent receiving reconstructs exact Git/tree/file
+identity, and a lost export-event append can recover the original ciphertext.
+This provides source preparation, not remote transport or execution. Per-task
+integration-head handoff, target admission, dispatch and trusted result/accounting
+promotion still need their own gates; see [source handoff](source-handoff.md).
+
 The isolated `codex/v0-vcs-push` follow-up implements an exact completed-integration
 push proposal, owner approval, durable pre-effect intent, isolated object-only Git
 publication, expected-ref race protection and final readback. Unknown outcomes
