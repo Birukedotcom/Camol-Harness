@@ -24,7 +24,11 @@ The ergonomics wave adds a source-bound natural-goal creation wizard, exact
 command/oracle risk review, one-shot owned-model inference, bounded recent history,
 and a cancelled TUI refresh repair. Focused tests include a real two-box build with
 human task/final gates and authenticated loopback inference/crash fixtures. Its
-whole-suite/package/remote acceptance remains separate from those focused tests.
+exact `41d5824` whole suites passed 687 tests on both Python 3.9 and 3.12,
+plus a fresh installed wheel/terminal check. See
+[the ergonomics verification record](ergonomics-verification.md); hosted matrix
+acceptance remains separate, and the later fixture/performance changes need
+their own results.
 
 ## Acceptance ledger
 
