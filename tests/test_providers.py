@@ -58,6 +58,14 @@ class Completed:
     }).encode()
 
 
+class Help(Completed):
+    stdout = b"--tools --safe-mode --strict-mcp-config --mcp-config --setting-sources --disable-slash-commands --permission-prompts --max-turns --max-budget-usd --no-session-persistence --output-format"
+
+
+def fixture_runner(result):
+    return lambda argv, **kwargs: Help() if "--help" in argv else result
+
+
 class ProviderContractTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -114,7 +122,7 @@ class ProviderContractTests(unittest.TestCase):
             receipt = create_claude_capability(
                 self.profile, target_id="local:test", state_dir=self.state,
                 cwd=self.workspace, accept_spend=True, now=self.now,
-                runner=lambda *args, **kwargs: Completed(),
+                runner=fixture_runner(Completed()),
             )
         self.assertEqual(receipt.resolved_model, "claude-fable-5")
         self.assertEqual(receipt.cost_usd_micros, 2000)
@@ -130,7 +138,7 @@ class ProviderContractTests(unittest.TestCase):
 
         def runner(*args, **kwargs):
             observed.update(kwargs["env"])
-            return Completed()
+            return Help() if "--help" in args[0] else Completed()
 
         environment = {
             "PATH": str(self.bin),
@@ -156,26 +164,26 @@ class ProviderContractTests(unittest.TestCase):
         class Wrong(Completed):
             stdout = json.dumps({
                 "type": "result", "result": "CAMOL_READY", "total_cost_usd": 0,
-                "usage": {}, "modelUsage": {"claude-opus-5": {}},
+                "usage": {"input_tokens": 1, "output_tokens": 1}, "modelUsage": {"claude-opus-5": {}},
             }).encode()
         with patch.dict(os.environ, {"PATH": str(self.bin)}):
             with self.assertRaisesRegex(ProviderError, "outside the profile allowlist"):
                 create_claude_capability(
                     self.profile, target_id="local:test", state_dir=self.state,
                     cwd=self.workspace, accept_spend=True, now=self.now,
-                    runner=lambda *args, **kwargs: Wrong(),
+                    runner=fixture_runner(Wrong()), operation_id="wrong-model",
                 )
         class UnknownCost(Completed):
             stdout = json.dumps({
                 "type": "result", "result": "CAMOL_READY", "total_cost_usd": "unknown",
-                "usage": {}, "modelUsage": {"claude-fable-5": {}},
+                "usage": {"input_tokens": 1, "output_tokens": 1}, "modelUsage": {"claude-fable-5": {}},
             }).encode()
         with patch.dict(os.environ, {"PATH": str(self.bin)}):
             with self.assertRaisesRegex(ProviderError, "total_cost_usd"):
                 create_claude_capability(
                     self.profile, target_id="local:test", state_dir=self.state,
                     cwd=self.workspace, accept_spend=True, now=self.now,
-                    runner=lambda *args, **kwargs: UnknownCost(),
+                    runner=fixture_runner(UnknownCost()), operation_id="unknown-cost",
                 )
 
     def test_provider_probe_needs_both_existing_login_and_fresh_capability(self):
@@ -206,7 +214,7 @@ class ProviderContractTests(unittest.TestCase):
             create_claude_capability(
                 self.profile, target_id="local:test", state_dir=self.state,
                 cwd=self.workspace, accept_spend=True, now=self.now,
-                runner=lambda *args, **kwargs: Completed(),
+                runner=fixture_runner(Completed()),
             )
         outcome = probe.observe(context)
         self.assertEqual(outcome.result.status, "green", (outcome.result.to_dict(), outcome.facts))
