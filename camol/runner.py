@@ -27,7 +27,7 @@ from .schema import canonical_digest
 from .schema import parse_timestamp
 from .leases import effective_expiry
 from .usage import provider_cost_used
-from .provider_budget import ProviderBudgetError, budget_baseline
+from .provider_budget import ProviderBudgetError, ProviderBudgetPending, budget_baseline
 from .gates import GateError
 from .probes import AdapterBinaryProbe, ProbeContext
 from .capacity import CapacityError
@@ -48,6 +48,7 @@ class HarnessRunner:
         self._verification_lock = None
         self._handles: Dict[Tuple[str, str], WorkspaceHandle] = {}
         self._paused_tasks = set()
+        self._provider_turns = {}
         self.capacity = CapacityCoordinator(orchestrator, self.state_dir, broker=capacity_broker) if self.state_dir else None
 
     def close(self):
@@ -760,6 +761,10 @@ class HarnessRunner:
             self.orchestrator.heartbeat(run_id, assignment)
             state = self.orchestrator.state(run_id)
             task = state["tasks"][assignment["task_id"]]
+            if task.get("runtime_wait"):
+                self.orchestrator._emit(run_id, "PROVIDER_BUDGET_WAIT_CLEARED", dict(
+                    task_id=task["id"], agent_id=assignment["agent_id"], lease_id=assignment["lease_id"],
+                    wait_digest=task["runtime_wait"]["wait_digest"], reason="restart_recheck"))
             packet = self.orchestrator.context_packet(run_id, assignment)
             try:
                 execution_agent = self._execution_agent(state, assignment, execution_workspace)
@@ -770,7 +775,7 @@ class HarnessRunner:
                 packet["provider_policy"] = execution_agent["adapter"]["profile_snapshot"]
             cost_budget = self._provider_cost_remaining(state, execution_agent, task["id"], execution_workspace)
             try:
-                result = await adapter.execute_turn(
+                result = await self._tracked_provider_turn(adapter, run_id,
                     execution_agent,
                     assignment,
                     packet,
@@ -783,6 +788,12 @@ class HarnessRunner:
                 raise
             except CapacityError as error:
                 self._pause_assignment(run_id, assignment, "CAPACITY_EXHAUSTED", str(error))
+                return
+            except ProviderBudgetPending as error:
+                if await self._wait_for_provider_budget(run_id, assignment, error):
+                    continue
+                self._pause_assignment(run_id, assignment, "OPERATOR_ATTENTION",
+                    "outstanding provider reservations are not owned live invocations in this runner; reconciliation required")
                 return
             except ProviderBudgetError as error:
                 self._pause_assignment(run_id, assignment, "OPERATOR_ATTENTION", str(error))
@@ -1072,6 +1083,50 @@ class HarnessRunner:
             self.capacity.release_finished(run_id, processes_stopped=True)
         return {"salvaged": salvaged, "revoked": revoked}
 
+    async def _tracked_provider_turn(self, adapter, run_id, agent, assignment, packet, turn_number, **kwargs):
+        key = (run_id, assignment["task_id"], assignment["agent_id"], assignment["lease_id"], turn_number)
+        if key in self._provider_turns:
+            raise ProviderBudgetError("duplicate live provider turn ownership")
+        adapter.hosted_invocation_id = None
+        self._provider_turns[key] = adapter
+        try:
+            return await adapter.execute_turn(agent, assignment, packet, turn_number, **kwargs)
+        finally:
+            self._provider_turns.pop(key, None)
+
+    async def _wait_for_provider_budget(self, run_id, assignment, error):
+        keys = {(item["run_id"], item["task_id"], item["agent_id"], item["lease_id"], item["turn_number"])
+                for item in error.pending}
+        def owned():
+            return all(getattr(self._provider_turns.get((item["run_id"], item["task_id"], item["agent_id"],
+                       item["lease_id"], item["turn_number"])), "hosted_invocation_id", None) == item["invocation_id"]
+                       for item in error.pending)
+        if (not keys or any(key[0] != run_id or key[1] == assignment["task_id"] for key in keys)
+                or not owned()):
+            return False
+        pending = sorted((dict(item) for item in error.pending), key=lambda item: item["invocation_id"])
+        payload = dict(task_id=assignment["task_id"], agent_id=assignment["agent_id"],
+                       lease_id=assignment["lease_id"], code="BUDGET_RESERVED", pending=pending)
+        payload["wait_digest"] = canonical_digest(payload)
+        self.orchestrator._emit(run_id, "PROVIDER_BUDGET_WAITING", payload)
+        reason = "settlement_recheck"
+        try:
+            # No model turn, lease reissue or payment intent is created while
+            # waiting. The outer assignment loop continues readiness heartbeats.
+            while owned():
+                await asyncio.sleep(0.1)
+            return True
+        except asyncio.CancelledError:
+            reason = "cancelled"
+            raise
+        finally:
+            state = self.orchestrator.state(run_id)
+            task = state["tasks"][assignment["task_id"]]
+            if task.get("lease_id") == assignment["lease_id"] and task.get("runtime_wait", {}).get("wait_digest") == payload["wait_digest"]:
+                self.orchestrator._emit(run_id, "PROVIDER_BUDGET_WAIT_CLEARED", dict(
+                    task_id=assignment["task_id"], agent_id=assignment["agent_id"], lease_id=assignment["lease_id"],
+                    wait_digest=payload["wait_digest"], reason=reason))
+
     def _pause_assignment(self, run_id: str, assignment: Dict[str, Any], code: str, detail: str) -> None:
         state = self.orchestrator.state(run_id)
         task = state["tasks"][assignment["task_id"]]
@@ -1294,6 +1349,7 @@ def summary(state: Dict[str, Any]) -> Dict[str, Any]:
                 "turn_count": task["turn_count"],
                 "completed_step_ids": task["completed_step_ids"],
                 "blocker": task["blocker"],
+                **({"runtime_wait": task["runtime_wait"]} if task.get("runtime_wait") else {}),
             }
             for task_id, task in state["tasks"].items()
         },

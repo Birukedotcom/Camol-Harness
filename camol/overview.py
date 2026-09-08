@@ -33,7 +33,7 @@ def fleet_overview(state, *, attention=False, offset=0, limit=50, basis="ledger_
         dependencies = list(task["depends_on"])
         unmet = [name for name in dependencies if state["tasks"][name]["status"] != "succeeded"]
         blocker = task.get("blocker") or {}
-        waiting = task.get("waiting") or {}
+        waiting = task.get("waiting") or task.get("runtime_wait") or {}
         gate = task.get("gate_wait") or {}
         needs_attention = bool(blocker or waiting or gate or task["status"] in {"blocked", "waiting"})
         tasks.append(dict(task_id=task_id, status=task["status"], box_id=task.get("agent_id"),

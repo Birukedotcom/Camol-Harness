@@ -46,6 +46,7 @@ EVENT_TYPES = frozenset(
         "READINESS_RECORDED",
         "TASK_WAITING",
         "TASK_WAIT_CLEARED",
+        "PROVIDER_BUDGET_WAITING", "PROVIDER_BUDGET_WAIT_CLEARED",
         # M3 admission, capacity, and fenced lease lifecycle.
         "ADMISSION_RECORDED",
         "RESERVATION_RELEASED",
@@ -92,6 +93,7 @@ LEGACY_EVENT_TYPES = frozenset(
         "READINESS_RECORDED",
         "TASK_WAITING",
         "TASK_WAIT_CLEARED",
+        "PROVIDER_BUDGET_WAITING", "PROVIDER_BUDGET_WAIT_CLEARED",
         "ADMISSION_RECORDED",
         "RESERVATION_RELEASED",
         "TASK_LEASE_REJECTED",

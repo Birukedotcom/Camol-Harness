@@ -233,6 +233,7 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
         ceiling = reserve_hosted(journal, state_dir=self.state_dir, profile=profile,
             plan_digest=packet.get("run", {}).get("plan_digest"), requested_cents=ceiling,
             evidence_factory=reservation_evidence, baselines=getattr(self, "budget_baselines", ()))
+        self.hosted_invocation_id = invocation_id
         argv[argv.index("--max-budget-usd") + 1] = "{:.2f}".format(ceiling / 100)
         try:
             sandboxed = await self.sandbox_backend.run(

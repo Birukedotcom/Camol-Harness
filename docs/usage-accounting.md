@@ -63,10 +63,34 @@ recovery of the old budget.
 
 The scan is bounded (32 MiB of records across the selected lineage; 20,000 entries
 per run) and refuses corrupt, linked, inconsistent or unavailable journals. A
-held/exhausted allowance or busy accounting lock becomes visible operator
-attention without launching a provider or consuming another provider attempt.
-This initial conservative policy does not automatically wake a task paused by
-an in-flight hold when another call settles; explicit resume rechecks admission.
+known-exhausted allowance, unknown charge or busy accounting lock becomes visible
+operator attention without launching a provider or consuming another provider
+attempt. Pending intents must remain unresolved and reserve the exact allocated
+ceiling; a factory cannot record a smaller reservation or pretend it is settled.
+
+An allowance held by exact invocations still owned by this runner can now wait
+within its current lease. The ledger records `PROVIDER_BUDGET_WAITING` with each
+blocking run/task/worker/lease/turn and `PROVIDER_BUDGET_WAIT_CLEARED` before recheck.
+The task stays `running` with a visible `runtime_wait=BUDGET_RESERVED`; overview,
+box views and the switcher expose that substate. Existing heartbeats/readiness
+renewal continue. No additional attempt, turn or payment intent is consumed by
+the wait itself. Completion of a blocking invocation triggers fresh context,
+readiness and atomic budget admission, not an assumption that settlement was green.
+
+Only the current runner's in-memory ownership of those exact active invocations
+permits this automatic wait. Persisted pending files, an old PID, a lease from
+another run or a prior process lifetime are not live proof. Self-dependencies,
+unowned pending charges and unknown terminal outcomes require reconciliation.
+The active adapter must have published that exact invocation ID after reserving
+its intent; matching only run/task/lease/turn after a restart is insufficient.
+Cancellation clears the wait annotation, not the financial reservation. A resumed
+task clears the previous annotation and rechecks; it does not inherit prior live
+ownership. Busy-lock retry and unified reservation inspection remain separate gaps.
+For V6 provider-rate capacity, an already reserved call ID can expire during a
+long budget wait. Its recheck deliberately denies reuse rather than inventing a
+new debit; automatic renewal of a proven-unlaunched call remains an integration
+gap. The current automatic wake fixture covers the V4 execution loop, not that
+V6 long-window case or live hosted-model behavior.
 There is no automatic refund, unknown-charge reconciliation or journal deletion.
 Retain the `packets` tree and budget lock with the run's recovery state.
 

@@ -1677,6 +1677,7 @@ class InteractiveController:
                 "box_id": agent_id,
                 "status": task.get("status", agent.get("status", "idle")),
                 "task_id": task_id,
+                "runtime_wait": task.get("runtime_wait", {}).get("code"),
                 "connected": "yes" if agent_id in workspace_by_box else "no",
             })
         return boxes
@@ -1690,11 +1691,13 @@ class InteractiveController:
         if any(box.get("organization_error") for box in boxes):
             lines.append("WARNING: pane preferences unavailable; showing unorganized recorded boxes. No preferences were replaced.")
         for index, box in enumerate(boxes, 1):
-            mark = "!" if box["status"] in attention | {"unavailable"} else "■" if box.get("connected") == "yes" else "□"
+            mark = "!" if box["status"] in attention | {"unavailable"} or box.get("runtime_wait") else "■" if box.get("connected") == "yes" else "□"
             lines.append("{} {:>2} {:<18} {:<12} {}{}".format(mark, index, box["box_id"], box["status"], box["task_id"],
                 " [" + box["basis"] + "]" if box.get("basis") else ""))
             if box.get("pinned") or box.get("custom_group"):
                 lines.append("     {}{}".format("★ pinned " if box.get("pinned") else "", box.get("custom_group", "")))
+            if box.get("runtime_wait"):
+                lines.append("     runtime wait: " + box["runtime_wait"])
         return self._respond("\n".join(lines))
 
     def _box(self, arguments: Sequence[str]) -> CommandResponse:

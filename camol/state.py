@@ -19,6 +19,7 @@ from .schema import reject_unknown_fields, require_digest, require_string, parse
 from .workspace import SalvageReceipt
 from .source_binding import apply_source_binding, require_source_admission
 from .projection_copy import clone_projection
+from .budget_wait import EVENTS as BUDGET_WAIT_EVENTS, apply as apply_budget_wait
 
 
 def empty_state() -> Dict[str, Any]:
@@ -64,7 +65,9 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     if state["status"] == "superseded":
         raise ValueError("superseded run is sealed; continue its linked successor")
 
-    if event_type == "SOURCE_BASELINE_BOUND":
+    if event_type in BUDGET_WAIT_EVENTS:
+        apply_budget_wait(next_state, event)
+    elif event_type == "SOURCE_BASELINE_BOUND":
         apply_source_binding(next_state, event)
     elif event_type in CAPACITY_EVENTS:
         apply_capacity_event(next_state, event)
@@ -584,6 +587,9 @@ def apply_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
     else:
         raise ValueError("projection does not handle {}".format(event_type))
 
+    affected_task = next_state["tasks"].get(payload.get("task_id"))
+    if affected_task and affected_task["status"] not in {"leased", "running", "verifying"}:
+        affected_task.pop("runtime_wait", None)
     next_state["last_seq"] = event.get("seq", next_state["last_seq"] + 1)
     return next_state
 

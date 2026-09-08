@@ -21,16 +21,17 @@ def switch_snapshot(session, state, basis, organization=None):
     for box_id, agent in state["agents"].items():
         task_id = agent.get("task_id")
         task = state["tasks"].get(task_id, {})
-        attention = bool(task.get("waiting") or task.get("blocker") or task.get("gate_wait")
+        attention = bool(task.get("waiting") or task.get("runtime_wait") or task.get("blocker") or task.get("gate_wait")
                          or task.get("status") in {"blocked", "waiting"})
         rows.append(dict(key="box:" + box_id, box_id=box_id, label=box_id,
             group="attention" if attention else "workers", status=task.get("status", agent["status"]),
             pinned=box_id in pin_order, custom_group=organization["groups"].get(box_id, ""),
+            runtime_wait=task.get("runtime_wait", {}).get("code", ""),
             task_id=task_id or "unassigned", adapter=agent["adapter"]["kind"]))
     # Routing retains exact identities; labels alone are sanitized for display.
     redactor = Redactor()
     for row in rows:
-        for name in ("label", "status", "task_id", "adapter", "custom_group"):
+        for name in ("label", "status", "task_id", "adapter", "custom_group", "runtime_wait"):
             if name not in row:
                 continue
             row[name] = "".join(c if c.isprintable() else " " for c in redactor.text(row[name]))
@@ -44,12 +45,13 @@ def filter_rows(rows, query):
         raise ValueError("box search is limited to 256 characters")
     words = query.casefold().split()
     return [row for row in rows if all(word in " ".join(str(row.get(name, "")) for name in
-            ("label", "group", "custom_group", "status", "task_id", "adapter")).casefold() for word in words)]
+            ("label", "group", "custom_group", "status", "runtime_wait", "task_id", "adapter")).casefold() for word in words)]
 
 
 def row_label(row):
     return "{}{}{} | {} | {} | {} | {}".format("★ " if row.get("pinned") else "", row["group"],
-        " / " + row["custom_group"] if row.get("custom_group") else "", row["label"], row["status"], row["task_id"], row["adapter"])
+        " / " + row["custom_group"] if row.get("custom_group") else "", row["label"],
+        row["status"] + (" (" + row["runtime_wait"] + ")" if row.get("runtime_wait") else ""), row["task_id"], row["adapter"])
 
 
 MAX_ORDER = 1001

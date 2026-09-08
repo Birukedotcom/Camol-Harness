@@ -163,8 +163,12 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   import through detached build/evaluation/integration and final human acceptance.
   Mixed-provider UI launch is implemented with exact manifest review and durable
   deduplicated preflights and atomic shared worker-budget admission. Integrated
-  verification, automatic wake after a temporary budget hold, and unified live
-  reservation inspection/reconciliation remain open.
+  verification and unified live reservation inspection/reconciliation remain open.
+  Temporary budget holds now wake automatically only for exact invocations still
+  owned by the same runner, without another attempt or payment intent. Unknown,
+  stale, exhausted or busy-lock cases remain explicit operator attention.
+  V6 automatic renewal of an expired rate debit for a proven-unlaunched waiting
+  call remains open; the existing rate check fails closed instead of reusing it.
   `/revise` now reviews, applies and recovers a stopped source-bound ProductV3/V4/V5
   session through the kernel revision service, with independent execution approval
   and real detached successor build/final-acceptance tests. Legacy ProductV1/V2

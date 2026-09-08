@@ -159,6 +159,7 @@ class CodexCLIAdapter(ProcessAgentAdapter):
             ceiling = reserve_hosted(journal, state_dir=self.state_dir, profile=profile,
                 plan_digest=packet.get("run", {}).get("plan_digest"), requested_cents=ceiling,
                 evidence_factory=reservation_evidence, baselines=getattr(self, "budget_baselines", ()))
+            self.hosted_invocation_id = invocation_id
         self.sandbox_backend.max_capture_bytes = max(self.sandbox_backend.max_capture_bytes, 16 << 20)
         try:
             process = await self.sandbox_backend.run(argv, cwd=box, policy=self.sandbox_policy,

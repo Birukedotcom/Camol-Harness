@@ -684,7 +684,7 @@ class CamolApp(App):
         self._visible_box_start = start
         visible_boxes = boxes[start:start + page_size]
         for index, box in enumerate(visible_boxes, 1):
-            mark = "!" if box["status"] in {"blocked", "waiting"} else "■" if box.get("connected") == "yes" else "□"
+            mark = "!" if box["status"] in {"blocked", "waiting"} or box.get("runtime_wait") else "■" if box.get("connected") == "yes" else "□"
             shortcut = "Alt+{}".format(index)
             selected = ">" if self.in_box and self.selected == box["box_id"] else ""
             items.append("{}{}{} {}:{}({})".format(selected, "★" if box.get("pinned") else "", mark, index, box["box_id"], shortcut))

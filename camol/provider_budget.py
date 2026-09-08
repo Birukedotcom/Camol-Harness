@@ -22,6 +22,14 @@ class ProviderBudgetError(AdapterError):
     pass
 
 
+class ProviderBudgetPending(ProviderBudgetError):
+    """Potentially recoverable only while these exact invocations are owned/live."""
+
+    def __init__(self, pending):
+        super().__init__("shared provider budget is exhausted by outstanding invocations; settlement may free capacity")
+        self.pending = tuple(dict(item) for item in pending)
+
+
 def budget_baseline(state):
     records = _trusted_receipts(state.get("evidence", {}).values())
     legacy, _ = _legacy_receipts(state.get("evidence", {}).values(), records)
@@ -101,6 +109,8 @@ def _journals(root, run_id, allowance):
                 continue
             intent = _read(path, allowance)
             reserved = _receipt(intent, run_id)
+            if reserved.provenance != "unknown" or reserved.outcome != "unknown" or not reserved.reserved_cost_usd_micros:
+                raise ProviderBudgetError("provider intent must reserve an unresolved positive ceiling")
             if intent["binding"]["task_id"] != task.name:
                 raise ProviderBudgetError("provider journal task directory differs from its subject")
             outcome_path = path.with_suffix(".observed.json")
@@ -175,7 +185,8 @@ def reserve_hosted(journal, *, state_dir, profile, plan_digest, requested_cents,
         if len(baseline_by_run) != len(baselines):
             raise ProviderBudgetError("duplicate provider budget baseline runs")
         baseline_by_run.setdefault(run_id, dict(records=[], other_cost=0, inherited_unknown=False))
-        total = task_total = 0
+        total = task_total = pending_total = pending_task_total = 0
+        pending = []
         allowance = [32 << 20]
         for subject, baseline in baseline_by_run.items():
             require_identifier(subject, "budget ancestor")
@@ -202,12 +213,28 @@ def reserve_hosted(journal, *, state_dir, profile, plan_digest, requested_cents,
                 total += record.cost_charge
                 if subject == run_id and record.task_id == task_id:
                     task_total += record.cost_charge
+                if subject == run_id and not terminal and record.cost_charge:
+                    pending_total += record.cost_charge
+                    if record.task_id == task_id:
+                        pending_task_total += record.cost_charge
+                    pending.append({name: getattr(record, name) for name in
+                                    ("invocation_id", "run_id", "task_id", "agent_id", "lease_id", "turn_number")})
         ceiling = min(requested_cents, profile.max_turn_usd_cents,
                       (profile.max_run_usd_cents * 10000 - total) // 10000,
                       (profile.max_task_usd_cents * 10000 - task_total) // 10000)
         if ceiling <= 0:
+            possible = min(requested_cents, profile.max_turn_usd_cents,
+                (profile.max_run_usd_cents * 10000 - total + pending_total) // 10000,
+                (profile.max_task_usd_cents * 10000 - task_total + pending_task_total) // 10000)
+            if pending and possible > 0:
+                raise ProviderBudgetPending(pending)
             raise ProviderBudgetError("shared provider budget is exhausted or held by outstanding invocations")
-        journal.reserve(evidence_factory(ceiling))
+        evidence = evidence_factory(ceiling)
+        reserved = _receipt(journal._payload(evidence), run_id)
+        if (reserved.provenance != "unknown" or reserved.outcome != "unknown"
+                or reserved.reserved_cost_usd_micros != ceiling * 10000):
+            raise ProviderBudgetError("provider intent must reserve the exact allocated unresolved ceiling")
+        journal.reserve(evidence)
         return ceiling
     except ProviderBudgetError:
         raise

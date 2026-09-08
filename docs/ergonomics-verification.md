@@ -1,5 +1,21 @@
 # Ergonomics checkpoint verification
 
+## Offline box reader full-suite checkpoint
+
+Frozen `644a560575d68da3ecf464dc045a462213e1fa79` passed **847 tests** on
+Python 3.12 in **565.622 seconds** and Python 3.9 in **626.407 seconds**.
+Together with its prior fresh sdist/wheel and installed-terminal checks, this
+clears that development checkpoint's local gate. `codex/v0-next` was fast-forwarded
+to it without modifying the user's installed environment or original main checkout.
+Later pins/groups and budget-wake changes are not covered by this result.
+
+## Pane organization full-suite checkpoint
+
+Frozen `9c88a9d82cd721fccd168d79ea1a171924bb0326` passed **856 tests** on
+Python 3.12 in **651.788 seconds**. Its focused dual-runtime and fresh installed
+package checks are recorded below. This is not a full Python 3.9 result for that
+commit, nor evidence for the later budget-wake implementation.
+
 ## Pane-switcher full-suite checkpoint
 
 Frozen `4df9a3b4037c3c3cee912408f23bdcbcceb413ee` passed the full 834-test suite
@@ -187,3 +203,33 @@ test and two actual PTY tests for boot, box search and Ctrl+C. No model, provide
 account or remote host was used. Whole-suite runs at frozen predecessor
 `644a560575d68da3ecf464dc045a462213e1fa79` remain separate pending evidence;
 they do not cover this successor. Tiling and durable messaging remain open.
+
+## Within-lease provider-budget waits (development checkpoint)
+
+The final budget-wait, shared admission, native Claude/Codex adapter and usage
+group passed **52 tests** on Python 3.12 (**23.145 seconds**) and Python 3.9
+(**24.620 seconds**). Seven new tests cover replay/clear identity, stale/self/foreign
+subjects, exact physical invocation ownership, cancellation, recoverable versus
+known-exhausted holds, exact pending ceilings and a real local N-box execution
+loop with fixture budget reservations. That fixture completes with one attempt
+per task, no duplicate invocation IDs, matching replay and visible wait metadata.
+It uses ProcessAgentAdapter with injected budget reservations, not a paid model.
+
+An earlier broader 93-test runner/resilience/adapter/view group passed on both
+runtimes before the final exact-intent and physical-invocation hardening. A
+53-test capacity/UI/actual-terminal group also passed on Python 3.12. These are
+bounded integration checks, not a substitute for the final frozen full suite.
+
+The final source distribution was rebuilt into a wheel and installed outside the
+source checkout. **19 installed budget/admission checks passed in 14.725 seconds**,
+including the multi-process reservation race and full local wake-up fixture.
+The initial ad-hoc stdin-based package test could not bootstrap multiprocessing
+children; rerunning from an actual guarded script fixed the test launcher. No
+product assertion was waived. No live provider/account/cloud request was used.
+
+Pending waits preserve the current lease and get no payment intent until fresh
+atomic admission succeeds. Exact invocation IDs must be published by the active
+adapter after reservation; merely matching a logical turn after a restart does
+not establish ownership. Unknown, unowned, busy-lock and exhausted cases remain
+operator attention. V6 renewal of an expired rate debit for a proven-unlaunched
+call remains a documented integration gap and must not be called completed.
