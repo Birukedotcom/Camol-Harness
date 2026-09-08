@@ -161,6 +161,44 @@ Use profiles to select a concrete hypothesis, then compare fixed tasks/condition
 through the benchmark campaign. The profiler deliberately makes no automatic
 savings, causation, quality or promotion claim.
 
+### Scoped activity counts and timing coverage
+
+Command and tool-request identities now include run, task, box, lease and producer,
+not just a provider-local invocation/tool ID. Identical retries with the same scoped
+identity count once; conflicting data for that identity is rejected rather than
+silently taking the first row. IDs reused by different boxes/leases do not erase
+each other's activity. Tool results do not add a second request count.
+
+When a local invocation/tool ID is absent, an explicit evidence ID can deduplicate
+the row. Without either identity, each row remains a separately counted unbound
+observation: equal content is not proof of a retry. `activity_identity` reports
+unbound counts and missing subject coverage. `coverage.activity_identity_incomplete`
+marks such reports. Counting unbound command rows may increase totals compared with
+older reports that omitted them; the persisted evidence is unchanged.
+
+`command_timing` separates known and unknown command intervals and counts missing
+timestamps, invalid timestamps and clock regressions. Valid timestamps use the
+shared timezone-aware parser, including `Z` on Python 3.9. A backward clock interval
+is unknown, not a measured zero-duration command. Naive timestamps, unsupported
+precision and UTC conversion outside Python's date range are also unknown.
+`command_duration_ms` is the sum of known intervals
+plus measured debugger-command durations; consult `coverage.unknown_command_timing`
+before treating it as complete. The same rule applies to verifier duration.
+The existing invocation `duration_coverage_complete` field concerns provider/legacy
+invocation coverage, not this separate command coverage.
+
+These are counts of recorded `EXECUTED` evidence. Ordinary worker reports remain
+`UNVERIFIED` and are excluded, even when they contain invocation IDs or claimed
+costs. `activity_provenance` groups
+command and tool-request evidence by its recorded producer and keeps debugger
+receipt commands separate. It exposes adapter/verifier/worker labels without
+promoting a label into independently authenticated provenance. Counts are not CPU time,
+exclusive wall time, proof of external effects or provider billing. The report
+explicitly sets `activity_is_reported_evidence_not_provider_billing`; provider receipt
+deduplication, budget reservations, unknown cost handling and token charges are
+unchanged. Command arguments, output bodies and malformed timestamp contents are
+not copied into the report. Full authorized evidence remains in the ledger/archive.
+
 Remote control-plane calls have a separate content-free local SQLite audit.
 `camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` reports retained
 per-command/status call counts, local duration and protocol byte measurements,

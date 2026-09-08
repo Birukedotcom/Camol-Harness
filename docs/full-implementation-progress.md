@@ -52,6 +52,12 @@ it is not the full build/refine/recover/human-acceptance gate. Executing the shi
 native example's verifier confirms its normal-newline behavior without a provider
 call; its runbook and spending limits remain unchanged.
 
+The `codex/v0-usage-activity` review repairs reporting collisions between boxes that
+reuse local invocation/tool IDs, rejects conflicting duplicates, and surfaces
+missing/invalid/regressing command timing instead of reporting measured zeros.
+Unbound activity remains explicitly incomplete. Provider billing/reservations and
+token accounting are unchanged; see [activity coverage](usage-accounting.md#scoped-activity-counts-and-timing-coverage).
+
 The isolated recovery sequence follows the pane/peer/cancellation checkpoints:
 ordinary archive boundary, encrypted captured-workspace recovery, then
 `codex/v0-run-recovery` for owner-reviewed completed-run evidence and code.

@@ -8,7 +8,7 @@ from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-from .schema import canonical_digest, require_identifier, require_non_negative_int, require_schema_header, require_timestamp
+from .schema import canonical_digest, parse_timestamp, require_identifier, require_non_negative_int, require_schema_header, require_timestamp
 
 
 class UsageError(ValueError):
@@ -284,6 +284,102 @@ def _measure(metrics: Dict[str, Any], record: UsageRecord) -> None:
     metrics["cache_creation_tokens"] += record.cache_creation_tokens or 0
 
 
+def _activity_report(evidence):
+    """Count scoped recorded activity, without treating command claims as bills."""
+    commands, tools, seen_commands, seen_tools = 0, {}, {}, {}
+    duration, evaluator_duration = 0, 0
+    timing = dict(known_commands=0, unknown_commands=0, missing_timestamps=0,
+                  invalid_timestamps=0, clock_regressions=0)
+    identities = dict(unbound_commands=0, unbound_tool_requests=0,
+                      incomplete_subject_commands=0, incomplete_subject_tool_requests=0)
+    provenance = dict(command_producers={}, tool_request_producers={})
+
+    def scope(item):
+        values = tuple(item.get(name) for name in ("run_id", "task_id", "agent_id", "lease_id", "producer"))
+        for value in values:
+            if value is not None:
+                require_identifier(value, "activity subject")
+        return values
+
+    def identity(item, data, ordinal, *, tool=False):
+        subject = scope(item)
+        invocation, tool_id = data.get("invocation_id"), data.get("tool_use_id")
+        for value in ((invocation, tool_id) if tool else (invocation,)):
+            if value is not None:
+                require_identifier(value, "activity local identifier")
+        if invocation is not None and (not tool or tool_id is not None):
+            return ("local", subject, invocation, tool_id if tool else None), False, any(value is None for value in subject)
+        evidence_id = item.get("evidence_id")
+        if evidence_id is not None:
+            require_identifier(evidence_id, "activity evidence ID")
+            return ("evidence", subject, evidence_id), False, any(value is None for value in subject)
+        # Equal content is not identity. Two unbound rows may be different calls.
+        return ("unbound", ordinal), True, any(value is None for value in subject)
+
+    def remember(seen, key, data):
+        digest = canonical_digest(data)
+        if key in seen:
+            if seen[key] != digest:
+                raise UsageError("conflicting recorded activity for one scoped identity")
+            return False
+        seen[key] = digest
+        return True
+
+    for ordinal, item in enumerate(evidence):
+        if item.get("epistemic_status") != "EXECUTED" or item.get("kind") not in ("command", "tool_call"):
+            continue
+        data = item.get("data", {})
+        if not isinstance(data, dict):
+            raise UsageError("recorded activity data must be an object")
+        if item["kind"] == "tool_call":
+            if data.get("phase") != "request":
+                continue
+            key, unbound, incomplete = identity(item, data, ordinal, tool=True)
+            if not remember(seen_tools, key, data):
+                continue
+            name = data.get("tool")
+            if name is None or name == "":
+                name = "unknown"
+            if not isinstance(name, str) or len(name) > 256 or not name.isprintable():
+                raise UsageError("invalid bounded tool label")
+            identities["unbound_tool_requests"] += unbound
+            identities["incomplete_subject_tool_requests"] += incomplete
+            producer = item.get("producer") or "unattributed"
+            provenance["tool_request_producers"][producer] = provenance["tool_request_producers"].get(producer, 0) + 1
+            tools.setdefault(name, dict(calls=0, duration_ms=None))["calls"] += 1
+            continue
+        key, unbound, incomplete = identity(item, data, ordinal)
+        if not remember(seen_commands, key, data):
+            continue
+        identities["unbound_commands"] += unbound
+        identities["incomplete_subject_commands"] += incomplete
+        commands += 1
+        producer = item.get("producer") or "unattributed"
+        provenance["command_producers"][producer] = provenance["command_producers"].get(producer, 0) + 1
+        start, finish = data.get("started_at"), data.get("finished_at")
+        reason = None
+        if start is None or finish is None:
+            reason = "missing_timestamps"
+        else:
+            try:
+                delta = (parse_timestamp(finish, "command finish") - parse_timestamp(start, "command start")).total_seconds()
+                if delta < 0:
+                    reason = "clock_regressions"
+            except (ValueError, OverflowError):
+                reason = "invalid_timestamps"
+        if reason is not None:
+            timing["unknown_commands"] += 1
+            timing[reason] += 1
+        else:
+            elapsed = round(delta * 1000)
+            timing["known_commands"] += 1
+            duration += elapsed
+            if item.get("producer") == "verifier":
+                evaluator_duration += elapsed
+    return dict(commands=commands, tools=tools, command_duration_ms=duration,
+                evaluator_duration_ms=evaluator_duration, timing=timing, identities=identities, provenance=provenance)
+
+
 def usage_report(events: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     """Build a deterministic content-free usage/latency report from a run ledger.
 
@@ -354,33 +450,7 @@ def usage_report(events: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
         amount = sum(require_non_negative_int(turn[name], "reported " + name) for name in ("input_tokens", "output_tokens"))
         for metrics in (totals, groups["by_task"].setdefault(turn["task_id"], _empty_metrics()), groups["by_box"].setdefault(turn["agent_id"], _empty_metrics()), groups["by_model"].setdefault("worker-reported", _empty_metrics()), groups["by_phase"].setdefault("worker", _empty_metrics())):
             metrics["worker_reported_tokens"] += amount
-    tools: Dict[str, Dict[str, Any]] = {}
-    seen_tools = set()
-    seen_commands = set()
-    command_duration = 0
-    evaluator_duration = 0
-    commands = 0
-    for item in evidence:
-        if item.get("epistemic_status") != "EXECUTED":
-            continue
-        data = item.get("data", {})
-        invocation = data.get("invocation_id")
-        if item.get("kind") == "command" and invocation and invocation not in seen_commands:
-            seen_commands.add(invocation)
-            commands += 1
-            start, finish = data.get("started_at"), data.get("finished_at")
-            if start and finish:
-                elapsed = max(0, round((datetime.fromisoformat(finish) - datetime.fromisoformat(start)).total_seconds() * 1000))
-                command_duration += elapsed
-                if item.get("producer") == "verifier":
-                    evaluator_duration += elapsed
-        if item.get("kind") == "tool_call":
-            identity = (invocation, data.get("tool_use_id"))
-            if data.get("phase") != "request" or identity in seen_tools:
-                continue
-            seen_tools.add(identity)
-            name = data.get("tool") or "unknown"
-            tools.setdefault(name, {"calls": 0, "duration_ms": None})["calls"] += 1
+    activity = _activity_report(evidence)
     debug_receipts = {}
     debugger_duration = 0
     debugger_commands = 0
@@ -407,12 +477,17 @@ def usage_report(events: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     totals["inherited_unknown_usage"] = inherited.get("unknown_usage", False)
     totals["accounted_tokens"] = totals["provider_observed_tokens"] + totals["worker_reported_tokens"] + totals["reserved_unknown_tokens"] + inherited["accounted_tokens"]
     totals["accounted_cost_usd_micros"] = totals["observed_cost_usd_micros"] + totals["reserved_unknown_cost_usd_micros"] + inherited["provider_cost_usd_micros"]
+    activity["timing"]["known_commands"] += debugger_commands
+    activity["provenance"]["debugger_receipt_commands"] = debugger_commands
     return {
         "schema": "camol.usage_report", "schema_version": 1,
         "run_id": next(iter(run_ids), None), "event_count": len(ordered),
         "source_digest": canonical_digest(ordered), "totals": totals, **groups,
-        "tools": tools, "commands": commands + debugger_commands, "command_duration_ms": command_duration + debugger_duration,
-        "evaluator_duration_ms": evaluator_duration,
+        "tools": activity["tools"], "commands": activity["commands"] + debugger_commands,
+        "command_duration_ms": activity["command_duration_ms"] + debugger_duration,
+        "evaluator_duration_ms": activity["evaluator_duration_ms"],
+        "command_timing": activity["timing"], "activity_identity": activity["identities"],
+        "activity_provenance": activity["provenance"],
         "debugger_duration_ms": debugger_duration, "debugger_commands": debugger_commands,
         "capacity_call_reservations": sum(event.get("type") == "CAPACITY_CALL_RESERVED" for event in ordered),
         "retry_events": sum(event.get("type") == "TASK_RETRY_SCHEDULED" for event in ordered),
@@ -422,5 +497,8 @@ def usage_report(events: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
                      "legacy_identity_incomplete": bool(totals["unbound_legacy_invocations"]),
                      "duration_coverage_complete": not bool(totals["unknown_duration_invocations"] or turns),
                      "duration_is_sum_not_wall_time": True,
+                     "unknown_command_timing": bool(activity["timing"]["unknown_commands"]),
+                     "activity_identity_incomplete": any(activity["identities"].values()),
+                     "activity_is_reported_evidence_not_provider_billing": True,
                      "tool_latency_available": False},
     }

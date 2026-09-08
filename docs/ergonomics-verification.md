@@ -1933,3 +1933,47 @@ Textual/recovery/TLS coverage enabled and the billable Claude live opt-in explic
 disabled. A process-scoped idle-sleep assertion lasts at most 2,400 seconds. The
 result is pending, not green; observe the same process to completion. A subsequent
 Python 3.12 whole gate for these latest target changes is also still required.
+
+## Scoped usage activity review — 2026-09-08
+
+The isolated `codex/v0-usage-activity` follow-up reproduces incorrect activity
+deduplication: two boxes using the same local invocation or tool ID were counted
+as one, missing local tool IDs collapsed unrelated requests, changed receipts
+silently used the first value, and valid `Z` command times failed on Python 3.9.
+The four initial regressions failed against the predecessor on both runtime lines.
+Only `camol/usage.py` changes in the product; stored events, provider billing,
+budget reservations and task transition policy are unchanged.
+
+Activity now uses scoped identities and explicit unbound/unknown coverage. Command
+clock regressions are not measured zero duration; conflicting scoped receipts are
+rejected. Producer labels remain evidence metadata, not independent authentication.
+Ordinary worker command claims remain `UNVERIFIED` and are excluded from executed
+activity and billing. A real local N-box run, followed by reopen and archive replay,
+checks that distinction. Its first assertion incorrectly expected those worker
+claims to be counted; both runtimes rejected that assertion, and inspection of
+the normal worker-ingestion path confirmed the test was wrong. The corrected
+10-test activity group passed in **10.501 seconds on Python 3.12** and **10.409
+seconds on modern Python 3.9**.
+
+The expanded 59-test usage/diagnostics/native-adapter/refinement/recovery group
+passed in **60.395 seconds on Python 3.12** and **59.784 seconds on modern Python
+3.9**. Adding the real N-box test gave **60 tests in 72.951 seconds** and **60 in
+72.271 seconds**, respectively. A subsequent boundary check reproduced an
+`OverflowError` when a year-0001 timestamp with an offset converts outside Python's
+UTC date range. Both minimum and maximum date-boundary cases now have regression
+coverage; reporting classifies them as invalid timing rather than crashing. This
+does not relax validation of provider charges.
+
+The corrected package was built from an sdist and installed without dependencies
+into `/tmp/camol-usage-activity-package.7KNFAfYq/venv`. Before loading test fixtures,
+isolated imports from outside the checkout confirmed site-packages ownership and
+byte equality for all **112 product modules**; Textual, MCP and cryptography were
+absent. Final source groups passed **60 tests in 71.748 seconds on Python 3.12**
+and **60 in 71.529 seconds on modern Python 3.9**, including both UTC overflow
+boundaries. Logs: `/tmp/camol-usage-activity-overflow-py312.log` and `-py39.log`.
+The installed wheel passed the same **60 tests in 72.507 seconds**; log:
+`/tmp/camol-usage-activity-installed.log`. Installed `camol --help` and the V1 example
+validation succeeded. `git diff --check` passes and main remains clean/unchanged.
+The prior `f284e13` modern-Python-3.9 whole-suite process remains in flight; it does
+not include this usage fix. No latest whole-suite gate, live provider acceptance,
+global installation or main merge is claimed by these targeted checks.
