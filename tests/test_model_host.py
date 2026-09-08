@@ -29,7 +29,7 @@ def stage(name):
     with os.fdopen(fd, 'w') as handle:
         json.dump({'pid': os.getpid(), 'last_phase': name, 'stages': stages}, handle)
 stage('python_started')
-import http.server, signal, sys
+import http.server, signal, socketserver, sys
 from pathlib import Path
 stage('imports_ready')
 args = sys.argv[1:]
@@ -54,17 +54,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers()
         try: self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError): pass
-original_getfqdn = http.server.socket.getfqdn
-def observed_getfqdn(*args, **kwargs):
-    stage('before_getfqdn')
-    result = original_getfqdn(*args, **kwargs)
-    stage('after_getfqdn')
-    return result
-http.server.socket.getfqdn = observed_getfqdn
 class FixtureServer(http.server.HTTPServer):
     def server_bind(self):
         stage('before_bind')
-        super().server_bind()
+        # This numeric-loopback fixture has no hostname contract. HTTPServer's
+        # default server_bind performs getfqdn and can stall on external DNS.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = 'localhost'
+        self.server_port = self.server_address[1]
         stage('bound')
     def server_activate(self):
         super().server_activate()
@@ -237,6 +234,18 @@ class ModelHostTests(unittest.TestCase):
         with socket.socket() as sock:
             self.assertNotEqual(sock.connect_ex(("127.0.0.1", plan.port)), 0)
         self.assertEqual(len([e for e in self.host.events(plan.digest()) if e["type"] == "MODEL_HOST_LOAD_INTENT"]), 1)
+
+    def test_numeric_loopback_fixture_load_never_requires_dns(self):
+        self.executable.write_text(self.executable.read_text().replace(
+            "stage('imports_ready')", "stage('imports_ready')\n"
+            "def forbidden_dns(*args, **kwargs):\n"
+            "    raise AssertionError('loopback fixture must not resolve hostnames')\n"
+            "http.server.socket.getfqdn = forbidden_dns\n"))
+        plan = self.plan()
+        self.approved(plan)
+        loaded = self.host.load(plan.digest(), "owner", operation_id="load-no-dns")
+        self.assertEqual(loaded["status"], "loaded", dict(loaded, fixture_stage=self.fixture_stage(plan)))
+        self.assertEqual(loaded["loaded"], "observed")
 
     def test_input_substitution_and_busy_port_never_spawn(self):
         plan = self.plan()
