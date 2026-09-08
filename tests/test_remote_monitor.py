@@ -170,6 +170,12 @@ class RemoteMonitorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RemoteMonitorCLITests(unittest.TestCase):
+    def test_construct_after_a_closed_loop_and_reuse_across_sequential_loops(self):
+        asyncio.run(asyncio.sleep(0))
+        monitor = RemoteMonitor(FakeClient())
+        self.assertEqual(asyncio.run(monitor.refresh())["run_id"], "run")
+        self.assertEqual(asyncio.run(monitor.refresh("box-001"))["selected_box"], "box-001")
+
     def test_cli_opens_monitor_and_rejects_mutation_options_before_client_creation(self):
         from camol.cli import main
         target = profile().to_dict()

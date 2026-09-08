@@ -1268,3 +1268,43 @@ Whole-suite verification for this monitor checkpoint is still open; the precedin
 placement suites were confirmed live and continue on their exact original handles.
 They must be collected before claiming their gates, and their results do not
 substitute for a later full monitor checkpoint. No paid/live-host gate is implied.
+
+## Owner-side remote mailbox relay (2026-09-08)
+
+The isolated `codex/v0-remote-mailbox` branch exposes the existing lease-scoped
+mailbox through explicitly allowed SSH control commands and an embeddable
+observe/review/send API. The target-profile digest wraps the remote observation;
+the message intent freezes owner, target, body, correlation, TTL and lease subject.
+Sending requires exact-intent approval. The remote kernel retains its existing
+generation checks, bounded queue and request-ID deduplication. Generic CLI sending
+requires explicit mutation flags. Legacy omitted allowlists keep their previous
+read-only set and do not acquire mailbox permissions on upgrade.
+
+The initial seven real local-bridge tests passed in 21.487 seconds. The expanded
+52-test integration group then failed: Python 3.12 had one error, Python 3.9 two.
+The revoked-lease fixture omitted its reason's task ID, exposing that the public
+revocation method could append an unreplayable event before rejecting it. It now
+checks the reason binding before append, like launch rejection; the regression
+requires an unchanged ledger after a bad call. The valid revocation uses the exact
+task/box and proves that a later message cannot reuse its lease.
+
+The second failure exposed Python 3.9's eager event-loop binding in the new
+monitor lock. Monitor construction is now loop-independent; its lock is created
+inside refresh, and sequential reuse on a new event loop is tested. Simultaneous
+reuse across different loops is refused while a refresh owns the lock. This fix
+is required by the broader integration evidence, not established by the earlier
+isolated monitor test result.
+
+Expanded tests also check target/profile drift, malformed observations, foreign
+inbox records, missing approval, changed-body request reuse, owner-policy denial,
+draining controllers, lost post replies, explicit uncertainty reconciliation,
+deduplication after reconnect, and no delivery/consumption/success claim from a
+queued message. A lost reply leaves one remote message and blocks another mutation
+until the owner inspects/reconciles; exact retry returns that original record.
+No actual SSH host, user credential, hosted model or provider quota was used.
+
+The predecessor placement product `8f4e557bf0b4598e73dfc064f640c831c0ffdc8c`
+finished both full suites: **1,077 tests in 924.594 seconds on Python 3.12**, and
+**1,010.792 seconds on Python 3.9** with three optional skips. Those are earlier
+checkpoint results, not proof for the later monitor or mailbox additions. Final
+source, installed-package and composed full-suite gates follow this checkpoint.

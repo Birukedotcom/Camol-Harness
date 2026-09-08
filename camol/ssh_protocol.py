@@ -16,8 +16,9 @@ from .json_contracts import decode_contract
 
 REQUEST_LIMIT = 60 * 1024
 RESPONSE_LIMIT = 8 * 1024 * 1024
-READ_COMMANDS = frozenset({"ping", "status", "boxes", "box", "plan", "events", "acceptance", "watch-inspect"})
-MUTATING_COMMANDS = frozenset({"approve", "drain", "resume", "stop", "force-stop", "accept", "gate-approve", "watch-create", "watch-schedule", "watch-stop", "watch-reopen"})
+DEFAULT_READ_COMMANDS = frozenset({"ping", "status", "boxes", "box", "plan", "events", "acceptance", "watch-inspect"})
+READ_COMMANDS = DEFAULT_READ_COMMANDS | {"box-observe", "box-inbox"}
+MUTATING_COMMANDS = frozenset({"approve", "drain", "resume", "stop", "force-stop", "accept", "gate-approve", "watch-create", "watch-schedule", "watch-stop", "watch-reopen", "box-message"})
 ALL_COMMANDS = READ_COMMANDS | MUTATING_COMMANDS
 REMOTE_COMMAND = "camol-ssh-bridge"
 
@@ -133,7 +134,7 @@ class SSHTarget:
     plan_digest: str
     owner: str
     bridge_identity: dict
-    allowed_commands: tuple = tuple(sorted(READ_COMMANDS))
+    allowed_commands: tuple = tuple(sorted(DEFAULT_READ_COMMANDS))
 
     def __post_init__(self):
         for field in ("name", "target_id", "run_id", "owner"):

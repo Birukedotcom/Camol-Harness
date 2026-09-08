@@ -33,7 +33,8 @@ class RemoteMonitor:
         if not {"status", "box"}.issubset(self.target.allowed_commands):
             raise SSHTransportError("POLICY_DENIED", "remote monitor requires status and box in the approved target allowlist")
         self.scope = self.target.digest()
-        self._lock = asyncio.Lock()
+        self._lock = None
+        self._loop = None
 
     async def _read(self, command, params=None):
         if command not in {"status", "box"} or self.client.target.digest() != self.scope:
@@ -58,6 +59,11 @@ class RemoteMonitor:
             raise SSHTransportError("PROTOCOL_DENIED", "remote observation belongs to another run or plan")
 
     async def refresh(self, box_id=None):
+        loop = asyncio.get_running_loop()
+        if loop is not self._loop:
+            if self._lock is not None and self._lock.locked():
+                raise SSHTransportError("POLICY_DENIED", "remote monitor is already active on another event loop")
+            self._loop, self._lock = loop, asyncio.Lock()
         async with self._lock:
             status = await self._read("status")
             run = status.get("run")

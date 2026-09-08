@@ -243,6 +243,11 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
   supervisor through the pinned SSH bridge, with overview, paginated box selection,
   bounded evidence and explicit stale-state handling. Local bridge and keyboard
   tests back this inspection path; actual remote-host acceptance remains open.
+  The SSH bridge now relays explicitly allowed owner-side mailbox observation,
+  inbox and message operations. An embeddable observe/review/send helper binds
+  exact target-profile and lease scope, while the existing remote kernel enforces
+  deduplication/fencing. Lost post replies remain unknown until explicit operator
+  reconciliation. This is not autonomous cross-host worker authentication.
 - Recorded completed-run evidence/code recovery does not close operational restore
   or retention. Independent archive reconstruction cannot authorize reuse of old
   leases, credentials, budgets, remote effects, or removal of the original stores.

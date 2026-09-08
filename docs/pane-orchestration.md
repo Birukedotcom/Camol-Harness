@@ -80,6 +80,11 @@ through the pinned SSH bridge. It never reuses local project state as remote tru
 and it marks retained observations stale after a failed refresh. See
 [remote monitor setup and limits](ssh-control.md#remote-terminal-monitor).
 
+Owner-side remote message relay is a separate explicit API/CLI path using the same
+lease-addressed mailbox: observe the exact box, review an immutable intent, then
+send with owner approval. Read-only pane selection cannot send or grant work.
+See [remote mailbox scope and retry rules](ssh-control.md#scoped-remote-mailbox-relay).
+
 `camol box list --state-dir STATE_DIR --run-id RUN_ID` lists the exact run's
 workers. `camol box resolve BOX_ID --state-dir STATE_DIR --run-id RUN_ID` resolves
 one exact worker identity; prefixes, display labels and pane numbers are rejected.

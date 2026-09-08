@@ -120,6 +120,10 @@ local worker. See [execution placement](docs/capacity-and-provider-model.md#exec
 terminal overview and box selector for an already-running, pinned SSH supervisor.
 Use your actual profile/journal paths; it does not provision or launch remote work.
 See [remote monitor setup](docs/ssh-control.md#remote-terminal-monitor).
+Explicit owner-side remote mailbox relay is available separately through the
+Python `RemoteMailbox` API and allowlisted `remote request` commands. It requires
+an exact lease observation and does not turn messages into task authority; see
+[observe/review/send and retry rules](docs/ssh-control.md#scoped-remote-mailbox-relay).
 
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference

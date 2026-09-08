@@ -821,6 +821,8 @@ class Orchestrator(GateOrchestratorMixin, RevisionOrchestratorMixin):
             fence_digest=assignment.get("fence_digest"),
             require_fresh=False,
         )
+        if reason.task_id != task["id"] or reason.box_id not in (None, task["agent_id"]):
+            raise StateTransitionError("lease revocation reason does not match the active lease")
         bundle = self._active_bundle(state, task)
         try:
             self._emit_many(

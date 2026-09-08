@@ -166,3 +166,59 @@ Local-process SSH bridge/supervisor tests and headless terminal keyboard tests c
 the monitor. Actual SSH-host acceptance remains a separate live gate. This feature
 implements the remote-control-plane *inspection* topology, not distributed workers,
 provisioning, remote mailbox control or a local scheduler launching on another host.
+
+## Scoped remote mailbox relay
+
+The bridge also supports owner-authorized `box-observe`, `box-inbox` and
+`box-message` control calls. The first two are reads; `box-message` is a mutation.
+Both the remote bridge policy and the local target profile must explicitly permit
+each command. Existing profiles are not silently widened: review the changed
+policy digest and newly installed package identity before updating pins. The
+terminal monitor remains read-only and never invokes these message operations.
+
+These calls address an **existing running fenced box** on an already-running
+supervisor. They do not register workers, assign tasks, edit a frozen plan, approve
+an evaluator, provision machines or inject keystrokes. The authenticated owner is
+recorded as a human/control-plane sender; this is not cross-host worker-identity
+authentication or an autonomous peer transport.
+
+The reusable Python API is `camol.remote_mailbox.RemoteMailbox(client)`, where
+`client` is an explicitly configured `SSHControlClient`:
+
+1. `await mailbox.observe(box_id)` obtains a short-lived lease observation and
+   wraps it with the exact pinned target-profile digest. Pane indices and labels
+   are not accepted as substitutes for box identity.
+2. `mailbox.prepare(observation, request_id=stable_id, body=text, ...)` creates a
+   deep-copied review object without making a request. Persist this intent privately
+   before sending. Its digest covers the target, sender, body, kind, correlation,
+   TTL and observed task/lease/fence. Preparation redacts credential-shaped text.
+3. After explicit owner review, `await mailbox.send(intent, approved_by=owner,
+   approval_digest=confirmed_digest)` sends only that exact intent. It never
+   refreshes a stale observation, changes a request ID or retries automatically.
+4. `await mailbox.inbox(box_id, offset=0, limit=100)` reports queued, delivered,
+   consumed, stale or expired records. Posting is not delivery; delivery is not
+   consumption, task success or new execution authority.
+
+The remote kernel checks current lease generation, fencing and observation expiry
+for new posts. The client validates record shape/digests but does not compare local
+and remote clocks. Reuse an exact saved request for deliberate retry; changed
+content under the same request ID is refused. A lost post response leaves the
+transport journal `unknown`, blocking later mutations. Read the exact remote inbox
+and reconcile explicitly with `remote acknowledge-unknown` before retrying. That
+acknowledgment does not itself prove success; the remote mailbox deduplicates the
+unchanged request. No helper automatically clears the hold.
+
+CLI automation can use `camol remote request --command box-observe` or
+`box-inbox`, with the existing `--target`, `--state-dir` and `--params` file options.
+Parameters contain exact `run_id`, `plan_digest`, `box_id`; inbox may add `offset`
+and `limit`. For `box-message`, the parameters are the prepared intent's `params`
+object, **not** its outer wrapper. CLI sending additionally requires
+`--allow-mutation --by OWNER`. The Python helper adds exact-intent digest approval
+on top of those transport/kernel controls.
+
+Messages are at most 2,000 characters, one of `information`, `question`, `proposal`
+or `warning`, with TTL 1..3,600 seconds. Terminal controls are rejected. The transport
+journal retains request/parameter digests, not message bodies; the remote run ledger
+retains redacted message content and delivery state. Locally persisted intents are
+the caller's responsibility. All verification so far uses disposable local bridge,
+supervisor and lease fixtures, not real SSH hosts or hosted model accounts.
