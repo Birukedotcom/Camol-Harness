@@ -76,6 +76,30 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.screen.id, "_default")
             self.assertIsNotNone(app.query_one("#prompt", PromptArea))
 
+    async def test_overview_command_runs_in_composer_without_starting_work(self):
+        import json
+        from camol.schema import canonical_digest
+        document = json.loads((Path(__file__).resolve().parents[1] / "examples/local-n-box-runbook.json").read_text())
+        plan = dict(schema="camol.product_plan", schema_version=2, proposal=None,
+            run_id=document["run"]["id"], runbook=document, execution_status="ready",
+            execution_limitation="fixture", source=dict(workspace=str(self.workspace), revision="a" * 40))
+        self.controller.session = self.controller.store.update(self.controller.session,
+            plan=plan, plan_digest=canonical_digest(plan), run_id=plan["run_id"])
+        self.controller.spawn_fn = Mock(side_effect=AssertionError("must not spawn"))
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            prompt = app.query_one("#prompt", PromptArea)
+            prompt.load_text("/overview")
+            await pilot.press("enter")
+            def rendered():
+                return "\n".join(line.text for line in app.query_one("#transcript").lines)
+            await self.wait_for_ui(pilot, lambda: "CAMOL OVERVIEW" in rendered(), "overview rendered")
+            self.assertIn("plan_only", rendered())
+            self.assertIn("DEPENDENCIES", rendered())
+            self.assertIn("ORCH[Alt+0]", str(app.query_one("#fleet").render()))
+            self.assertIsNone(self.controller.session["approved_digest"])
+        self.controller.spawn_fn.assert_not_called()
+
     async def test_seed_proposal_from_composer_is_visible_unapproved_and_needs_exact_digest(self):
         from tests.test_proposal import ProposalUITests
         fixture = ProposalUITests()

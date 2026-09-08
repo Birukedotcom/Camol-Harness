@@ -86,6 +86,7 @@ SLASH_COMMANDS = (
     SlashCommand("/run", "Review the exact provider launch or resume a run", takes_value=True),
     SlashCommand("/status", "Inspect session and supervisor", run_from_palette=True),
     SlashCommand("/boxes", "List the N-box worker pool", run_from_palette=True),
+    SlashCommand("/overview", "See boxes, dependencies and attention together", run_from_palette=True),
     SlashCommand("/box", "Open one read-only box view", takes_value=True),
     SlashCommand("/events", "Read new durable run events", run_from_palette=True),
     SlashCommand("/history", "Show retained conversation history", run_from_palette=True),
@@ -133,6 +134,8 @@ HELP = """Commands
                             acknowledge the manifest; hosted profiles require spend consent
   /status                  current local session and supervisor state
   /boxes                   list the arbitrary-N worker pool
+  /overview [--attention] [--json] [--offset N] [--limit N]
+                            inspect boxes and task dependencies without starting work
   /box ID|NUMBER           inspect one box's tasks, commands, evidence, and events
   /box ID VIEW             status | context | tools | diff | evals | events | evidence | transcript
   /model SELECTION         manual | claude[:MODEL] | codex[:MODEL] | local:MODEL
@@ -601,6 +604,8 @@ class InteractiveController:
             return CommandResponse(messages=(BUILTIN_PROTOCOLS,))
         if command == "/history":
             return self._history(arguments)
+        if command == "/overview":
+            return self._overview(arguments)
         if command == "/models":
             return self._models(arguments)
         if command == "/watch":
@@ -1169,6 +1174,50 @@ class InteractiveController:
             "{} connection confirmed.".format(provider.title()),
             "Active planning model set to {}.".format(selection),
         )
+
+    def _overview(self, arguments: Sequence[str]) -> CommandResponse:
+        from .overview import fleet_overview, planned_state, render_overview
+        from .orchestrator import Orchestrator
+        options = dict(attention=False, offset=0, limit=50)
+        as_json, remaining, seen = False, list(arguments), set()
+        while remaining:
+            option = remaining.pop(0)
+            if option in seen:
+                raise InteractiveError("duplicate overview option")
+            seen.add(option)
+            if option == "--json":
+                as_json = True
+            elif option == "--attention":
+                options["attention"] = True
+            elif option in {"--offset", "--limit"} and remaining:
+                value = remaining.pop(0)
+                if not value.isascii() or not value.isdecimal() or len(value) > 9:
+                    raise InteractiveError("overview pagination must use bounded nonnegative integers")
+                options[option[2:]] = int(value)
+            else:
+                raise InteractiveError("usage: /overview [--attention] [--json] [--offset N] [--limit N]")
+        database = SupervisorPaths.under(Path(self.session["state_dir"])).database
+        if database.exists() or database.is_symlink():
+            if not self.session["run_id"]:
+                raise InteractiveError("existing ledger has no exact selected session run")
+            store = None
+            try:
+                store = ReadOnlyEventStore(database)
+                state = Orchestrator(store).state(self.session["run_id"])
+                if state["run_id"] != self.session["run_id"]:
+                    raise InteractiveError("selected run is absent from its ledger")
+                report = fleet_overview(state, **options)
+            except sqlite3.Error as error:
+                raise InteractiveError("overview ledger is unreadable; snapshot unavailable") from error
+            finally:
+                if store is not None:
+                    store.close()
+        else:
+            plan = self.session.get("plan")
+            if not plan or not plan.get("runbook"):
+                raise InteractiveError("no executable plan yet; use /grill or /import first")
+            report = fleet_overview(planned_state(plan["runbook"]), basis="plan_only", **options)
+        return CommandResponse(messages=(json.dumps(report, sort_keys=True, indent=2) if as_json else render_overview(report),))
 
     def _history(self, arguments: Sequence[str]) -> CommandResponse:
         if len(arguments) > 1:

@@ -44,6 +44,13 @@ accepted; per-invocation caps and provider overrun caveats do not fix it.
 
 ## Acceptance ledger
 
+The user supplied tmax and smux as pane/delegation references. The pinned source
+review and command-by-command implementation status are in
+[pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`
+and standalone command now expose boxes, task dependencies and attention. The
+searchable switcher, tiled layouts and durable scoped message bridge remain explicit
+implementation gates; adding a visual pane never creates execution authority.
+
 Each row needs implementation, negative-path tests, replay/recovery evidence, and
 usable Python/CLI entry points. A fixture cannot establish live provider maturity.
 

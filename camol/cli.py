@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ from .json_contracts import load_contract
 from .ssh_protocol import ALL_COMMANDS as SSH_COMMANDS, MUTATING_COMMANDS as SSH_MUTATIONS, SSHTarget, SSHTransportError
 from .source_binding import SourceBindingError
 from .retention import RetentionError, RetentionPolicy, inspect_retention
+from .overview import fleet_overview, render_overview
 
 
 def _write_json(value: Any) -> None:
@@ -150,6 +152,28 @@ def command_retention(args: argparse.Namespace) -> int:
     inventory = inspect_retention(state_dir=Path(args.state_dir), database=Path(args.db),
                                   run_id=args.run_id, policy=policy)
     _write_json(dict(inventory=inventory.to_dict(), inventory_digest=inventory.digest()))
+    return 0
+
+
+def command_overview(args: argparse.Namespace) -> int:
+    if args.offset < 0:
+        raise StateTransitionError("overview offset must be nonnegative")
+    store = None
+    try:
+        store = ReadOnlyEventStore(Path(args.db))
+        state = Orchestrator(store).state(args.run_id)
+        if state["run_id"] != args.run_id:
+            raise StateTransitionError("overview requires an existing exact run")
+        report = fleet_overview(state, attention=args.attention, offset=args.offset, limit=args.limit)
+    except sqlite3.Error as error:
+        raise StateTransitionError("overview ledger is unreadable; snapshot unavailable") from error
+    finally:
+        if store is not None:
+            store.close()
+    if args.json:
+        _write_json(report)
+    else:
+        print(render_overview(report))
     return 0
 
 
@@ -790,6 +814,15 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("--after", type=int, default=0)
     logs.add_argument("--limit", type=int, choices=range(1, 10001), default=1000, metavar="1..10000")
     logs.set_defaults(handler=command_logs)
+
+    overview = subparsers.add_parser("overview", help="inspect exact run boxes, task dependencies and attention without starting work")
+    overview.add_argument("--db", required=True)
+    overview.add_argument("--run-id", required=True)
+    overview.add_argument("--attention", action="store_true")
+    overview.add_argument("--offset", type=int, default=0)
+    overview.add_argument("--limit", type=int, choices=range(1, 201), default=50, metavar="1..200")
+    overview.add_argument("--json", action="store_true")
+    overview.set_defaults(handler=command_overview)
 
     retention = subparsers.add_parser("retention", help="inspect bounded cold-state references; never archive or delete")
     retention.add_argument("retention_action", choices=("inspect",))

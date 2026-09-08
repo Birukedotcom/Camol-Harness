@@ -53,3 +53,12 @@ passed five jobs. macOS 3.12 never started: its GitHub check annotation reports
 failed account payments or an Actions spending limit. It has no runner or test
 steps, so it supplies no macOS 3.12 test result. No billing settings were changed.
 This is an incomplete matrix, not six-platform success or a code-test failure.
+
+## Integration checkpoint: 2dbf2a5
+
+The full Python 3.12 suite passed 752 tests in 601.603 seconds at this exact
+checkpoint, including the preflight journal, inference-contention repair and
+retention inventory/CLI. The following mixed-provider launch and pane-overview
+changes are not covered by that result; their focused tests and remaining
+whole-suite gates must be read separately. The shared in-flight hosted-budget
+race remains a required runtime repair before complete acceptance.
