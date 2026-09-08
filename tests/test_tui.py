@@ -370,6 +370,56 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(app, "run_worker", side_effect=[Mock(wait=AsyncMock(return_value=[])), cancelled]):
                 await app._refresh_fleet()
 
+    async def test_refresh_parent_cancellation_survives_real_worker_conversion(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            original = app.run_worker
+            for mode in ("fleet", "box", "monitor"):
+                entered = asyncio.Event()
+                async def blocked():
+                    entered.set()
+                    await asyncio.Event().wait()
+                def controlled(work, **kwargs):
+                    if mode == "box" and kwargs["group"] == "fleet":
+                        return Mock(wait=AsyncMock(return_value=[]))
+                    return original(blocked, group="cancel-regression", exclusive=True)
+                app.in_box = mode == "box"
+                app.selected = "fixture-box" if app.in_box else "orchestrator"
+                callback = app._refresh_monitor if mode == "monitor" else app._refresh_fleet
+                with patch.object(app, "run_worker", side_effect=controlled):
+                    refresh = asyncio.create_task(callback())
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        # The same callback used by the refresh timer, with a
+                        # real Worker.wait. Old behavior returns normally here,
+                        # allowing the timer loop to continue during shutdown.
+                        refresh.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await refresh
+                    finally:
+                        if not refresh.done():
+                            refresh.cancel()
+                            await asyncio.gather(refresh, return_exceptions=True)
+                        app.workers.cancel_group(app, "cancel-regression")
+            app.in_box = False
+
+    async def test_parent_cancel_is_not_converted_to_harmless_supersession(self):
+        from camol.tui import _await_view_worker
+        from textual.worker import WorkerCancelled
+        entered = asyncio.Event()
+        async def converting_wait():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise WorkerCancelled("converted by worker wait")
+        task = asyncio.create_task(_await_view_worker(Mock(wait=converting_wait)))
+        await entered.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
     async def test_natural_goal_creation_questions_review_and_approval_in_composer(self):
         import json
         from camol.conversation import ConversationReply

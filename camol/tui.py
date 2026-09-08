@@ -27,6 +27,22 @@ from .pane_switcher import filter_rows, row_label
 from .tiled_monitor import TiledMonitor
 
 
+async def _await_view_worker(worker):
+    """Preserve caller cancellation across Textual's Worker.wait conversion.
+
+    Worker supersession is a harmless view refresh loss. Cancelling the timer
+    that awaits it must still stop that timer, including on Python 3.9 where
+    Task.cancelling() is unavailable.
+    """
+    waiter = asyncio.create_task(worker.wait())
+    try:
+        return await asyncio.shield(waiter)
+    except asyncio.CancelledError:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        raise
+
+
 class _OwnedClientWork:
     """Track actual persistence, not a cancelled executor Future's lifetime."""
 
@@ -669,9 +685,9 @@ class CamolApp(App):
 
     async def _refresh_fleet(self) -> None:
         try:
-            boxes = await self.run_worker(
+            boxes = await _await_view_worker(self.run_worker(
                 self.controller.box_summaries, thread=True, group="fleet", exclusive=True
-            ).wait()
+            ))
         except WorkerCancelled:
             # A newer exclusive refresh or client detach cancels this view
             # request. It is not a failure of the authoritative run.
@@ -706,10 +722,10 @@ class CamolApp(App):
         if self.in_box:
             target, subview = self.selected, self.selected_view
             try:
-                rendered = await self.run_worker(
+                rendered = await _await_view_worker(self.run_worker(
                     lambda: self.controller.inspect_box(target, subview),
                     thread=True, group="box-view", exclusive=True,
-                ).wait()
+                ))
             except WorkerCancelled:
                 return
             if self.in_box and self.selected == target and self.selected_view == subview:
@@ -719,8 +735,8 @@ class CamolApp(App):
 
     async def _refresh_monitor(self):
         try:
-            snapshot = await self.run_worker(self.controller.read_monitor, thread=True,
-                group="monitor", exclusive=True, exit_on_error=False).wait()
+            snapshot = await _await_view_worker(self.run_worker(self.controller.read_monitor, thread=True,
+                group="monitor", exclusive=True, exit_on_error=False))
         except WorkerCancelled:
             return
         except Exception as error:

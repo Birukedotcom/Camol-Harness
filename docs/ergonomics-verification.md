@@ -770,3 +770,31 @@ An expanded command mistakenly named nonexistent `tests.test_profiles`; its
 The corrected group selects `tests.test_providers`, plus launch/probe contracts.
 Fixture providers, local relay calls and OS sandbox tests do not establish real
 Claude protocol compatibility, account readiness, hosted billing or live tools.
+
+The corrected expanded group passed **147 tests on Python 3.12 in 110.756
+seconds** (one optional installed-Codex parser skip) and **147 tests on Python
+3.9 in 115.487 seconds** (that parser and the optional MCP SDK skipped). This
+includes the final owner-revocation test and staged refusal/cancellation/timeout
+pipe-lifetime changes. Product checkpoint: `cacfb252b0dac20b58eea0d0b3d7bb27f345c5ae`.
+An initial installed-package command likewise misspelled the graph module as
+`test_repo_graph`; its 46-test run ended with a loader error, not a passing gate.
+The corrected command selects `test_repository_graph`.
+
+## Preserve terminal refresh cancellation
+
+The isolated `codex/v0-tui-cancellation` successor fixes the full-suite shutdown
+race described above. Each fleet, selected-box and tiled-monitor refresh waits
+through a shielded owned waiter. Worker supersession still returns harmlessly;
+cancellation of the refresh's caller is re-raised after settling that waiter,
+rather than being reclassified by Textual. This works on Python 3.9 without
+depending on `Task.cancelling()`. No supervisor/build cancellation is introduced.
+
+The 33-test terminal group passed on Python 3.12 in **19.050 seconds** and Python
+3.9 in **20.575 seconds**. The initial actual-timer regression hung when deliberately
+restoring the old wait behavior; that isolated diagnostic was terminated. It was
+replaced with a bounded real-worker callback assertion: cancellation must raise,
+not return normally. With the old wait injected, this regression fails in
+**0.192 seconds** with `CancelledError not raised`. The repaired callback checks
+all three refresh paths, while the existing supersession check remains passing.
+Final focused and whole-suite/package results follow separately; this does not
+retroactively make the interrupted native-predecessor full run pass.
