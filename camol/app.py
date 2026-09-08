@@ -57,6 +57,7 @@ class CommandResponse:
     clear_transcript: bool = False
     box_id: Optional[str] = None
     box_view: Optional[str] = None
+    focus_orchestrator: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ SLASH_COMMANDS = (
     SlashCommand("/propose", "Request one reviewed no-tools model proposal", takes_value=True),
     SlashCommand("/draft", "Review and confirm a goal-creation envelope", takes_value=True),
     SlashCommand("/review", "Review exact proposed commands and oracle coverage", takes_value=True),
+    SlashCommand("/revise", "Review, apply or recover an exact stopped-run amendment", takes_value=True),
     SlashCommand("/import", "Review an existing executable runbook", takes_value=True),
     SlashCommand("/plan", "Inspect the exact candidate plan", run_from_palette=True),
     SlashCommand("/approve", "Confirm the exact visible plan", takes_value=True),
@@ -122,6 +124,10 @@ HELP = """Commands
   /draft [confirm DIGEST]  inspect/confirm planning boundaries, not execution
   /propose                one no-tools model draft after envelope confirmation
   /review [DIGEST]         inspect/acknowledge draft risks before exact approval
+  /revise --from RUNBOOK --reason TEXT [--effects POLICY.json]
+                            review a stopped-run amendment; does not execute work
+  /revise [apply DIGEST|recover]
+                            inspect, approve, or recover the exact linked successor
   /propose --from SEED.json GOAL
                             one disclosed no-tools invocation; unapproved V5/V6 seed refinement
   /import PATH             import an exact runbook, bound to this checkout revision
@@ -222,6 +228,9 @@ def _envelope(proposal: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def validate_envelope(value: Mapping[str, Any]) -> Dict[str, Any]:
+    if isinstance(value, dict) and value.get("schema_version") == 5:
+        from .revision_ui import validate_revision_envelope
+        return validate_revision_envelope(value)
     fields = {
         "schema", "schema_version", "proposal", "run_id", "execution_status",
         "execution_limitation", "runbook",
@@ -293,7 +302,7 @@ def render_plan(plan: Mapping[str, Any], digest: str) -> str:
     if proposal is None:
         runbook = plan["runbook"]
         return "\n".join([
-            "IMPORTED PLAN {}".format(digest),
+            "{} PLAN {}".format("LINKED REVISION" if plan["schema_version"] == 5 else "IMPORTED", digest),
             "goal: " + runbook["run"]["objective"],
             "workspace: " + plan["source"]["workspace"],
             "frozen source revision: " + plan["source"]["revision"],
@@ -302,7 +311,8 @@ def render_plan(plan: Mapping[str, Any], digest: str) -> str:
             "limitation: " + plan["execution_limitation"],
             *( ["Model-generated candidate: all state gates remain human; origin=" + json.dumps(plan["origin"], sort_keys=True)] if plan["schema_version"] in {3, 4} else [] ),
             "canonical product plan JSON:", json.dumps(plan, indent=2, sort_keys=True),
-            ("Nothing has started. Review every command, grant and mapping, then /approve " + digest
+            ("This linked successor was approved by its exact revision review. /run is a separate action; this display does not prove execution or readiness."
+             if plan["schema_version"] == 5 else "Nothing has started. Review every command, grant and mapping, then /approve " + digest
              if plan["schema_version"] in {3, 4} else
              "Nothing has started. Review every command and grant, then /approve yes or the exact plan digest."),
         ])
@@ -540,7 +550,13 @@ class InteractiveController:
         if command == "/draft":
             return self._draft(arguments)
         if command == "/review":
+            if (self.session.get("plan") or {}).get("schema_version") == 5:
+                if arguments:
+                    raise InteractiveError("linked revisions are already approved through /revise apply; /review only displays them")
+                return self._respond(render_plan(self.session["plan"], self.session["plan_digest"]))
             return self._review_creation(arguments)
+        if command == "/revise":
+            return self._revise(arguments)
         if command == "/plan":
             if self.session["plan"] is None:
                 raise InteractiveError("there is no plan; start with /grill GOAL")
@@ -1063,6 +1079,8 @@ class InteractiveController:
         )
 
     def _approve(self, arguments: Sequence[str]) -> CommandResponse:
+        if (self.session.get("plan") or {}).get("schema_version") == 5:
+            raise InteractiveError("linked revisions require /revise apply with the exact review digest; /approve cannot replace revision authority")
         if self.session["plan"] is None or self.session["status"] != "plan_ready":
             raise InteractiveError("there is no unapproved plan ready for confirmation")
         if not arguments:
@@ -1175,6 +1193,42 @@ class InteractiveController:
             "Active planning model set to {}.".format(selection),
         )
 
+    def _revise(self, arguments: Sequence[str]) -> CommandResponse:
+        from .json_contracts import load_contract
+        from .revision_ui import RevisionUI, render_review
+        service = RevisionUI(self.store)
+        if not arguments:
+            return replace(self._respond(render_review(service._inspect_locked(self.session))), focus_orchestrator=True)
+        owner = getpass.getuser()
+        if arguments[0] in {"apply", "recover"}:
+            expected = 2 if arguments[0] == "apply" else 1
+            if len(arguments) != expected:
+                raise InteractiveError("usage: /revise apply REVIEW_DIGEST | /revise recover")
+            if self._cancel_event.is_set():
+                raise InteractiveError("revision client request cancelled before approval/handoff")
+            if arguments[0] == "apply":
+                self.session = service._apply_locked(self.session, arguments[1], owner=owner)
+            else:
+                self.session = service._recover_locked(self.session, owner=owner)
+            response = self._respond("Revision session adopted exact run " + self.session["run_id"] +
+                ". No supervisor, worker or provider request started. /run is separate.",
+                render_plan(self.session["plan"], self.session["plan_digest"]))
+            return replace(response, focus_orchestrator=True)
+        remaining, options = list(arguments), {}
+        while remaining:
+            option = remaining.pop(0)
+            if option not in {"--from", "--reason", "--effects"} or option in options or not remaining:
+                raise InteractiveError("usage: /revise --from RUNBOOK --reason TEXT [--effects POLICY.json]")
+            options[option] = remaining.pop(0)
+        if not options.get("--from") or not options.get("--reason", "").strip():
+            raise InteractiveError("revision requires an explicit successor runbook and reason; quote multiword reasons")
+        effects = load_contract(options["--effects"], max_bytes=65536) if "--effects" in options else []
+        if self._cancel_event.is_set():
+            raise InteractiveError("revision review request cancelled")
+        review = service._propose_locked(self.session, options["--from"],
+            reason=options["--reason"], owner=owner, effect_reruns=effects)
+        return replace(self._respond(render_review(review)), focus_orchestrator=True)
+
     def _overview(self, arguments: Sequence[str]) -> CommandResponse:
         from .overview import fleet_overview, planned_state, render_overview
         from .orchestrator import Orchestrator
@@ -1276,7 +1330,7 @@ class InteractiveController:
             else:
                 if remote_plan["plan_digest"] != runbook_digest(plan["runbook"]):
                     raise InteractiveError("another supervisor owns this session state with a different plan")
-                if plan["schema_version"] in {3, 4} and (remote_plan.get("source_binding") or {}).get("source") != plan["source"]:
+                if plan["schema_version"] in {3, 4, 5} and (remote_plan.get("source_binding") or {}).get("source") != plan["source"]:
                     raise InteractiveError("supervisor source binding differs from the exact approved proposal; reattach refused")
                 self.session = self.store.update(self.session, status="terminal" if remote_status["run"]["status"] in {"completed", "blocked"} else "running")
                 return self._respond("Reattached to the existing supervisor without a new provider request or preflight.",
@@ -1399,7 +1453,7 @@ class InteractiveController:
             else:
                 if remote_plan["plan_digest"] != runbook_digest(plan["runbook"]):
                     raise InteractiveError("another supervisor owns this session state with a different plan")
-                if plan["schema_version"] in {3, 4} and (remote_plan.get("source_binding") or {}).get("source") != plan["source"]:
+                if plan["schema_version"] in {3, 4, 5} and (remote_plan.get("source_binding") or {}).get("source") != plan["source"]:
                     raise InteractiveError("supervisor source binding differs from the exact approved proposal; reattach refused")
                 session_status = "terminal" if remote_status["run"]["status"] in {"completed", "blocked"} else "running"
                 self.session = self.store.update(self.session, status=session_status)
@@ -1437,7 +1491,7 @@ class InteractiveController:
         self._assert_launch_not_cancelled()
         runbook_path = self.store.write_runbook(self.session, plan["runbook"])
         self._assert_launch_not_cancelled()
-        launch_options = {"expected_source": plan["source"]} if plan["schema_version"] in {3, 4} else {}
+        launch_options = {"expected_source": plan["source"]} if plan["schema_version"] in {3, 4, 5} else {}
         started = self.spawn_fn(
             runbook_path,
             self.workspace,
@@ -1455,7 +1509,7 @@ class InteractiveController:
 
 
     def _verify_proposal_source(self, plan: Mapping[str, Any]) -> None:
-        if plan.get("schema_version") in {3, 4}:
+        if plan.get("schema_version") in {3, 4, 5}:
             from .debug_execution import source_identity
             if source_identity(self.workspace) != plan["source"]:
                 raise InteractiveError("source checkout changed since the model proposal; request and review a fresh candidate")

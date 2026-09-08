@@ -100,6 +100,34 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(self.controller.session["approved_digest"])
         self.controller.spawn_fn.assert_not_called()
 
+    async def test_revision_review_and_handoff_return_focus_from_box_to_orchestrator(self):
+        from tests.test_revision_commands import RevisionCommandTests
+        from camol.revision_ui import RevisionUI
+        fixture = RevisionCommandTests()
+        fixture.setUp()
+        try:
+            app = CamolApp(fixture.controller, show_boot=False, discover_connections=False)
+            async with app.run_test(size=(110, 32)) as pilot:
+                app._render_box("builder", "events", "old box view")
+                app.query_one("#prompt", PromptArea).load_text(fixture.command)
+                await pilot.press("enter")
+                await self.wait_for_ui(pilot, lambda: app.selected == "orchestrator", "visible revision review")
+                await app.workers.wait_for_complete()
+                review = RevisionUI(fixture.controller.store).inspect(fixture.controller.session)
+                rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
+                self.assertIn("STOPPED-OWNER REVISION", rendered)
+                app._render_box("builder", "events", "old box view")
+                app.query_one("#prompt", PromptArea).load_text("/revise apply " + review["review_digest"])
+                await pilot.press("enter")
+                await self.wait_for_ui(pilot, lambda: app.selected == "orchestrator", "revision handoff focus")
+                await app.workers.wait_for_complete()
+                self.assertEqual(fixture.controller.session["run_id"], "successor")
+                self.assertTrue(app.query_one("#transcript").display)
+                self.assertFalse(app.query_one("#box-transcript").display)
+                fixture.controller.spawn_fn.assert_not_called()
+        finally:
+            fixture.doCleanups()
+
     async def test_seed_proposal_from_composer_is_visible_unapproved_and_needs_exact_digest(self):
         from tests.test_proposal import ProposalUITests
         fixture = ProposalUITests()

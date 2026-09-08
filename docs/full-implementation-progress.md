@@ -150,8 +150,12 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 - V5/V6 imported plans support kernel gates; interactive Codex/OSS launch-policy
   acknowledgement is implemented. A real fake-Codex subprocess test covers terminal
   import through detached build/evaluation/integration and final human acceptance.
-  Mixed-provider UI launch and interactive plan
-  amendments remain separate gaps; the Python/CLI revision path already exists.
+  Mixed-provider UI launch is implemented with exact manifest review and durable
+  deduplicated preflights; its run-wide in-flight worker budget repair remains open.
+  `/revise` now reviews, applies and recovers a stopped source-bound ProductV3/V4/V5
+  session through the kernel revision service, with independent execution approval
+  and real detached successor build/final-acceptance tests. Legacy ProductV1/V2
+  source-baseline migration remains unsupported rather than fabricated.
 - Local download receipts are not model loading, GPU residency, inference readiness
   or an air-gap guarantee. The narrow owned loader now has a separately approved
   one-shot inference bridge with protocol fixtures; actual models/hardware and

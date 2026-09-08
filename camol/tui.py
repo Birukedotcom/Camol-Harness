@@ -714,6 +714,8 @@ class CamolApp(App):
     def _apply_response(self, response: CommandResponse) -> None:
         if self._client_work.closed:
             return
+        if response.focus_orchestrator:
+            self.action_orchestrator()
         self.query_one("#stream", Static).update("")
         log = self.query_one("#transcript", RichLog)
         if response.clear_transcript:

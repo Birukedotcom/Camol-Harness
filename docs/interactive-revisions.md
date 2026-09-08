@@ -7,11 +7,14 @@ revision is a separate approval operation, not an implicit `/run`.
 
 ## Review and exact approval
 
-The intended terminal entry points are `/revise --from RUNBOOK --reason TEXT`
+The terminal entry points are `/revise --from RUNBOOK --reason TEXT`
 with optional `--effects POLICY.json`, `/revise` to inspect the current review,
-and `/revise apply REVIEW_DIGEST`. Command routing is kept separate from this
-service so existing applications can embed it without a TUI. The service itself
-already exposes the following synchronous methods:
+and `/revise apply REVIEW_DIGEST`. `/revise recover` adopts an already committed
+reviewed successor after a failed session write; it does not approve another run.
+Quote multiword reasons and paths containing spaces. Review/handoff responses
+return terminal focus to the orchestrator; the old box view cannot hide the review.
+Command routing is separate from the service so applications can embed it without
+a TUI. The service exposes these synchronous methods:
 
 ```python
 service = RevisionUI(session_store)
@@ -115,4 +118,16 @@ the same operating-system identity rewriting every ledger and approval artifact.
 The service's 12 tests passed on Python 3.12 (45.917 seconds) and Python 3.9
 (57.966 seconds), including real kernel revision, inherited integration, lineage
 export and crash recovery. This is service-level evidence. Terminal command and
-ProductV5 routing integration remain required before claiming `/revise` usable.
+ProductV5 routing were integrated afterward; their separate controller/TUI tests
+also require a final whole-suite checkpoint.
+
+The integrated revision/controller/TUI/launch group passed 83 tests on Python 3.12
+(94.324 seconds) and Python 3.9 (100.764 seconds). A subsequent real detached local
+successor test passed on Python 3.12 (18.166 seconds): terminal review/apply,
+separate `/run`, actual subprocess build and evaluation, exact final human
+acceptance, source integrity, and stopped-supervisor ledger replay. These are
+local process fixtures, not live hosted-provider or cloud evidence.
+
+The same detached successor build/final-acceptance test passed on Python 3.9
+(21.663 seconds). It verifies that ProductV5 launch forwards the full approved
+source binding, not only an in-process revision or a mocked launcher.

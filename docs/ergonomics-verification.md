@@ -62,3 +62,11 @@ retention inventory/CLI. The following mixed-provider launch and pane-overview
 changes are not covered by that result; their focused tests and remaining
 whole-suite gates must be read separately. The shared in-flight hosted-budget
 race remains a required runtime repair before complete acceptance.
+
+## Pane overview checkpoint: 8234efb
+
+The focused controller/TUI/overview group passed 60 tests on both Python 3.9 and
+3.12. [Actions run 34185513122](https://github.com/Birukedotcom/Camol-Harness/actions/runs/34185513122)
+started none of its six jobs; the inspected GitHub check again reports account
+payments/spending-limit failure. There are no test steps or hosted verification
+results for this checkpoint. Local progress does not clear that external gate.
