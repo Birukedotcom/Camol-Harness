@@ -1755,3 +1755,9 @@ fixtures. Textual, MCP and cryptography were absent. The same **102 tests passed
 example validates and `git diff --check` passes. Main and the installed user product
 remain unchanged. A full-suite result for this new import code is still pending;
 the earlier TLS whole-suite run is not a substitute for it.
+
+The frozen import product is `9de2bc49fb5d4f139fe0730462267cb3ace6f26c`, pushed to
+`codex/v0-worker-import` under `Birukedotcom <birukehdix@gmail.com>` with no agent
+coauthor. The TLS predecessor's exact full-suite process was confirmed still live
+after this commit; no second concurrent full suite was started. Import-product
+whole gates and the remaining distributed execution work remain open.
