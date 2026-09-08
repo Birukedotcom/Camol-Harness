@@ -1255,3 +1255,16 @@ host-policy, malformed-frame, timeout/unknown-outcome, descendant-pipe cleanup a
 public-identity boundary cases. Installed-package and whole-suite results follow
 this source checkpoint. The predecessor placement full suites remain running;
 they are neither restarted nor claimed as proof for this later monitor feature.
+
+Product `15a9d6ac96ce56f2bb1e78a81973af6461e877af` is pushed under the owner's
+identity on `codex/v0-remote-monitor`. A fresh sdist-to-wheel package installed with
+TUI/graph/recovery extras passed **30 installed-package tests in 20.982 seconds**
+on Python 3.12. Camol was imported from `site-packages` outside the repository,
+and the three changed product modules were byte-compared before source test
+fixtures were added. The tested installation lives only in a disposable temporary
+directory. The original checkout and user installation remain unchanged.
+
+Whole-suite verification for this monitor checkpoint is still open; the preceding
+placement suites were confirmed live and continue on their exact original handles.
+They must be collected before claiming their gates, and their results do not
+substitute for a later full monitor checkpoint. No paid/live-host gate is implied.
