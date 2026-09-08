@@ -592,6 +592,10 @@ class CamolApp(App):
         )
 
     def _render_dependency_rail(self) -> None:
+        try:
+            rail = self.query_one("#dependency-rail", Static)
+        except NoMatches:
+            return
         records = {record["connection_id"]: record for record in self.controller.connections.load()}
         def provider(connection_id: str, binary: str) -> str:
             record = records.get(connection_id)
@@ -609,11 +613,15 @@ class CamolApp(App):
             "model=" + self.controller.session["model"],
             "effort=" + self.controller.session["effort"],
         ]
-        self.query_one("#dependency-rail", Static).update("  ".join(parts))
+        rail.update("  ".join(parts))
         self._render_orchestrator_context(records)
 
     def _render_orchestrator_context(self, records: Mapping[str, Mapping[str, str]]) -> None:
         if self.in_box:
+            return
+        try:
+            context = self.query_one("#context", Static)
+        except NoMatches:
             return
         model = self.controller.session["model"]
         provider = model.partition(":")[0]
@@ -621,7 +629,7 @@ class CamolApp(App):
         record = records.get(connection_id) if connection_id else None
         suffix = " · " + observation_label(record) if record else " · connection unverified"
         suffix += " · task unverified"
-        self.query_one("#context", Static).update("ORCHESTRATOR — model={}{}".format(model, suffix))
+        context.update("ORCHESTRATOR — model={}{}".format(model, suffix))
 
     def _probe_connections(
         self,
@@ -996,14 +1004,23 @@ class CamolApp(App):
         self._submit("/box " + target)
 
     def _render_box(self, target: str, subview: str, rendered: str) -> None:
+        # Teardown can remove a header before the transcript. Resolve the whole
+        # disposable view before changing selection or rendering any part of it.
+        # No await separates this check from the updates on Textual's UI loop.
+        try:
+            context = self.query_one("#context", Static)
+            transcript = self.query_one("#transcript", RichLog)
+            log = self.query_one("#box-transcript", RichLog)
+            monitor = self.query_one(TiledMonitor)
+        except NoMatches:
+            return
         self.selected = target
         self.in_box = True
         self.selected_view = subview
-        self.query_one("#context", Static).update("BOX {} / {} — read-only evidence view".format(target, subview))
-        self.query_one("#transcript", RichLog).display = False
-        log = self.query_one("#box-transcript", RichLog)
+        context.update("BOX {} / {} — read-only evidence view".format(target, subview))
+        transcript.display = self.layout_mode != "focus"
         log.display = True
-        self._sync_layout()
+        monitor.display = False
         if rendered != self._box_rendered:
             log.clear()
             log.write(rendered)

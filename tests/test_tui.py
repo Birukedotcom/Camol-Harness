@@ -66,6 +66,34 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.fail("UI did not reach " + description)
             await pilot.pause(.01)
 
+    async def wait_for_commands(self, app, pilot):
+        # A timer's refresh may be superseded at any point. Only command
+        # workers belong to this action's completion gate; their failures
+        # must still propagate instead of being ignored with view churn.
+        commands = [worker for worker in app.workers if worker.group == "commands"]
+        if commands:
+            await app.workers.wait_for_complete(commands)
+        await self.wait_for_ui(pilot, lambda: app._client_work.idle.is_set(), "command persistence settled")
+        await pilot.pause(.02)
+
+    async def test_command_wait_does_not_wait_for_unrelated_live_refresh(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            entered = asyncio.Event()
+            async def refresh():
+                entered.set()
+                await asyncio.Event().wait()
+            worker = app.run_worker(refresh, group="fixture-view")
+            await entered.wait()
+            try:
+                app._submit("/help")
+                await asyncio.wait_for(self.wait_for_commands(app, pilot), 2)
+                self.assertFalse(worker.is_finished)
+                self.assertTrue(app._client_work.idle.is_set())
+                self.assertIn("/delegate", "\n".join(line.text for line in app.query_one("#transcript").lines))
+            finally:
+                worker.cancel()
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
@@ -301,7 +329,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one("#prompt", PromptArea).load_text(fixture.command)
                 await pilot.press("enter")
                 await self.wait_for_ui(pilot, lambda: app.selected == "orchestrator", "visible revision review")
-                await app.workers.wait_for_complete()
+                await self.wait_for_commands(app, pilot)
                 review = RevisionUI(fixture.controller.store).inspect(fixture.controller.session)
                 rendered = "\n".join(line.text for line in app.query_one("#transcript").lines)
                 self.assertIn("STOPPED-OWNER REVISION", rendered)
@@ -309,7 +337,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one("#prompt", PromptArea).load_text("/revise apply " + review["review_digest"])
                 await pilot.press("enter")
                 await self.wait_for_ui(pilot, lambda: app.selected == "orchestrator", "revision handoff focus")
-                await app.workers.wait_for_complete()
+                await self.wait_for_commands(app, pilot)
                 self.assertEqual(fixture.controller.session["run_id"], "successor")
                 self.assertTrue(app.query_one("#transcript").display)
                 self.assertFalse(app.query_one("#box-transcript").display)
@@ -356,6 +384,26 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await app.query_one("#fleet").remove()
             await app._refresh_fleet()
+
+    async def test_partial_view_teardown_during_box_read_does_not_render_or_crash(self):
+        app = CamolApp(self.controller, show_boot=False, discover_connections=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            app._render_box("fixture-box", "events", "original visible content")
+            original = app._box_rendered
+            async def remove_header():
+                await app.query_one("#context").remove()
+                return "late read must not be displayed"
+            with patch.object(app, "run_worker", side_effect=[
+                    Mock(wait=AsyncMock(return_value=[])), Mock(wait=remove_header)]):
+                await app._refresh_fleet()
+            self.assertTrue(app.query("#box-transcript"))
+            self.assertEqual(app._box_rendered, original)
+            self.assertNotIn("late read", "\n".join(line.text for line in app.query_one("#box-transcript").lines))
+            # Subsequent timer ticks also tolerate the partially detached header.
+            app.in_box = False
+            app._render_dependency_rail()
+            await app.query_one("#dependency-rail").remove()
+            app._render_dependency_rail()
 
     async def test_cancelled_refresh_on_detach_or_supersession_is_not_an_app_failure(self):
         from textual.worker import WorkerCancelled
@@ -433,7 +481,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 async def submit(text):
                     app.query_one("#prompt", PromptArea).load_text(text)
                     app.action_submit()
-                    await app.workers.wait_for_complete()
+                    await self.wait_for_commands(app, pilot)
                     await pilot.pause(.02)
 
                 for text in (

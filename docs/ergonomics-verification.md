@@ -869,3 +869,41 @@ observed planning usage, leaves the parent approved and unchanged, and `/revise`
 recovers the exact review without another model call or implicit approval. This
 extra test is not included in the earlier 13/19-test counts. The final journal
 may lack its completion receipt; recovery does not fabricate that receipt.
+
+## Full-gate findings: command waits and partially detached views
+
+The combined startup/terminal predecessor completed **981 tests on Python 3.12
+in 801.838 seconds with one error**, and **981 tests on Python 3.9 in 898.119
+seconds with one error and three skips**. Neither is a passing full gate.
+
+The Python 3.12 error came from the revision-handoff test waiting for all Textual
+workers, including superseded background refreshes. Tests now wait for the exact
+`commands` group, actual owned command persistence, and the existing visible
+revision assertions. Command failures still propagate. A separate regression
+requires command completion while an unrelated real refresh remains running.
+The initial 34-test terminal group passed in 19.497 seconds on Python 3.12 and
+21.479 seconds on Python 3.9 before the additional teardown repair below.
+
+The Python 3.9 error was a product race: a late box refresh saw a retained
+transcript widget after teardown had already removed its context header. Box
+rendering now resolves all required widgets before changing selection or any
+display state. Missing header/rail views are disposable, not execution failures.
+A regression removes the header during the actual awaited box-read boundary
+and requires no partial replacement or client crash. This supplements, rather
+than replaces, the real-worker cancellation and supersession tests.
+
+### Native status observations (2026-09-08)
+
+Read-only commands observed Codex CLI 0.146.0 reporting ChatGPT authentication and
+Claude Code 2.1.263 reporting logged-in `claude.ai` authentication. No credentials,
+email, account identifiers or raw auth-file contents were recorded. Codex's
+[`login status` reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+and [authentication guide](https://learn.chatgpt.com/docs/auth) describe this as an
+authentication-mode observation, not model entitlement, quota or task readiness.
+Claude's installed `auth status --help` confirmed the read-only JSON interface.
+No login flow, logout, paid inference or provider configuration mutation ran.
+Permission for bounded live provider builds has been requested and is not assumed.
+
+Retention was also re-audited against SPEC §9: the inventory implementation does
+not enforce expiry, archive/restore recovery data or authorize purge. Those remain
+explicit implementation work, not a verification-only checkbox.
