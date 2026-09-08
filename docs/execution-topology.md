@@ -1,6 +1,9 @@
 # Execution topology and N-box scheduling
 
-Status: specified; the local registered-worker subset is executable.
+Status: specified; the local registered-worker subset is executable. A separate
+[durable worker evidence delivery primitive](worker-delivery.md) now provides
+lease-bound producer/receiver spools and authenticated acknowledgments. Enrollment,
+native remote transport, target-side launch and kernel promotion remain open.
 
 Camol's replaceable orchestration agent may propose as many boxes as a plan can
 justify within its approved resource envelope. The deterministic harness admits and

@@ -180,6 +180,17 @@ def command_overview(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_worker_delivery(args: argparse.Namespace) -> int:
+    from .worker_delivery import DeliveryError, WorkerDelivery, read_enrollment_key
+    try:
+        stream = load_contract(args.binding, max_bytes=8192)
+        delivery = WorkerDelivery(args.root, stream, read_enrollment_key(args.key_file), role=args.role)
+        _write_json(delivery.inspect(after=args.after, limit=args.limit))
+    except DeliveryError as error:
+        raise SchemaError(str(error)) from error
+    return 0
+
+
 def command_vcs(args: argparse.Namespace) -> int:
     from .vcs import snapshot, propose, impact
     if args.vcs_action == "observe" and not args.allow_network:
@@ -970,6 +981,16 @@ def build_parser() -> argparse.ArgumentParser:
     overview.add_argument("--limit", type=int, choices=range(1, 201), default=50, metavar="1..200")
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(handler=command_overview)
+
+    delivery = subparsers.add_parser("worker-delivery", help="inspect a private worker evidence spool; never enroll, connect or execute")
+    delivery.add_argument("action", choices=["inspect"])
+    delivery.add_argument("--root", required=True, help="existing private producer or receiver directory")
+    delivery.add_argument("--binding", required=True, help="exact owner-enrolled worker stream JSON")
+    delivery.add_argument("--key-file", required=True, help="explicit private raw 32-byte enrollment key; never printed")
+    delivery.add_argument("--role", required=True, choices=["producer", "receiver"])
+    delivery.add_argument("--after", type=int, default=0)
+    delivery.add_argument("--limit", type=int, default=100)
+    delivery.set_defaults(handler=command_worker_delivery)
 
     vcs = subparsers.add_parser("vcs", help="record candidate relationships and inspect prospective verification impact; never Git mutation")
     vcs_commands = vcs.add_subparsers(dest="vcs_action", required=True)

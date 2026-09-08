@@ -56,6 +56,13 @@ Those results are not a gate for the subsequent run-recovery additions. See the
 Main and the user installation remain unchanged; isolated implementation is not
 the same as a released or globally installed product.
 
+The `codex/v0-worker-delivery` follow-up implements a durable, authenticated
+lease-bound evidence outbox/inbox with atomic receipt recovery, backpressure and
+offline CLI inspection. Its real child-process and kernel-lease tests exercise the
+delivery boundary, not remote execution. Owner enrollment, confidential transport,
+target-side launch and serialized kernel promotion remain required; see
+[worker delivery scope](worker-delivery.md).
+
 The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`

@@ -642,3 +642,10 @@ The reconstructed Buckeye/cmux/GCP/voice workflow is a demanding reference profi
 not Camol's definition. Every core, adapter, and workflow claim remains separately
 labeled `SPECULATIVE`, `MAPPED`, `BACKED`, or `PROVEN` according to replayable
 evidence.
+
+## Worker execution protocol foundation
+
+The isolated build includes [durable worker evidence delivery](docs/worker-delivery.md):
+lease-bound outboxes/inboxes, authenticated receipt recovery, backpressure and
+`camol worker-delivery inspect`. This is an embeddable protocol primitive, not yet
+remote worker enrollment, scheduling or execution.

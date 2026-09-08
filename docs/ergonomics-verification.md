@@ -1494,3 +1494,45 @@ Both full suites for this frozen product have started; their results remain
 pending in `/tmp/camol-vcs-observations-full-py312.log` and
 `/tmp/camol-vcs-observations-full-py39.log`. The installed and focused gates do not
 stand in for those whole-suite results, live agent acceptance or public release.
+
+## Worker evidence delivery checkpoint
+
+The isolated `codex/v0-worker-delivery` branch implements a transport-neutral
+producer outbox and receiver inbox, not a remote executor or machine enrollment
+service. Exact owner-provided stream identities bind an existing lease fence,
+worker generation and runtime. Separate MAC domains authenticate batches and
+acknowledgments; credentials remain outside the SQLite spool. New records require
+the embedding's serialized authoritative lease guard. The provided guard has a
+real kernel admission/lease test and rejects expiry, epoch/plan changes and terminal
+work. A worker's success or token claim never changes kernel state or accounting.
+
+The first **10 tests passed in 2.873 seconds on Python 3.12 and 3.729 seconds on
+Python 3.9**. They include a real child-process producer, SQLite restart, lost reply
+after receiver commit, concurrent writers and receivers, stale acknowledgments,
+foreign authentication, sequence gaps/rewrites, batch rollback, private-path checks
+and backpressure. An expanded command mistakenly named nonexistent `tests.test_cli`:
+each run reported 36 entries, 35 passed tests and one loader error (38.118 seconds
+on 3.12; 41.034 seconds on 3.9). The corrected group using `tests.test_extended_cli`
+passed **45 tests in 50.325 and 53.730 seconds**, respectively.
+
+Further adversarial review reproduced a genuine key-echo gap: a worker body
+containing the enrollment key's hex representation survived ordinary environment
+redaction. The reproduction printed only a boolean, never the key. Capture now
+includes known enrollment-key encodings, and the receiver independently rejects
+new unredacted echoes. A regression covers this and cancellation before commit.
+Historical duplicate receipts remain independent of later environment secrets.
+
+The final source/package groups include that fix and follow below when complete.
+The package was rebuilt through sdist to a fresh wheel; the isolated environment is
+`/tmp/camol-worker-delivery-package.tKmB2oJY/venv`. The new offline
+`camol worker-delivery inspect` command neither creates state nor connects, enrolls,
+grants or launches work. Authenticated enrollment, native confidential transport,
+target-side admission/launch, artifact transfer and kernel promotion remain open.
+The prior VCS observation whole-suite processes are still separately tracked;
+their results cannot verify the new worker-delivery code.
+
+After the key-echo correction, the final **46-test source group passed in 49.481
+seconds on Python 3.12 and 52.940 seconds on Python 3.9**. Exact results are in
+`/tmp/camol-worker-delivery-key-fixed-py312.log` and
+`/tmp/camol-worker-delivery-key-fixed-py39.log`. No actual remote host, model account,
+cloud provisioning or user installation was used. Main remains unchanged.
