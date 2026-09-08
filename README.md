@@ -279,6 +279,13 @@ attempt logger or equating missing timing with zero cost.
 `/delegate` lists task dependencies, recorded assignments and declared capability
 matches. `/delegate TASK_ID` inspects matching and excluded boxes; `--json`,
 `--offset N` and `--limit N` support machine-readable and large-fleet views.
+
+`/delegate --propose --from REVIEWED_SEED.json --reason "why" --goal "outcome"`
+requests one no-tools model proposal for a linked successor of an existing stopped
+run. It preserves the reviewed seed's authority envelope and the current plan;
+`/revise apply DIGEST` approves the resulting impact review, and `/run` remains
+separate. Planning may spend through the selected provider and has no hard cost
+cap. See [model-assisted revisions](docs/plan-revisions.md#model-assisted-delegation-revisions).
 Matches are not readiness, free capacity or reserved assignments. To review new
 work, use `/delegate --from RUNBOOK --reason 'WHY'`: this uses the existing
 stopped-owner revision review, including its source/authority checks. Only

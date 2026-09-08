@@ -276,7 +276,36 @@ class RevisionUI:
         with self.sessions.transaction():
             return self._propose_locked(session, runbook, reason=reason, owner=owner, effect_reruns=effect_reruns)
 
-    def _propose_locked(self, session, runbook, *, reason, owner, effect_reruns=None):
+    def _planning_context_locked(self, session, document, *, reason, owner, effect_reruns):
+        """Read-only pre-model check, not a revision or an execution grant."""
+        from .revisions import execution_digest, _effect_policy
+        session = self._current(session)
+        document = validate_runbook(document)
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 1500:
+            raise RevisionError("delegation reason must contain 1-1500 characters")
+        reject_sensitive_text(reason, "revision reason")
+        if not isinstance(effect_reruns, list):
+            raise RevisionError("effect reuse policy must be an explicit array")
+        with self._existing_harness(session) as harness:
+            state = self._source(harness, session, owner)
+            destination = document["run"]["id"]
+            if destination == state["run_id"] or harness.store.has_run(destination):
+                raise RevisionError("delegation requires a new, distinct successor run ID")
+            if owner in {agent["id"] for agent in document["agents"]}:
+                raise RevisionError("delegation owner cannot also be a successor worker")
+            _effect_policy(state, document, effect_reruns)
+            if len(state["tasks"]) > 64:
+                raise RevisionError("delegation planning context exceeds the 64-task bound")
+            return dict(source_run_id=state["run_id"], source_plan_digest=state["plan_digest"],
+                source_state_digest=execution_digest(state), source_cursor=state["last_seq"],
+                parent_product_digest=session["plan_digest"], destination_run_id=destination,
+                integration_head=state.get("integration_head"), run_status=state["status"],
+                tasks=[dict(task_id=identity, status=task["status"], assigned_box=task.get("agent_id"),
+                    depends_on=task["depends_on"], attempts=task["attempts"])
+                    for identity, task in sorted(state["tasks"].items())],
+                evidence_basis="recorded_metadata_not_current_readiness", automatic_execution=False)
+
+    def _propose_locked(self, session, runbook, *, reason, owner, effect_reruns=None, expected_context=None):
         session = self._current(session)
         if effect_reruns is None:
             effect_reruns = []
@@ -286,7 +315,16 @@ class RevisionUI:
         reject_sensitive_text(json.dumps(document), "revision runbook")
         reject_sensitive_text(reason, "revision reason")
         with self._existing_harness(session) as harness:
-            self._source(harness, session, owner)
+            state = self._source(harness, session, owner)
+            if expected_context is not None:
+                from .revisions import execution_digest
+                if (expected_context["source_run_id"] != state["run_id"]
+                        or expected_context["source_plan_digest"] != state["plan_digest"]
+                        or expected_context["parent_product_digest"] != session["plan_digest"]
+                        or expected_context["source_cursor"] != state["last_seq"]
+                        or expected_context["source_state_digest"] != execution_digest(state)
+                        or expected_context["destination_run_id"] != document["run"]["id"]):
+                    raise RevisionError("delegation source advanced during planning; request a new reviewed proposal")
             proposal = harness.propose_revision(document, reason=reason, effect_reruns=effect_reruns)
             successor = _successor_plan(session["plan"], proposal)
             self._session_capacity(session, successor)

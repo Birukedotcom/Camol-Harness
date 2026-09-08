@@ -83,7 +83,7 @@ SLASH_COMMANDS = (
     SlashCommand("/draft", "Review and confirm a goal-creation envelope", takes_value=True),
     SlashCommand("/review", "Review exact proposed commands and oracle coverage", takes_value=True),
     SlashCommand("/revise", "Review, apply or recover an exact stopped-run amendment", takes_value=True),
-    SlashCommand("/delegate", "Inspect task/box compatibility or review a successor plan", takes_value=True, run_from_palette=True),
+    SlashCommand("/delegate", "Inspect assignments or propose/review a successor plan", takes_value=True, run_from_palette=True),
     SlashCommand("/import", "Review an existing executable runbook", takes_value=True),
     SlashCommand("/plan", "Inspect the exact candidate plan", run_from_palette=True),
     SlashCommand("/approve", "Confirm the exact visible plan", takes_value=True),
@@ -143,6 +143,7 @@ HELP = """Commands
   /delegate [TASK] [--json] [--offset N] [--limit N]
                             inspect declared matches, not readiness or assignments
   /delegate --from RUNBOOK --reason TEXT [--effects POLICY.json]
+  /delegate --propose --from SEED --reason TEXT --goal TEXT [--effects POLICY.json]
                             review new work through the stopped-run revision gate
   /propose --from SEED.json GOAL
                             one disclosed no-tools invocation; unapproved V5/V6 seed refinement
@@ -591,7 +592,7 @@ class InteractiveController:
         if command == "/revise":
             return self._revise(arguments)
         if command == "/delegate":
-            return self._delegate(arguments)
+            return self._delegate(arguments, on_chunk=on_chunk)
         if command == "/plan":
             if self.session["plan"] is None:
                 raise InteractiveError("there is no plan; start with /grill GOAL")
@@ -890,7 +891,7 @@ class InteractiveController:
         )
         return self._respond(rendered)
 
-    def _propose(self, arguments: Sequence[str], *, on_chunk=None) -> CommandResponse:
+    def _propose(self, arguments: Sequence[str], *, on_chunk=None, revision=None) -> CommandResponse:
         from .debug_execution import source_identity
         from .proposal import MAX_SEED_BYTES, MAX_RESPONSE_CHARS, parse_response, read_seed_bytes, request_prompt, strict_json, validate_seed
         if len(arguments) < 3 or arguments[0] != "--from":
@@ -912,6 +913,17 @@ class InteractiveController:
         source = source_identity(self.workspace)
         goal, owner = " ".join(arguments[2:]), getpass.getuser()
         prompt = request_prompt(seed, goal, source, owner)
+        context = None
+        if revision is not None:
+            from .revision_ui import RevisionUI
+            from .proposal import MAX_PROMPT_CHARS
+            context = RevisionUI(self.store)._planning_context_locked(self.session, seed,
+                reason=revision["reason"], owner=owner, effect_reruns=revision["effects"])
+            prompt += "\nThis is an unapproved linked successor proposal. The parent stays unchanged until exact human approval.\n" + json.dumps(
+                dict(REVISION_CONTEXT=context, REASON=revision["reason"], EFFECT_POLICY=revision["effects"]), sort_keys=True, separators=(",", ":"))
+            reject_sensitive_text(prompt, "delegation planning request")
+            if len(prompt) > MAX_PROMPT_CHARS:
+                raise InteractiveError("seed plus revision context exceeds the bounded planning message")
         call_id = "planning-" + uuid4().hex
         seed_bytes_digest = "sha256:" + hashlib.sha256(seed_bytes).hexdigest()
         # This is the exact logical request, including the existing bounded
@@ -921,9 +933,14 @@ class InteractiveController:
         origin = {"kind": "seed_assisted_model_proposal", "seed_path": str(path),
                   "seed_digest": canonical_digest(seed), "seed_bytes_digest": seed_bytes_digest,
                   "request_digest": canonical_digest(request), "response_digest": None, "planning_call_id": call_id}
+        if revision is not None:
+            origin.update(kind="delegation_model_proposal", revision_context=context,
+                revision_reason=revision["reason"], effect_policy=revision["effects"], review_digest=None)
         notice = ("PROPOSE — one planning-only {} invocation, 120-second request timeout; internal provider request count and cost may be unknown and are not hard-capped. "
                   "Sending the reviewed seed, goal and existing bounded dialogue, not repository file contents. "
                   "No tools, worker launch, approval, or automatic retry. Response must stay inside the seed envelope.").format(self.session["model"])
+        if revision is not None:
+            notice += " Also sending the bounded parent-state metadata and explicit effect reuse policy. This can only produce a linked revision review; the parent remains unchanged."
         self._persist_message("system", notice, kind="notice")
         if on_chunk:
             on_chunk(notice + "\n")
@@ -932,7 +949,9 @@ class InteractiveController:
                                          "request": request, "observed_at": datetime.now(timezone.utc).isoformat()})
         outcome = "rejected"
         try:
-            reply, _ = self._call_planning(prompt, request_kind="seed_proposal", call_id=call_id,
+            if self._cancel_event.is_set():
+                raise ConversationCancelled("proposal cancelled before planning invocation")
+            reply, _ = self._call_planning(prompt, request_kind="delegation_proposal" if revision is not None else "seed_proposal", call_id=call_id,
                                            history=request["history"], no_tools=True)
             if not isinstance(reply.text, str):
                 raise PlanningError("planning provider returned a non-text proposal")
@@ -948,8 +967,19 @@ class InteractiveController:
                 outcome = "questions"
                 questions = "\n".join("{}. {}".format(index, text) for index, text in enumerate(result["questions"], 1))
                 self._persist_message("orchestrator", "Questions about the proposed goal " + goal + ":\n" + questions, kind="conversation")
-                return self._respond("PROPOSAL QUESTIONS — no new candidate or approval was created. Existing plan, if any, is unchanged. Answer in dialogue, revise the seed if needed, then explicitly invoke /propose again.\n" + questions)
+                retry = "/delegate --propose" if revision is not None else "/propose"
+                return replace(self._respond("PROPOSAL QUESTIONS — no new candidate or approval was created. Existing plan, if any, is unchanged. Answer in dialogue, revise the seed if needed, then explicitly invoke " + retry + " again.\n" + questions), focus_orchestrator=revision is not None)
             runbook = result["runbook"]
+            if revision is not None:
+                from .revision_ui import RevisionUI, render_review
+                if self._cancel_event.is_set():
+                    raise ConversationCancelled("delegation proposal cancelled before review")
+                review = RevisionUI(self.store)._propose_locked(self.session, runbook,
+                    reason=revision["reason"], owner=owner, effect_reruns=revision["effects"], expected_context=context)
+                origin["review_digest"] = review["review_digest"]
+                outcome = "revision_review_ready"
+                return replace(self._respond("MODEL DELEGATION REVIEW — parent run and approval unchanged. No worker started; review the full impact and approve only with /revise apply DIGEST. /run remains separate.",
+                    render_review(review)), focus_orchestrator=True)
             kinds = {agent["adapter"]["kind"] for agent in runbook["agents"]}
             plan = validate_envelope({
                 "schema": "camol.product_plan", "schema_version": 3, "proposal": None,
@@ -1271,8 +1301,21 @@ class InteractiveController:
             reason=options["--reason"], owner=owner, effect_reruns=effects)
         return replace(self._respond(render_review(review)), focus_orchestrator=True)
 
-    def _delegate(self, arguments: Sequence[str]) -> CommandResponse:
+    def _delegate(self, arguments: Sequence[str], *, on_chunk=None) -> CommandResponse:
         from .delegation import delegation_snapshot, render_delegation
+        if arguments and arguments[0] == "--propose":
+            from .json_contracts import load_contract
+            remaining, options = list(arguments[1:]), {}
+            while remaining:
+                option = remaining.pop(0)
+                if option not in {"--from", "--reason", "--goal", "--effects"} or option in options or not remaining:
+                    raise InteractiveError("usage: /delegate --propose --from REVIEWED_SEED --reason TEXT --goal TEXT [--effects POLICY.json]")
+                options[option] = remaining.pop(0)
+            if not all(options.get(key, "").strip() for key in ("--from", "--reason", "--goal")):
+                raise InteractiveError("delegation proposal requires a reviewed seed, reason and goal; quote multiword values")
+            effects = load_contract(options["--effects"], max_bytes=65536) if "--effects" in options else []
+            return self._propose(["--from", options["--from"], options["--goal"]], on_chunk=on_chunk,
+                revision=dict(reason=options["--reason"], effects=effects))
         if any(option in {"--from", "--reason", "--effects"} for option in arguments):
             # Reuse the exact revision review and its stopped-owner/source checks.
             # This command cannot apply a review or start the resulting work.

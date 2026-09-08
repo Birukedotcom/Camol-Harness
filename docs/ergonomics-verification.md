@@ -823,3 +823,31 @@ attempts are not full acceptance results. The active full gates remain pending.
 Both feature branches were pushed under the owner's Git identity; main and the
 user's installed Camol were not modified. Native live-provider acceptance and the
 remaining product/spec gates are still open.
+
+## Model-assisted linked delegation
+
+The isolated `codex/v0-delegation-proposals` successor adds `/delegate --propose`
+with an explicit reviewed successor seed, reason and goal. It uses one disclosed
+no-tools planner call, binds stopped-parent state before the call and checks it
+again under the owner lock before publishing the impact review. The parent
+session and approval remain unchanged until exact `/revise apply`; execution is
+still separate. Model output cannot widen the seed's command/resource/evaluator
+authority. See [the command and limits](plan-revisions.md#model-assisted-delegation-revisions).
+
+The existing 47-test proposal/revision/delegation group passed on Python 3.12 in
+85.915 seconds. The first new eight-test run had two fixture defects: it expected
+`failed` for a cancelled planning call, and queried a nonexistent `gate` control
+command instead of the existing `acceptance.pending_gates` projection. Neither
+required weakening product behavior. The corrected eight-test group passed in
+25.446 seconds on Python 3.12 and 26.701 seconds on Python 3.9.
+
+The final **13-test** group passed in **35.631 seconds on Python 3.12** and
+**37.055 seconds on Python 3.9**. It covers actual terminal submission from a box,
+durable review recovery after client restart without a new call, live-owner and
+dirty-source refusal before planning, exact source-cursor races, changed seeds,
+authority escalation, invalid effect policy and cancellation both before and
+after model response. The model itself is controlled: no paid account was used.
+One real detached successor build traverses exact revision approval, human task
+gates and final acceptance, leaves source unchanged and replays both linked runs.
+Existing full-suite gates are for the predecessor product, not this new feature;
+expanded and fresh installed-package results remain separate.

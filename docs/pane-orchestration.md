@@ -47,6 +47,7 @@ Connected transport, account observation and task readiness are separate indicat
 | `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX [OFFSET]]`, `/outbox [REQUEST_ID]` | Interactive sends/replies, inbox pane and immutable pending-request inspection | Implemented; explicit `/message retry ID` preserves its original scope |
 | `/delegate [TASK] [--json] [--offset N] [--limit N]` | Inspect declared capability matches and recorded assignments | Implemented; not readiness or a scheduling decision |
 | `/delegate --from RUNBOOK --reason TEXT [--effects POLICY.json]` | Review new/redistributed work through the existing stopped-owner revision workflow | Implemented; exact `/revise apply DIGEST` and separate `/run` remain required |
+| `/delegate --propose --from SEED --reason TEXT --goal TEXT [--effects POLICY.json]` | Ask the selected planner for a bounded linked successor candidate | Implemented; one disclosed no-tools call, unchanged parent, exact human revision review and separate launch |
 
 The overview is a ledger snapshot, not an active transport probe. Its digest and
 event cursor identify what was observed. Before a ledger exists it explicitly

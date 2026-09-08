@@ -83,3 +83,59 @@ chain fails. Ordinary non-revision archives remain schema 1.
 The migration is intentionally conservative: no automatic selective task-state
 carryover, no revised external-effect replay, and no reclassification of old
 evidence under new invariants. Those require additional explicit protocols.
+
+## Model-assisted delegation revisions
+
+An existing source-bound, human-approved V5/V6 run can request a linked successor
+proposal from the selected planning model:
+
+```text
+/delegate --propose --from REVIEWED_SEED.json --reason "Why work changes" --goal "Observable outcome"
+```
+
+The seed is an explicitly reviewed complete successor envelope, with a new run ID,
+exact workers/profiles, command/evaluator authority and resource ceilings. It may
+describe a different N-box topology from the parent, but the model cannot expand
+the seed's authority. The existing proposal validator preserves commands, task
+and step identities, evaluator assets, resource limits, prior invariant definitions
+and obligations; every proposed task gate and final acceptance requires human
+approval. Instructions/goals, additional acceptance conditions and dependencies
+can be refined within that envelope. Added tasks must satisfy the existing bounded
+seed command, attempt, evidence and resource rules. A model asking for more
+authority receives no grant: it can return questions for the human instead.
+
+Before invoking the planner, Camol checks the exact approved parent/source,
+quiescence, absence of active/orphan invocations, distinct unused successor ID,
+human/worker identity separation, and explicit prior-effect reuse policy. A live
+owner, dirty source or invalid effect policy denies the request without a model
+call. `--effects POLICY.json` supplies the same exact `reuse_confirmed` policy
+used by handwritten revisions; the model cannot generate or approve that policy.
+
+The one no-tools planning call sends the seed, goal, bounded dialogue, reason,
+effect policy and parent-state metadata. Parent metadata names run/plan/product
+digests, event cursor, state digest, integration head and up to 64 task status /
+dependency / assignment / attempt rows. It is historical context, not readiness
+or current tool-output evidence. No repository crawl or raw worker transcript is
+implicitly sent. The complete prompt remains bounded to 12,000 characters; the
+seed is at most 24,000 bytes and the model response at most 64,000 characters.
+Planning has a 120-second request timeout but no hard token/cost/internal-request
+cap. Those limits are disclosed before calling; unknown usage is not zero usage.
+
+After parsing, Camol rechecks the exact source checkout and seed bytes, then the
+parent plan, execution digest and event cursor under the owner lock. Any parent
+advancement rejects the stale candidate, retains planning usage, and requires a
+new explicit request. An accepted candidate is passed as data to the existing
+revision service, which produces the full before/after impact review. The session
+stays on its parent run with its original plan and approval. The proposal journal
+links the planning call, request/response digests, parent context and exact review
+digest; it is provenance, not authority to execute.
+
+Use `/revise` to reopen the durable review without another model call. Only
+`/revise apply REVIEW_DIGEST` adopts it, and `/run` is a separate action. New task
+gates use `/gate TASK ASSESSMENT_DIGEST`; final acceptance remains `/accept` with
+its exact outcome digest. Questions, rejected output and cancellation do not
+publish or approve a successor. No uncertain model request is automatically retried.
+
+This implements model-assisted **stopped-run** amendments. It does not implement
+live lease reassignment, automatic authority expansion, selective carryover of
+green gates, independent oracle adequacy proof or real provider acceptance.

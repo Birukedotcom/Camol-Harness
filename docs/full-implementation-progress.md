@@ -70,7 +70,11 @@ Native live acceptance remains pending.
 Existing profiles keep peer tools disabled.
 The `/delegate` view exposes declared compatibility without readiness claims;
 new-work review reuses the exact stopped-owner revision approval and separate
-launch. Automatic proposal generation and live reassignment remain open.
+launch. Model-assisted linked successor generation now accepts a reviewed V5/V6
+seed, binds stopped-parent metadata before planning, rejects concurrent source
+advancement and feeds the candidate into that exact revision review. It does not
+automatically expand authority, approve a revision, or reassign running leases;
+live reassignment and unrestricted autonomous plan expansion remain open.
 The durable
 lease-scoped mailbox now has owner CLI, embedding, worker delivery/consumption,
 idempotency, rejection records and offline inspection. Interactive sends/replies,
