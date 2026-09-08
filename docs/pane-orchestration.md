@@ -42,6 +42,7 @@ Connected transport, account observation and task readiness are separate indicat
 | `/layout focus\|split\|grid` | Composer plus paginated box monitoring; detail selection is scope-checked | Implemented; metadata tiles, not mirrored PTYs |
 | `camol box list\|resolve\|read` | Scoped observation using explicit run/box IDs, including stopped runs | Implemented; no message delivery or execution grant |
 | `camol box observe\|message\|inbox` | Lease-scoped owner CLI and embedding mailbox, idempotent sends and worker consumption receipts | Implemented; automatic peer-tool/remote integration pending |
+| `adapter.peer_tools` / `Harness.peer_tools()` | Current-turn list/observe/own-inbox and read-before-send with replayable observations | Implemented for explicit Python embedding adapters; native tool transport pending |
 | `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX [OFFSET]]`, `/outbox [REQUEST_ID]` | Interactive sends/replies, inbox pane and immutable pending-request inspection | Implemented; explicit `/message retry ID` preserves its original scope |
 | `/delegate` | Review proposed task allocation; approved plan amendment when scope changes | Planned; kernel leasing remains authoritative |
 
@@ -183,6 +184,10 @@ not an archive of old run layouts. Neither organization nor selection changes ta
 contracts, grants, budgets, leases, evaluations, plan approval or worker execution.
 
 ## Agent-to-agent bridge
+
+The [turn-scoped peer API](peer-tools.md) now supports explicit Python embedding
+adapters. Its recorded observations bind the caller's current turn; native CLI
+tool registration/transport and remote workers remain open integration gates.
 
 Observation and mutation are separate commands. A read receipt should bind the
 exact subject/generation and observed cursor, not merely a temporary file indicating

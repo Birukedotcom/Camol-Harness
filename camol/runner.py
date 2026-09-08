@@ -37,7 +37,10 @@ from .source_binding import SourceBindingError, load_binding, require_source_adm
 
 
 class HarnessRunner:
-    def __init__(self, orchestrator: Orchestrator, workspace: Path, *, state_dir: Optional[Path] = None, capacity_broker=None):
+    def __init__(self, orchestrator: Orchestrator, workspace: Path, *, state_dir: Optional[Path] = None, capacity_broker=None, adapter_factory=None):
+        if adapter_factory is not None and not callable(adapter_factory):
+            raise AdapterError("embedding adapter_factory must be callable")
+        self.adapter_factory = adapter_factory
         self.orchestrator = orchestrator
         self.workspace = Path(workspace).resolve()
         self.state_dir = Path(state_dir).resolve() if state_dir is not None else None
@@ -703,9 +706,10 @@ class HarnessRunner:
         state = self.orchestrator.state(run_id)
         agent = self._agent_for(state, assignment["agent_id"])
         execution_workspace = self._execution_workspace(run_id, assignment)
+        factory = self.adapter_factory if self.adapter_factory is not None else create_agent_adapter
         if self.state_dir is not None:
             bundle = self._admission_for(state, assignment)
-            adapter = create_agent_adapter(
+            adapter = factory(
                 agent["adapter"]["kind"],
                 execution_workspace,
                 run_id,
@@ -716,7 +720,7 @@ class HarnessRunner:
                 redactor=self.orchestrator.redactor,
             )
         else:
-            adapter = create_agent_adapter(agent["adapter"]["kind"], execution_workspace, run_id)
+            adapter = factory(agent["adapter"]["kind"], execution_workspace, run_id)
         async def authorize_launch(owned, number):
             self._ensure_source_binding(run_id)
             if self.state_dir is not None:
@@ -1116,9 +1120,21 @@ class HarnessRunner:
             raise ProviderBudgetError("duplicate live provider turn ownership")
         adapter.hosted_invocation_id = None
         self._provider_turns[key] = adapter
+        peer_tools = None
         try:
+            if getattr(adapter, "supports_peer_tools", False) is True:
+                from .peer_tools import PeerTools
+                try:
+                    peer_tools = PeerTools(self.orchestrator, run_id, assignment, turn_number,
+                        active=lambda: self._provider_turns.get(key) is adapter)
+                except ValueError as error:
+                    raise AdapterError("peer tools require a currently valid fenced worker turn") from error
+                adapter.peer_tools = peer_tools
             return await adapter.execute_turn(agent, assignment, packet, turn_number, **kwargs)
         finally:
+            if peer_tools is not None:
+                peer_tools.close()
+                adapter.peer_tools = None
             self._provider_turns.pop(key, None)
 
     async def _wait_for_provider_budget(self, run_id, assignment, error):

@@ -26,7 +26,10 @@ class Harness:
     Event consumers use durable sequence cursors; reconnecting never requires a TUI.
     """
 
-    def __init__(self, workspace: Path, state_dir: Path, *, database: Optional[Path] = None):
+    def __init__(self, workspace: Path, state_dir: Path, *, database: Optional[Path] = None, adapter_factory=None):
+        if adapter_factory is not None and not callable(adapter_factory):
+            raise StateTransitionError("embedding adapter_factory must be callable")
+        self.adapter_factory = adapter_factory
         self.workspace = Path(workspace).resolve()
         self.paths = SupervisorPaths.under(state_dir, database=database)
         try:
@@ -59,7 +62,7 @@ class Harness:
         try:
             self.store = SQLiteEventStore(self.paths.database)
             self.orchestrator = Orchestrator(self.store)
-            self.runner = HarnessRunner(self.orchestrator, self.workspace, state_dir=self.paths.state_dir)
+            self.runner = HarnessRunner(self.orchestrator, self.workspace, state_dir=self.paths.state_dir, adapter_factory=self.adapter_factory)
             self.run_id = self.store.latest_run_id()
         except BaseException:
             if self.store is not None:
@@ -138,7 +141,7 @@ class Harness:
         successor = self.orchestrator.apply_revision(run_id, proposal_digest, by)
         self.run_id = successor["run_id"]
         previous_runner = self.runner
-        self.runner = HarnessRunner(self.orchestrator, self.workspace, state_dir=self.paths.state_dir)
+        self.runner = HarnessRunner(self.orchestrator, self.workspace, state_dir=self.paths.state_dir, adapter_factory=self.adapter_factory)
         previous_runner.close()
         return successor
 
@@ -248,3 +251,8 @@ class Harness:
         """Owner-scoped observation/post/inbox API; no implicit execution."""
         from .mailbox import Mailbox
         return Mailbox(self.orchestrator, self._require_run())
+
+    def peer_tools(self, assignment, turn_number):
+        """Owner-side turn-scoped adapter tools; not a remote authentication API."""
+        from .peer_tools import PeerTools
+        return PeerTools(self.orchestrator, self._require_run(), assignment, turn_number)

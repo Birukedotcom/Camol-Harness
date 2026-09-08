@@ -33,7 +33,16 @@ class HarnessApiTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_embedded_n_box_build_approval_export_and_reopen(self):
-        with Harness(self.workspace, self.state_dir) as harness:
+        from camol.adapter import create_agent_adapter
+        factory_calls = []
+        class Factory:
+            def __bool__(self):
+                return False
+            def __call__(self, *args, **kwargs):
+                factory_calls.append(args[0])
+                return create_agent_adapter(*args, **kwargs)
+        factory = Factory()
+        with Harness(self.workspace, self.state_dir, adapter_factory=factory) as harness:
             state = harness.prepare(ROOT / "examples/local-n-box-runbook.json")
             with self.assertRaisesRegex(StateTransitionError, "approve the exact"):
                 harness.run()
@@ -42,6 +51,8 @@ class HarnessApiTests(unittest.TestCase):
                 harness.approve(by="owner", digest="sha256:" + "0" * 64)
             harness.approve(by="owner", digest=state["plan_digest"])
             final = harness.run()
+            self.assertTrue(factory_calls)
+            self.assertIs(harness.runner.adapter_factory, factory)
             self.assertEqual(final["status"], "completed", final.get("terminal"))
             events = harness.events()
             self.assertTrue(all(task["status"] == "succeeded" for task in final["tasks"].values()))

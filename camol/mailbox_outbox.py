@@ -15,6 +15,13 @@ class OutboxError(ValueError):
     pass
 
 
+def _request_id(value):
+    require_identifier(value, "outbox request ID")
+    if "/" in value or "\\" in value or value in {".", ".."}:
+        raise OutboxError("outbox request ID must be a single filename component")
+    return value
+
+
 def _private(info, directory=False):
     if (not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
             or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600)
@@ -51,6 +58,7 @@ def validate(value):
         raise OutboxError("outbox request has missing or unknown fields")
     for key in ("run_id", "box_id", "request_id", "correlation_id"):
         require_identifier(params[key], key)
+    _request_id(params["request_id"])
     require_digest(params["plan_digest"], "plan digest")
     if (not isinstance(params["body"], str) or not 1 <= len(params["body"]) <= 2000
             or not isinstance(params["kind"], str) or params["kind"] not in {"information", "question", "proposal", "warning"}
@@ -82,7 +90,7 @@ class Outbox:
         return True
 
     def get(self, request_id):
-        require_identifier(request_id, "outbox request ID")
+        _request_id(request_id)
         if not self._directory():
             raise OutboxError("no saved message request")
         value = validate(_read(self.path / (request_id + ".json")))

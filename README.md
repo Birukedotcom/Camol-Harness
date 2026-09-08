@@ -263,6 +263,10 @@ status tiles. Alt+Left/Right pages; Tab/Enter or click opens a detail; Escape
 returns to the composer. `/layout focus` restores the single view. Tiles show
 recorded state/usage, not live readiness, and never send terminal input to workers.
 
+Python embedding adapters may opt into [turn-scoped peer tools](docs/peer-tools.md)
+for replayable peer observations and read-before-send. This does not yet register
+tools inside native Claude/Codex CLI processes or provide a remote worker bridge.
+
 Provider startup displays cached observations without running account probes.
 `/connections refresh` requests a bounded inspection; `↻` marks that explicit
 refresh in progress. Cached authentication is labeled as an observation, not live

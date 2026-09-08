@@ -54,7 +54,9 @@ current-run searchable switcher is now implemented with grouped metadata, pagina
 keyboard selection and stale-plan rejection. Exact-run offline box inspection and
 persistent current-plan pins/groups are implemented. Focus/split/paginated-grid
 metadata monitoring is implemented; the automatic peer-tool bridge remains an
-implementation gate. The durable
+implementation gate. The new turn-scoped Python peer-tool interface supports
+explicit embedding adapters with replayable reads; native transport is not enabled.
+The durable
 lease-scoped mailbox now has owner CLI, embedding, worker delivery/consumption,
 idempotency, rejection records and offline inspection. Interactive sends/replies,
 inbox panes and private uncertain-send recovery are implemented; adding a visual pane never
@@ -74,7 +76,7 @@ usable Python/CLI entry points. A fixture cannot establish live provider maturit
 | Invariants, obligations, thresholds, final acceptance | Implemented V5; integration ongoing | Explicit evaluator mappings, candidate+integration gates, exact owner acceptance; 5 E2E gate tests passed |
 | Plan amendment / migration | Conservative mode implemented | Exact owner-approved linked successor, atomic source seal, all tasks reverified, inherited costs, self-contained lineage export; public API E2E passed |
 | Real provider execution | Claude/Codex/local adapter code implemented; live gates pending | Explicit capability tiers, frozen profiles and crash-safe invocation intents; no live paid/inference validation |
-| Box inspection and build workflow | In progress | Overview, exact scoped switcher, offline evidence and persistent current-plan pins/groups; split/grid layouts and scoped messaging remain open |
+| Box inspection and build workflow | In progress | Overview, scoped switcher, offline evidence, pins/groups, tiled monitoring and durable mailbox; turn-scoped peer tools for Python embeddings; native peer transport/delegation remain open |
 | Capacity / heterogeneous N boxes | Implemented; integration ongoing | Shared broker, fresh observed/owner-declared pools, suspect reservations, real two-run single-slot fairness/cancellation and broker-cursor wake; V6 |
 | Watchers and correctable evidence | Local scheduled source implemented | Durable approved polling, normalized JSONL source, daemon restart, interleaving/expiry/cursor/cancellation tests; live cloud source adapters pending |
 | Repository dependency graph | Implemented; adversarial tests ongoing | Safe static Python/packaging/npm/Docker/runbook scans, evidence-linked impact/path/cycle queries; JSON/DOT/GraphML |

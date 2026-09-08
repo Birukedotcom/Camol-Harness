@@ -422,3 +422,53 @@ mailbox/UI whole-suite runs remain independent pending checks; this successor
 still needs its own full-suite gate. Automatic peer tools, reviewed delegation,
 remote execution, task-qualified dependency proof and public-release gates remain
 open. The complete V0 goal is still active.
+
+## Embedding peer tools and outbox path review
+
+Completed predecessor results: mailbox core `d7e12221c48fb936a07ed58326e546a78681cf37`
+passed **878 tests on Python 3.9 in 696.327 seconds**, alongside its earlier
+Python 3.12 full-suite result. Mailbox UI `fac94d1` passed **890 tests on Python
+3.12 in 657.031 seconds**; its Python 3.9 run remains separate. Tiled monitoring
+`d8856da97f5e075c5c005ca89428839e0f645fd1` passed **897 tests on Python 3.12 in
+713.347 seconds**. These are not whole-suite results for the successor below.
+
+The isolated `codex/v0-peer-tools` wave adds an explicit Python embedding adapter
+factory and turn-scoped `PeerTools`. Successful list/observe/own-inbox reads are
+durable and recomputed during replay; read-before-send requires the same caller's
+recorded observation. Objects close when the owning adapter returns, raises or is
+cancelled. Unsupported controls, stale/revoked turns, expired observations,
+changed targets, impersonated actors, changed results/digests/types, duplicate
+requests and bounded-read exhaustion are rejected. Reads preserve task state and
+token counters; no model call occurs inside the tools.
+
+An initial eight-test peer group passed in **26.571 seconds**. The expanded
+**52-test** peer/mailbox/UI/API/inspection group passed on Python 3.12
+(**116.010 seconds**) and Python 3.9 (**122.028 seconds**). After adding the public
+factory path, **15 peer/API tests** passed on Python 3.12 (**38.699 seconds**) and
+Python 3.9 (**41.097 seconds**). Final cancellation, false-valued callable factory
+and outbox traversal assertions passed in a three-test Python 3.9 check
+(**15.305 seconds**) and the installed check below.
+
+The actual local subprocess build uses an explicitly supplied embedding adapter
+wrapper to observe peers during its owned turns, finishes with one attempt per
+task, closes every tool object and reproduces the read history in verified export
+and offline box inspection. A separate public `Harness(adapter_factory=...)`
+build verifies the factory survives runner preparation and that a legitimate
+callable with a false boolean value is still used. Cross-worker message tests
+separately prove exact worker sender/recipient bindings and queued-versus-consumed
+semantics; the build fixture does not claim autonomous hosted-model tool use.
+
+Review also found that the broad logical identifier validator permits slash
+characters, while private outbox request IDs are filenames. Outbox reads and
+writes now require a single filename component before touching a record; tests
+reject traversal and slash/backslash forms even when the rest of the intent is
+valid. Native UI-generated UUID request IDs remain compatible.
+
+A fresh source distribution rebuilt into a wheel was installed with TUI/graph
+extras in an independent environment. **21 installed-package tests passed in
+67.618 seconds**, covering all peer tests, all mailbox UI cases and the public
+embedding build/approval/export/reopen case. The launcher asserted an installed
+`site-packages` import. No paid provider request, real account login, downloaded
+model weights or remote host was used. Complete successor suites remain a separate
+gate. Native CLI tool transport, failed-tool-attempt telemetry and the broader
+remaining spec gates are explicitly listed in [peer-tools.md](peer-tools.md).

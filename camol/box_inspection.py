@@ -76,7 +76,7 @@ def box_snapshot(run_id, runbook, state, events, box_id, *, after_seq=0, limit=2
                      if isinstance(payload.get(name), str)]
         associated = (named == box_id or (binding.get("run_id") == run_id and binding.get("box_id") == box_id)
                       or (named is None and any(owners.get(task) == box_id for task in mentioned)))
-        if event.get("type") in {"BOX_MESSAGE_POSTED", "BOX_MESSAGE_DELIVERED", "BOX_MESSAGE_CONSUMED", "BOX_MESSAGE_SEND_REJECTED"}:
+        if event.get("type") in {"BOX_MESSAGE_POSTED", "BOX_MESSAGE_DELIVERED", "BOX_MESSAGE_CONSUMED", "BOX_MESSAGE_SEND_REJECTED", "BOX_PEER_READ_RECORDED"}:
             target = payload.get("target", {}).get("subject", payload.get("subject", {}))
             sender = payload.get("sender", {}).get("subject") or {}
             associated = associated or any(item.get("run_id") == run_id and item.get("box_id") == box_id for item in (target, sender))

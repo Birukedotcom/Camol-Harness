@@ -144,6 +144,17 @@ class MailboxUITests(unittest.TestCase):
         self.assertIn("Invalid live response", result)
         self.assertNotIn("RETAINED", result)
 
+    def test_outbox_identifiers_cannot_traverse_paths_even_with_valid_intent(self):
+        self.controller.handle("/message {} note".format(self.fixture.box))
+        record = self.outbox.list()[0]["intent"]
+        for identity in ("a/../../escaped", "a/b", "a\\b"):
+            with self.assertRaises(ValueError):
+                self.outbox.get(identity)
+            params = dict(record["params"], request_id=identity)
+            with self.assertRaises(ValueError):
+                self.outbox.put(record["scope"], record["sender"], params)
+        self.assertEqual(len(self.outbox.list()), 1)
+
     def test_saved_acceptance_identity_and_unhashable_intent_are_rejected(self):
         self.controller.handle("/message {} note".format(self.fixture.box))
         record = self.outbox.list()[0]
