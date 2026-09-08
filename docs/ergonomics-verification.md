@@ -1060,3 +1060,19 @@ linked ancestry, source-independent restoration, actual CLI round trip and the
 predecessor archive/recovery/revision cases. No user source was archived and no
 provider/model call ran. Fresh installed-package and whole-suite verification
 remain separate from these focused results.
+
+Product checkpoint `fc855ffe04c3ce2b8b50de7fa4e0bcc75d1ee071` is pushed on
+`codex/v0-run-recovery` under the owner's identity. A fresh sdist-to-wheel build
+installed with TUI/graph/recovery extras passed **71 installed-package tests in
+126.143 seconds**. Camol was imported from `site-packages` before source fixtures;
+all five changed product modules matched the source bytes. Tests cover the new
+run recovery, workspace recovery, archive boundary, revisions and embedding API.
+Installed recovery help and example validation also passed. A separate wheel
+installation with no extras imports the base harness and run-recovery module,
+shows CLI help, and refuses encryption with an actionable dependency message.
+
+Both full-suite runs for this product checkpoint have started with verbose logs
+and per-test stall diagnostics. They are not yet passing gates. No main checkout,
+user installation, account configuration or hosted model was changed by these
+checks. The active acceptance ledger retains the remaining implementation and
+live-validation gates.
