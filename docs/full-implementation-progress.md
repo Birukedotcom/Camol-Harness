@@ -235,6 +235,10 @@ also passed in 104.689 seconds; final whole-suite checks still follow this snaps
 - Remote worker authentication/distribution, live cloud/voice profiles, complete
   retention enforcement, multi-platform CI evidence and the owner's public license
   decision remain open. The spatial visualizer is explicitly post-v1.
+  The local executor now requires a pinned placement probe for nonempty V6
+  placement, separately from pool matching, and rechecks before launch. A remote
+  label cannot silently execute a remote-required task locally; region stays
+  unproven. This closes a reproduced admission defect, not remote distribution.
 - Recorded completed-run evidence/code recovery does not close operational restore
   or retention. Independent archive reconstruction cannot authorize reuse of old
   leases, credentials, budgets, remote effects, or removal of the original stores.

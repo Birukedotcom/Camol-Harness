@@ -53,6 +53,7 @@ from .readiness import (
 from .runbook import load_runbook, runbook_digest
 from .schema import SchemaError, canonical_digest, parse_timestamp
 from .providers import ProviderError, model_profile_for_adapter
+from .execution_placement import LocalExecutionPlacementProbe, required_placement
 
 __all__ = ["DoctorOptions", "DoctorReport", "run_doctor", "EXIT_READY", "EXIT_NOT_READY", "EXIT_PROBE_FAILURE"]
 
@@ -178,7 +179,12 @@ def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = No
         for agent in runbook["agents"]:
             if not _eligible(task, agent):
                 continue
-            agent_probes = registry.agent_probes(agent)
+            agent_probes = list(registry.agent_probes(agent))
+            placement = required_placement(task)
+            if placement:
+                # This read-only inspection does not prepare or verify the
+                # execution sandbox; never promote its requested trust tier.
+                agent_probes.append(LocalExecutionPlacementProbe(placement, None))
             agent_outcomes: List[ProbeOutcome] = []
             failed = False
             for probe in agent_probes:

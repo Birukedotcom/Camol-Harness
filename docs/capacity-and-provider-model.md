@@ -306,3 +306,52 @@ The broker provides finite, shared accounting and suitability/fairness checks. I
 does not yet supply automatic historical-performance ranking, dynamic model loading,
 cloud provisioning, or an authenticated cross-host broker transport. These remain
 separate adapter and operational proof obligations.
+
+## Execution-backed local placement
+
+Capacity supply attributes describe a pool; they are not proof that a worker
+actually executes there. The current `HarnessRunner` is local. A V6 task with
+nonempty `resource_requirements.placement` now requires an additional target-bound
+`execution.placement` probe before admission and any shared reservation or lease.
+Its definition pins the exact required fields and local sandbox policy tier.
+
+- `os` and `architecture` use exact lowercased `platform.system()` and
+  `platform.machine()` values from the running harness (for example `darwin` and
+  `arm64`). There is no alias normalization, binary-architecture inspection,
+  container discovery, hardware attestation or emulation guarantee.
+- `locality` is `local`, meaning the host running this harness, including when
+  Camol itself runs inside a VM. A terminal pane or a pool named remote does not
+  change the executor.
+- `trust_tier` comes from the frozen sandbox policy; admission independently
+  requires the existing sandbox boundary probe. A developer-trusted tier is not
+  enforcing isolation. The read-only doctor does not prepare or prove that boundary
+  and therefore reports its placement trust tier as unproven.
+- `region` is unproven. No environment variable, connection name or owner-declared
+  pool label is promoted to geographic execution evidence.
+
+Mismatching or unproven required fields produce `POLICY_DENIED`, with observed
+values and a repair/review hint. The runner also validates the exact placement
+probe and re-observes local attributes on assignment/resume and before each new
+worker invocation, before rate debit. A changed observation pauses the assignment
+without starting a worker turn. Empty placement retains earlier behavior.
+
+Existing ledgers remain readable/replayable; an old admission without this proof
+cannot authorize a new placement-constrained launch. These checks are a local
+admission prerequisite, not a distributed execution protocol or a continuous
+hardware monitor. The host and embedding Python process remain trusted.
+
+### Remote execution still requires a separate lifecycle
+
+The existing SSH control client attaches to an already running remote supervisor;
+it does not make this runner's workspace, sandbox, evaluator or adapter remote.
+Before distributed workers can be called implemented, their adapter must bind
+target identity and execution observations to admission, prepare isolated source
+and immutable evaluator inputs there, execute under fenced authority, and return
+authenticated event/artifact sequences. Reconnect must reconcile the exact
+invocation rather than duplicate it. Cancellation, checkpoint/salvage and teardown
+must prove what stopped and what was retained before releasing capacity or deleting
+anything. Adoption and owner-approved provisioning are distinct operations.
+
+Those are still open implementation and fault-injection gates. This placement
+guard deliberately does not invent that authority from capacity labels, pane
+selection, an SSH connection, or the trusted `adapter_factory` embedding hook.

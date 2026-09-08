@@ -1172,3 +1172,41 @@ results remain separate gates. The earlier graph-boundary full runs also remain
 active. No user installation, source-file link count, account configuration or
 model quota was changed to run these checks. Main remains clean at
 `cca1b4bdfe222db7be37621157fe21aa4bbe4517`.
+
+## Local execution-backed placement (2026-09-08)
+
+The isolated `codex/v0-execution-placement` branch reproduces a distinct runtime
+defect: a task requiring remote locality, with a matching remote-labeled capacity
+pool, completed two local refinement attempts. The baseline end-to-end test failed
+(`2 != 0` attempts, 4.428 seconds). Supply labels had not been checked against the
+actual executor. This is not evidence of remote execution.
+
+Nonempty V6 placement now adds a pinned required local observation to admission.
+Assignment/resume and pre-invocation checks require that proof and recheck local
+attributes. Mismatches refuse admission or pause before a new worker turn; empty
+placement remains compatible. Doctor reports the local host but leaves the
+unprepared sandbox tier and region unproven. Documentation separates this guard
+from the still-open distributed execution lifecycle.
+
+The first expanded test group exposed two fixture errors: the doctor test had
+not created its input directory, and a deliberately misbound receipt was rejected
+by the schema before reaching the launch helper. Both expectations were corrected.
+The legacy-admission test initially expected one consumed attempt; revocation
+before task start correctly restores the count to zero. Its final assertions
+require an actual recorded lease, refusal, zero turns/tokens, released reservation
+and identical replay. No product check was weakened for those corrections.
+
+The readiness/capacity/doctor/admission group passed **38 tests in 60.065 seconds
+on Python 3.12** and **63.151 seconds on Python 3.9**. After adding the legacy
+case, all **7 placement tests passed in 12.997 and 14.009 seconds**, respectively.
+The group and placement tests overlap (39 unique tests in the final union).
+They cover matching local refinement, target/config binding, remote and region
+denial, launch-time observation change, legacy evidence and read-only doctor.
+Installed-package and full-suite gates follow this source checkpoint.
+
+Earlier checkpoint terminal results also arrived: graph-boundary product
+`f760eabd931b1a660aada014534b2363df8783da` passed **1,062 tests in 926.399 seconds
+on Python 3.12** and **988.464 seconds on Python 3.9** (three optional skips).
+Managed-source product `c16dfdf02612e23ef6682011773336d3da73bedd` passed **1,070
+tests in 921.424 seconds on Python 3.12**; its Python 3.9 run remains in progress
+at this checkpoint. Neither result validates this later placement change.

@@ -36,6 +36,7 @@ from .schema import canonical_digest, require_bool, require_digest, parse_timest
 from .workspace import WorkspaceHandle, WorkspaceManager
 from .git_view import ENVIRONMENT_NAMES, GitInspectionProbe, GitViewError, prepare_view, scratch_path
 from .source_binding import SourceBaselineProbe
+from .execution_placement import LocalExecutionPlacementProbe, required_placement
 
 
 class AdmissionError(RuntimeError):
@@ -317,6 +318,9 @@ class AdmissionController:
 
         registry = self.registry_factory()
         registry.register(SandboxBoundaryProbe(sandbox_policy))
+        placement = required_placement(task)
+        if placement:
+            registry.register(LocalExecutionPlacementProbe(placement, sandbox_policy.trust_tier))
         registry.register(GitInspectionProbe(git_root, git_manifest))
         source_binding = self.workspaces._assert_bound_source(binding.run_id)
         if source_binding is not None:

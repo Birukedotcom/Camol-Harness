@@ -112,6 +112,9 @@ and evidence views. `/import` accepts an explicit runbook without inferring its
 invariant-to-evaluator mapping from prose. Schema V5 adds per-task human gates
 and `/accept` for the exact completed outcome. Schema V6 adds explicit shared
 capacity/placement contracts; connected accounts do not imply known quota.
+Nonempty placement also requires execution-backed local observations, not just
+matching pool labels. Remote locality or an unproven region cannot authorize a
+local worker. See [execution placement](docs/capacity-and-provider-model.md#execution-backed-local-placement).
 
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference

@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from uuid import uuid4
 
 from .admission import AdmissionBundle, AdmissionController, AdmissionError
+from .execution_placement import ExecutionPlacementError, require_local_placement
 from .adapter import AdapterError, create_agent_adapter
 from .artifacts import ArtifactError, ArtifactRef, ArtifactStore
 from .evaluation import (
@@ -82,6 +83,9 @@ class HarnessRunner:
         if self.capacity is None:
             return
         while True:
+            state = self.orchestrator.state(run_id)
+            if self.state_dir is not None:
+                require_local_placement(state["tasks"][assignment["task_id"]], self._admission_for(state, assignment))
             decision = self.capacity.before_turn(run_id, assignment, turn_number)
             if decision["status"] == "granted":
                 return
@@ -797,6 +801,9 @@ class HarnessRunner:
                 for observed in getattr(error, "observed_evidence", ()):
                     self._record_observed(run_id, assignment, observed)
                 raise
+            except ExecutionPlacementError as error:
+                self._pause_assignment(run_id, assignment, "POLICY_DENIED", str(error))
+                return
             except CapacityError as error:
                 self._pause_assignment(run_id, assignment, "CAPACITY_EXHAUSTED", str(error))
                 return
@@ -1209,8 +1216,9 @@ class HarnessRunner:
             boundary_state = self.orchestrator.state(run_id)
             admitted = self._admission_for(boundary_state, assignment)
             try:
+                require_local_placement(boundary_state["tasks"][assignment["task_id"]], admitted)
                 execution_environment(self.state_dir, self._execution_workspace(run_id, assignment), admitted)
-            except GitViewError as error:
+            except (GitViewError, ExecutionPlacementError) as error:
                 self._pause_assignment(run_id, assignment, "POLICY_DENIED", str(error))
                 return
             packet_root = (self.state_dir / "packets" / run_id / assignment["task_id"]).resolve()
