@@ -150,3 +150,9 @@ and never repaired implicitly. Receivers do not overwrite existing output on ret
 Remote transport, live revocation checks, actual target-side worker admission,
 execution, accounting and result promotion remain open. The received-copy receipt
 is deliberately not ingested as green readiness evidence.
+
+After receiving a V2 task copy, `camol source-handoff doctor` can authenticate the
+package and inspect that exact task/worker's local prerequisites without preparing
+or launching it. The complete [handoff diagnostic scope](handoff-readiness.md)
+explains expected evaluator binding, unchanged-source checks and why the resulting
+observation still is not authenticated target admission.

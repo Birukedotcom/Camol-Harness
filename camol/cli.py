@@ -657,6 +657,8 @@ def command_doctor(args: argparse.Namespace) -> int:
             min_free_bytes=args.min_free_bytes,
             services=tuple(args.require_service or ()),
             target_id=args.target_id,
+            task_id=args.task_id,
+            agent_id=args.agent_id,
         )
     )
     return report.exit_code
@@ -1067,7 +1069,15 @@ def command_source_handoff(args: argparse.Namespace) -> int:
     from .source_handoff import propose, receive_source
     from .recovery import load_recovery_key
     from datetime import datetime, timezone
-    if args.handoff_action == "receive":
+    if args.handoff_action == "doctor":
+        from .handoff_doctor import inspect_handoff
+        result = inspect_handoff(proposal=load_contract(args.proposal, max_bytes=65536), review_digest=args.review_digest,
+            by=args.by, archive=Path(args.archive), key=load_recovery_key(path=Path(args.key_file)),
+            runbook=Path(args.runbook), workspace=Path(args.workspace), state_dir=Path(args.state_dir),
+            target_id=args.target_id, generation=args.generation, agent_id=args.agent_id, evaluator_digest=args.evaluator_digest)
+        _write_json(result)
+        return result["exit_code"]
+    elif args.handoff_action == "receive":
         result = receive_source(archive=Path(args.archive), key=load_recovery_key(path=Path(args.key_file)),
             proposal=load_contract(args.proposal, max_bytes=65536), review_digest=args.review_digest,
             target_id=args.target_id, generation=args.generation, by=args.by, output=Path(args.output))
@@ -1486,6 +1496,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--min-free-bytes", type=int, default=1 << 30, help="required free disk at the state directory")
     doctor.add_argument("--require-service", action="append", metavar="HOST:PORT", help="read-only TCP reachability check; repeatable")
     doctor.add_argument("--target-id", help="override the local target identity (default: local:<hostname>)")
+    doctor.add_argument("--task-id", help="inspect only this exact task without changing the full plan digest")
+    doctor.add_argument("--agent-id", help="inspect only this exact worker; no fallback to another candidate")
     doctor.set_defaults(handler=command_doctor)
 
     preflight = subparsers.add_parser(
@@ -1631,6 +1643,11 @@ def build_parser() -> argparse.ArgumentParser:
     revise.set_defaults(handler=command_revise)
     handoff = subparsers.add_parser("source-handoff", help="review encrypted source copy to an adopted target; never execution authority")
     handoff_actions = handoff.add_subparsers(dest="handoff_action", required=True)
+    diagnose = handoff_actions.add_parser("doctor", help="read-only task/worker probes on an authenticated received copy; never admission or launch")
+    for flag in ("proposal", "review-digest", "by", "archive", "key-file", "runbook", "workspace", "state-dir",
+                 "target-id", "generation", "agent-id", "evaluator-digest"):
+        diagnose.add_argument("--" + flag, required=True)
+    diagnose.set_defaults(handler=command_source_handoff)
     for name in ("plan", "export", "receive", "inspect"):
         operation = handoff_actions.add_parser(name)
         if name != "receive":

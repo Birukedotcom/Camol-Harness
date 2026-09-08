@@ -292,6 +292,14 @@ transport or execution. Incremental artifacts, target admission, dispatch and
 trusted result/accounting promotion still need their own gates; see
 [source handoff](source-handoff.md).
 
+The `codex/v0-handoff-readiness` successor adds read-only, source-authenticated
+task/worker diagnosis at the receiver. Scope filtering preserves the full frozen
+plan/evaluator; changed source, expired approval and mismatched expected evaluator
+cannot report coherent readiness. Runtime probes for other workers are not run.
+This is a target-local observation, not authenticated machine identity or live
+controller admission. Isolated preparation, capacity, fencing and actual distributed
+launch remain required; see [handoff diagnostics](handoff-readiness.md).
+
 The isolated `codex/v0-vcs-push` follow-up implements an exact completed-integration
 push proposal, owner approval, durable pre-effect intent, isolated object-only Git
 publication, expected-ref race protection and final readback. Unknown outcomes

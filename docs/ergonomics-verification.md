@@ -1,5 +1,53 @@
 # Ergonomics checkpoint verification
 
+## Baseline source-handoff full-suite checkpoint
+
+Frozen `0e5da822db0f2216459c65eaa812d4d746f3c88e` passed **1,295 tests in
+1,363.502 seconds on Python 3.12**. Its completed log is
+`/tmp/camol-source-handoff-full-py312.log`. This includes VCS publication,
+uncertainty acknowledgment and baseline source handoff. It does not cover the
+subsequent task-specific selection, FIFO fix or handoff diagnostics; those need a
+new frozen full-suite run. Earlier failed checkpoints retain their original status.
+
+## Receiver-side scoped readiness diagnosis — 2026-09-08
+
+The isolated `codex/v0-handoff-readiness` successor adds exact task/worker filtering
+to ordinary doctor and an authenticated-source wrapper for received V2 task copies.
+Selected scope preserves the complete frozen plan/evaluator digest; a different
+worker cannot make the selected pair green. Package authentication, source checks
+before/after probing, approval freshness and expected evaluator matching are
+explicit. Read-only reports do not authenticate a machine, consult current
+controller state, allocate isolated workspaces, grant capacity or launch anything.
+See [the full diagnostic boundary](handoff-readiness.md).
+
+The existing doctor group passed **21 tests in 8.546 seconds**. The initial
+handoff group passed **16 tests in 33.788 seconds**; that count included eight
+baseline tests unintentionally rediscovered through a directly imported TestCase.
+The fixture now imports its module instead, and a new case proves nonselected
+workers are not probed and exercises the standalone scoped CLI. The expanded
+doctor/probe/source/task-handoff/FIFO group passed **84 tests in 72.775 seconds on
+Python 3.12** and **84 in 71.314 seconds on modern Python 3.9**. Logs:
+`/tmp/camol-handoff-doctor-existing.log`, `-first.log`, `-py312.log`, and `-py39.log`.
+
+Negative cases include unknown/incompatible workers, wrong owner/key/plan/source,
+missing target state, evaluator mismatch, mid-probe expiry and source mutation,
+and changing the runbook file after its validated document was captured. Real
+child CLI probing produces the scoped report without running a task, changing the
+ledger, creating state, or invoking a model. Synthetic clocks remain explicitly
+non-evidence in ordinary doctor. Handoff diagnosis uses the system clock and bounds
+its outer validity by both source approval and probe expiry.
+
+A fresh sdist/wheel was installed into
+`/tmp/camol-handoff-doctor-package.VJ1JSBVp/venv`. Outside-checkout imports verified
+site-packages ownership and byte equality for **121 product modules**, with
+Textual/MCP/cryptography absent before installing the optional encryption extra.
+The same **84 tests passed in 137.157 seconds from the installed wheel**; log
+`/tmp/camol-handoff-doctor-installed.log`. This is correctness evidence, not a
+controlled timing comparison. Installed handoff-doctor help, unchanged V1 example
+validation and `git diff --check` pass. Main is unchanged and clean at
+`cca1b4bdfe222db7be37621157fe21aa4bbe4517`; the user's global installation was not
+modified. No model/account/cloud acceptance is claimed by these local tests.
+
 ## Task-bound accepted source handoff — 2026-09-08
 
 The isolated `codex/v0-task-source-handoff` successor adds V2 proposals binding a

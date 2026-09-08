@@ -171,6 +171,9 @@ integration head, including prior work; linked revisions can name an existing
 checkout using `--source-workspace`. This verifies copied code, not remote worker
 readiness or execution.
 See [source handoff scope](docs/source-handoff.md).
+`camol source-handoff doctor` checks the received V2 task copy and selected worker
+against an expected evaluator digest without preparing or launching work.
+See [target-local diagnostic limits](docs/handoff-readiness.md).
 
 `camol models` separates download planning, exact approval, transfer and verified
 artifact inspection. It never implicitly downloads, loads or claims inference

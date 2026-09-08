@@ -50,8 +50,8 @@ from .readiness import (
     WorkspaceReceipt,
     assess_ready_to_lease,
 )
-from .runbook import load_runbook, runbook_digest
-from .schema import SchemaError, canonical_digest, parse_timestamp
+from .runbook import load_runbook, runbook_digest, validate_runbook
+from .schema import SchemaError, canonical_digest, parse_timestamp, require_identifier
 from .providers import ProviderError, model_profile_for_adapter
 from .execution_placement import LocalExecutionPlacementProbe, required_placement
 
@@ -82,6 +82,8 @@ class DoctorOptions:
     min_free_bytes: int = 1 << 30
     services: Sequence[str] = ()
     target_id: Optional[str] = None
+    task_id: Optional[str] = None
+    agent_id: Optional[str] = None
 
 
 @dataclass
@@ -130,14 +132,21 @@ def _probe_entry(outcome: ProbeOutcome, probe: Probe) -> Dict[str, Any]:
     )
 
 
-def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = None, env: Optional[Dict[str, str]] = None, stdout: Optional[TextIO] = None) -> DoctorReport:
+def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = None, env: Optional[Dict[str, str]] = None, stdout: Optional[TextIO] = None, document: Optional[Dict[str, Any]] = None) -> DoctorReport:
     out = stdout or sys.stdout
     registry = registry or default_registry()
     redactor = Redactor(env)
     errors: List[str] = []
 
-    runbook = load_runbook(options.runbook)
+    runbook = load_runbook(options.runbook) if document is None else validate_runbook(document)
     plan_digest = runbook_digest(runbook)
+    for selected, collection, label in ((options.task_id, "tasks", "task"), (options.agent_id, "agents", "worker")):
+        if selected is not None:
+            require_identifier(selected, "doctor " + label)
+            if not any(item["id"] == selected for item in runbook[collection]):
+                raise SchemaError("doctor requires an exact declared " + label + " ID")
+    selected_tasks = [item for item in runbook["tasks"] if options.task_id is None or item["id"] == options.task_id]
+    selected_agents = [item for item in runbook["agents"] if options.agent_id is None or item["id"] == options.agent_id]
     now = _now(options.now)
     clock = "synthetic" if options.now else "system"
     ttl = _ttl(runbook, options.receipt_ttl_seconds)
@@ -174,9 +183,9 @@ def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = No
 
     tasks_report: List[Dict[str, Any]] = []
     all_ready = True
-    for task in runbook["tasks"]:
+    for task in selected_tasks:
         candidates: List[Dict[str, Any]] = []
-        for agent in runbook["agents"]:
+        for agent in selected_agents:
             if not _eligible(task, agent):
                 continue
             agent_probes = list(registry.agent_probes(agent))
@@ -251,6 +260,9 @@ def run_doctor(options: DoctorOptions, *, registry: Optional[ProbeRegistry] = No
         "usable_evidence": clock == "system",
         "note": "doctor proves readiness dimensions only; a green doctor is not a lease (no grant, no reservation, no fence). Provider-connection and network-policy probes are informational for a verified local interpreter and required for any other adapter; a green doctor for a verified local process adapter still proves nothing about hosted-model availability or network egress. Receipts produced with a synthetic clock (--now) are fixtures, never evidence, and READY_TO_LEASE rejects them.",
     }
+    if options.task_id is not None or options.agent_id is not None:
+        payload.update(schema_version=2, scope=dict(task_ids=[item["id"] for item in selected_tasks],
+            agent_ids=[item["id"] for item in selected_agents], verdict_basis="selected_subjects_only"))
     report = DoctorReport(payload=payload)
     if options.json_output:
         out.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -439,6 +451,9 @@ def render_text(payload: Dict[str, Any]) -> str:
     lines: List[str] = []
     lines.append("camol doctor  run={}  plan={}  target={}".format(payload["run_id"], payload["plan_digest"][:19], payload["target_id"]))
     lines.append("observed {}  valid until {}  clock={}  (read-only; nothing was prepared, launched, or spent)".format(payload["observed_at"], payload["expires_at"], payload["clock"]))
+    if "scope" in payload:
+        lines.append("SELECTED SCOPE ONLY: tasks={} workers={}".format(
+            ",".join(payload["scope"]["task_ids"]), ",".join(payload["scope"]["agent_ids"])))
     if payload["synthetic_clock"]:
         lines.append("SYNTHETIC CLOCK: receipts below are fixtures, not evidence; READY_TO_LEASE rejects them")
     lines.append("")
