@@ -60,9 +60,11 @@ stored in the session transcript.
 ## Spend and capability
 
 Selecting a non-manual model warns that normal planning messages may consume account
-quota. Worker execution has a separate gate. `/run` for the packaged Claude/Fable
-profile requires `--accept-spend`, an exact repetition of the approved worker ceiling
-with `--worker-cents`, and accepts an optional 1–100 cent `--preflight-cents` cap.
+quota. Worker execution has a separate gate. `/run` renders an exact launch manifest;
+provider work requires `--accept-launch DIGEST` and `--accept-spend` when hosted.
+An optional 1–100 cent `--preflight-cents` review input bounds each distinct Claude
+profile's requested preflight reservation separately from the common worker envelope.
+See [interactive launch](interactive-launch.md) for mixed workers and one-shot operations.
 The no-tools preflight records requested and resolved model, runtime, token usage,
 cost, target, profile digest, and expiry. A fallback model outside the frozen
 allowlist is denied rather than relabeled.

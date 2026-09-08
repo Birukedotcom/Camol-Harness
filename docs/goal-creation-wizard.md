@@ -103,9 +103,10 @@ host tier additionally requires `--accept-draft-policy PRODUCT_PLAN_DIGEST`:
 /run --accept-draft-policy PRODUCT_PLAN_DIGEST
 ```
 
-For hosted Claude, add the existing `--accept-spend --worker-cents N` flags. For
-Codex/OSS, add the exact provider-policy acknowledgement shown by its existing
-launch flow (hosted Codex also requires `--accept-spend`). Strong local process
+For any provider-containing plan, first use `/run` to review its exact launch
+manifest, then use the printed `--accept-launch DIGEST` command. Hosted Claude or
+Codex additionally requires `--accept-spend`; the printed command also includes any
+weaker draft-policy acknowledgement above. Strong local process
 plans use `/run` without provider flags. No lease is issued before kernel admission.
 
 Every V5 state gate pauses for `/gate TASK DIGEST`; the integrated outcome finally

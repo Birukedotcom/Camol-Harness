@@ -331,7 +331,7 @@ class InteractiveControllerTests(unittest.TestCase):
         workspace = SimpleNamespace(assert_source_ready=lambda: None)
         with patch("camol.app.WorkspaceManager", return_value=workspace):
             denied = self.controller.handle("/run --accept-spend --worker-cents 99")
-        self.assertIn("exactly match the approved 100 cent", denied.messages[0])
+        self.assertIn("exact launch review", denied.messages[0])
 
     def test_secret_shaped_grill_input_is_rejected_before_plan_persistence(self):
         response = self.controller.handle("/grill use sk-live-abcdefghijklmnopqrstuvwxyz123456")
@@ -442,16 +442,17 @@ class InteractiveControllerTests(unittest.TestCase):
         self.controller.handle("/approve yes")
         self.controller.preflight_fn = Mock(side_effect=AssertionError("Codex invoked paid Claude preflight"))
         self.controller.spawn_fn = Mock(return_value={"pid": 123, "started": True})
-        with patch("camol.app.WorkspaceManager", return_value=workspace):
+        source = {"schema": "camol.debug_source", "schema_version": 1, "workspace": str(self.controller.workspace), "revision": "a" * 40, "tree": "b" * 40, "checkout_digest": "sha256:" + "c" * 64}
+        with patch("camol.app.WorkspaceManager", return_value=workspace), patch("camol.debug_execution.source_identity", return_value=source):
             review = self.controller.handle("/run")
-            self.assertIn("quota_available", review.messages[0])
-            self.assertIn("no worker or paid preflight started", review.messages[0])
-            digest = canonical_digest(self.controller._codex_launch_policy(self.controller.session["plan"]))
-            self.assertIn("exact current", self.controller.handle("/run --accept-provider-policy sha256:" + "0" * 64 + " --accept-spend").messages[0])
-            self.assertIn("requires --accept-spend", self.controller.handle("/run --accept-provider-policy " + digest).messages[0])
+            self.assertIn("unknown quota", review.messages[0])
+            self.assertIn("no provider probe, model call or worker started", review.messages[0])
+            digest = canonical_digest(self.controller._launch_manifest(self.controller.session["plan"]))
+            self.assertIn("exact current", self.controller.handle("/run --accept-launch sha256:" + "0" * 64 + " --accept-spend").messages[0])
+            self.assertIn("requires --accept-spend", self.controller.handle("/run --accept-launch " + digest).messages[0])
             self.controller.spawn_fn.assert_not_called()
-            launched = self.controller.handle("/run --accept-provider-policy " + digest + " --accept-spend")
-        self.assertIn("not a hard spend cap", launched.messages[0])
+            launched = self.controller.handle("/run --accept-launch " + digest + " --accept-spend")
+        self.assertIn("unknown dimensions", launched.messages[0])
         self.controller.spawn_fn.assert_called_once()
         self.controller.preflight_fn.assert_not_called()
 
@@ -460,12 +461,13 @@ class InteractiveControllerTests(unittest.TestCase):
         self.assertIn("IMPORTED PLAN", imported.messages[0])
         self.controller.handle("/approve yes")
         self.controller.spawn_fn = Mock(return_value={"pid": 123, "started": True})
-        digest = canonical_digest(self.controller._codex_launch_policy(self.controller.session["plan"]))
-        with patch("camol.app.WorkspaceManager", return_value=workspace), patch("camol.codex_policy.require_local_model", side_effect=AssertionError("client starts inference/catalog")):
-            denied = self.controller.handle("/run --accept-provider-policy " + digest + " --accept-spend")
-            self.assertIn("local Codex must not", denied.messages[0])
-            launched = self.controller.handle("/run --accept-provider-policy " + digest)
-        self.assertIn("no model is downloaded or loaded", launched.messages[0])
+        source = {"schema": "camol.debug_source", "schema_version": 1, "workspace": str(self.controller.workspace), "revision": "a" * 40, "tree": "b" * 40, "checkout_digest": "sha256:" + "c" * 64}
+        with patch("camol.app.WorkspaceManager", return_value=workspace), patch("camol.debug_execution.source_identity", return_value=source), patch("camol.codex_policy.require_local_model", side_effect=AssertionError("client starts inference/catalog")):
+            digest = canonical_digest(self.controller._launch_manifest(self.controller.session["plan"]))
+            denied = self.controller.handle("/run --accept-launch " + digest + " --accept-spend")
+            self.assertIn("local-only launch must not", denied.messages[0])
+            launched = self.controller.handle("/run --accept-launch " + digest)
+        self.assertIn("unknown dimensions", launched.messages[0])
         self.controller.spawn_fn.assert_called_once()
 
     def test_codex_interactive_import_rejects_unfrozen_profile_files(self):
