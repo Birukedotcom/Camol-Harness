@@ -918,7 +918,7 @@ from `site-packages` before loading source fixtures.
 
 The canonical full-suite rerun for this combined product passed **997 tests on
 Python 3.12 in 845.603 seconds**, including the native Codex parser fixture.
-Python 3.9 is still running, using verbose names and per-test stall tracebacks.
+Python 3.9 passed **997 tests in 919.908 seconds with three optional skips**.
 The failed 981-test predecessor results remain recorded above; the repaired
 checkpoint's passing run does not retroactively change them. The isolated
 branch is pushed under the owner's identity; main and the user's installation
@@ -953,8 +953,7 @@ fixture was corrected, not the safety predicate weakened.
 Product checkpoint `d9a6fe0dd1315b3fca0e77e3afdd5d7e92ba2ac7` is isolated on
 `codex/v0-archive-boundary`, committed under the owner's identity. Fresh installed
 package verification is separate from these source results. The predecessor's
-997-test Python 3.12 full gate passed as recorded above; its Python 3.9 gate remains
-in progress. Neither the predecessor nor the smaller archive groups establishes
+997-test full gates passed as recorded above. Neither the predecessor nor the smaller archive groups establishes
 a full gate for this new checkpoint.
 
 The final checkpoint was rebuilt sdist-to-wheel and installed with TUI/graph
@@ -965,3 +964,59 @@ revision replay, actual local runner completion and embedding API export.
 all three changed product modules matched their source bytes. Example runbook
 validation and `git diff --check` passed. The original main checkout remains clean
 at `cca1b4bdfe222db7be37621157fe21aa4bbe4517`; the user installation was not changed.
+
+The archive-boundary checkpoint subsequently passed **1017 full-suite tests on
+Python 3.12 in 1011.428 seconds**, including the explicit native Codex parser test.
+That result is for the archive checkpoint, not the new recovery implementation.
+
+## Encrypted captured-workspace recovery (2026-09-08)
+
+The isolated `codex/v0-workspace-recovery` branch now implements explicit
+`camol recovery keygen|export|verify|restore` and matching Python entry points.
+The versioned encrypted capsule binds an exact raw-salvage opt-in policy and
+preserves the selected base/head Git histories, tracked binary patch and captured
+untracked bytes. Export first reconstructs independently; verify reconstructs in
+private scratch; restore reconstructs in a new private plaintext repository.
+No existing source refs, state stores or user installation are changed. Full run
+recovery, cleanup/adoption authority, retention expiry and salvage-v1 coverage
+gaps remain open; see [workspace recovery](workspace-recovery.md).
+
+The first 15-test run had two fixture failures: a raw setup `git add` invoked the
+deliberately configured fsmonitor before the product ran, and a missing gitlink
+directory represented removal rather than a captured submodule. Setup now arms
+callbacks only after capture (and asserts no sentinel exists before export), and
+the gitlink fixture represents an actual present submodule. No safety predicate
+was weakened. The corrected group passed in **18.915 seconds on Python 3.12** and
+**20.164 seconds on Python 3.9**.
+
+The expanded group passed **75 tests in 57.596 seconds on Python 3.12** and
+**60.608 seconds on Python 3.9**. After adding strict Git object checking, the
+recovery/archive/CLI group passed **49 tests in 37.565 seconds on Python 3.12** and
+**39.465 seconds on Python 3.9**. After batching raw Git object reads, the 19-test
+recovery group passed in **25.862 seconds on Python 3.12** and **27.393 seconds on
+Python 3.9**. A separate 200-file binary regression passed in **2.083 seconds**
+and **1.877 seconds**, respectively, requiring exactly two object-reading Git calls
+per reconstruction, not per file.
+
+The tests prove recovery with source/state directories unavailable, unpushed
+history and dirty/untracked bytes, SHA-1/SHA-256 object formats, unrelated-ref
+exclusion, wrong-key/tamper refusal before output creation, explicit policy and
+content bounds, linked/control-path refusal, inert executable/symlink restoration,
+callback/hostile-environment isolation, actual CLI key/export/verify/restore, and no
+key or raw fixture content in output. All cryptographic keys and content were
+synthetic; no user recovery archive, credential or model call was created/read.
+
+Product `b26b7c2` plus path-alias hardening
+`b5121a40dd7de1af4c3728fa679dac81096c67aa` is the current recovery checkpoint.
+The strengthened path fixture passed on Python 3.12 in **0.625 seconds** and
+Python 3.9 in **0.712 seconds**. Both full-suite runs for this checkpoint are active
+with verbose output and bounded stall diagnostics. Their results are not yet
+established, and the smaller groups do not constitute those full gates.
+
+The final product was rebuilt sdist-to-wheel and installed with TUI, graph and
+recovery extras into a fresh Python 3.12 environment. **56 installed-package tests
+passed in 49.884 seconds**, covering all 20 recovery tests, the ordinary archive
+boundary, linked revisions and embedding API. `camol` was loaded from
+`site-packages` before source fixtures, and all three changed product modules were
+byte-checked against the final source. Main remains clean and unchanged; only the
+isolated branch and disposable verification environments were modified.

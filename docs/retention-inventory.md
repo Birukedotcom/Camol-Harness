@@ -138,8 +138,8 @@ the distinction between integrity verification and recovery authority.
 
 The existing run export includes ordinary ArtifactRefs and revision lineage, not
 the separate salvage CAS or all required Git objects. Verified replay is not a
-teardown receipt. A later archive slice must independently restore pinned Git and
-salvage bytes; a later purge slice needs kernel sealing, shared-reference release,
+teardown receipt. A complete run archive must cover every required workspace and
+independently restore its pinned Git and salvage bytes; a later purge slice needs kernel sealing, shared-reference release,
 preserved accounting/unknown-operation guards, explicit authority and durable
 archive/tombstone semantics. None of those capabilities are asserted here.
 
