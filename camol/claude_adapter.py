@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -82,6 +83,18 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
     """Execute one Claude Code print-mode turn inside a frozen sandbox."""
 
     ADAPTER_VERSION = 1
+
+    def wants_peer_tools(self, agent):
+        return self._profile(agent).peer_policy is not None
+
+    @asynccontextmanager
+    async def _peer_invocation(self, profile, assignment, turn_number):
+        if profile.peer_policy is None:
+            yield None
+        else:
+            from .native_peers import NativePeerInvocation
+            async with NativePeerInvocation(self, profile, assignment, turn_number) as peer:
+                yield peer
 
     def _profile(self, agent: Dict[str, Any]) -> ModelProfile:
         try:
@@ -185,7 +198,7 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
             "--disable-slash-commands",
             "--safe-mode",
         ]
-        if profile.allowed_tools:
+        if profile.allowed_tools and profile.peer_policy is None:
             argv.extend(["--allowedTools", *profile.allowed_tools])
         # The provider stream contains the final structured result at its tail.
         # Keep a finite but profile-appropriate capture; never parse a truncated
@@ -226,34 +239,40 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
             packet_sha256=packet_sha256, profile_digest=profile.digest(), assignment=assignment,
             run_id=self.run_id, turn_number=turn_number, workspace=self.workspace)
         await self._authorize_launch(assignment, turn_number)
-        from .provider_budget import reserve_hosted
-        def reservation_evidence(allocated):
-            nonlocal ceiling
-            ceiling = allocated
-            return [usage_evidence()]
-        ceiling = reserve_hosted(journal, state_dir=self.state_dir, profile=profile,
-            plan_digest=packet.get("run", {}).get("plan_digest"), requested_cents=ceiling,
-            evidence_factory=reservation_evidence, baselines=getattr(self, "budget_baselines", ()))
-        self.hosted_invocation_id = invocation_id
-        argv[argv.index("--max-budget-usd") + 1] = "{:.2f}".format(ceiling / 100)
-        try:
-            sandboxed = await self.sandbox_backend.run(
-                argv,
-                cwd=box,
-                policy=self.sandbox_policy,
-                timeout_seconds=agent["adapter"]["timeout_seconds"],
-                environment=self.execution_environment,
-                stdin_bytes=prompt,
-                invocation_record=packet_dir / "turn-{:03d}.invocation.json".format(turn_number),
-            )
-        except asyncio.CancelledError as error:
-            error.observed_evidence = [usage_evidence(outcome="cancelled")]
-            journal.record_outcome(error.observed_evidence)
-            raise
-        except (SandboxError, OSError) as error:
-            observed = [usage_evidence()]
-            journal.record_outcome(observed)
-            raise AdapterError(str(error), observed_evidence=observed) from error
+        async with self._peer_invocation(profile, assignment, turn_number) as peer:
+            environment = self.execution_environment
+            if peer is not None:
+                argv.remove("--safe-mode")
+                argv.extend(peer.argv)
+                environment = dict(environment or {}, **peer.environment)
+            from .provider_budget import reserve_hosted
+            def reservation_evidence(allocated):
+                nonlocal ceiling
+                ceiling = allocated
+                return [usage_evidence()]
+            ceiling = reserve_hosted(journal, state_dir=self.state_dir, profile=profile,
+                plan_digest=packet.get("run", {}).get("plan_digest"), requested_cents=ceiling,
+                evidence_factory=reservation_evidence, baselines=getattr(self, "budget_baselines", ()))
+            self.hosted_invocation_id = invocation_id
+            argv[argv.index("--max-budget-usd") + 1] = "{:.2f}".format(ceiling / 100)
+            try:
+                sandboxed = await self.sandbox_backend.run(
+                    argv,
+                    cwd=box,
+                    policy=self.sandbox_policy,
+                    timeout_seconds=agent["adapter"]["timeout_seconds"],
+                    environment=environment,
+                    stdin_bytes=prompt,
+                    invocation_record=packet_dir / "turn-{:03d}.invocation.json".format(turn_number),
+                )
+            except asyncio.CancelledError as error:
+                error.observed_evidence = [usage_evidence(outcome="cancelled")]
+                journal.record_outcome(error.observed_evidence)
+                raise
+            except (SandboxError, OSError) as error:
+                observed = [usage_evidence()]
+                journal.record_outcome(observed)
+                raise AdapterError(str(error), observed_evidence=observed) from error
         references = []
         for channel, content, digest, size, truncated in (
             ("provider-stream", sandboxed.stdout, sandboxed.stdout_sha256, sandboxed.stdout_bytes, sandboxed.stdout_truncated),
@@ -294,6 +313,11 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
                 "stdin_sha256": "sha256:" + hashlib.sha256(prompt).hexdigest(),
             },
         }
+        if peer is not None:
+            command_evidence["data"]["peer_endpoint"] = dict(
+                cleanup="incomplete" if peer.cleanup_incomplete else "complete",
+                authenticated_handshakes=peer.endpoint.snapshot()["counts"].get("authenticated_handshakes", 0),
+                provider_tool_use_proven=False, peer_capability_exposure="worker_environment")
         final = None
         events = []
         try:
@@ -325,6 +349,8 @@ class ClaudeCLIAdapter(ProcessAgentAdapter):
             result["input_tokens"] = input_tokens
             result["output_tokens"] = output_tokens
             self.validate_result(result, packet_sha256)
+            if peer is not None and (peer.cleanup_incomplete or not command_evidence["data"]["peer_endpoint"]["authenticated_handshakes"]):
+                raise AdapterError("Claude peer endpoint was not initialized or cleanup requires owner inspection; observed usage retained")
         except (AdapterError, ProviderError, ValueError) as error:
             observed = [command_evidence, usage_evidence(final, outcome="error", start=sandboxed.started_at, finished_at=sandboxed.finished_at)]
             for activity in _tool_activity(events):

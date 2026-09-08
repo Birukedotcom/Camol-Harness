@@ -75,7 +75,7 @@ class NativePeerInvocation:
 
     def __init__(self, adapter, profile, assignment, turn_number):
         validate_peer_policy(profile.peer_policy)
-        self.adapter, self.assignment, self.turn = adapter, assignment, turn_number
+        self.adapter, self.profile, self.assignment, self.turn = adapter, profile, assignment, turn_number
         self.parent = parent_path(adapter.state_dir, adapter.run_id, assignment["task_id"], assignment["agent_id"])
         self.endpoint, self.parent_identity = None, None
         self.environment = {}
@@ -115,6 +115,17 @@ class NativePeerInvocation:
                     redactor._values.sort(key=len, reverse=True)
             self.environment = dict(CAMOL_PEER_ENDPOINT=str(self.endpoint.path), CAMOL_PEER_TOKEN=token)
             executable, args, _ = runtime()
+            if self.profile.adapter_kind == "claude_cli":
+                from .claude_peer_policy import settings, validate
+                validate(self.profile)
+                server = dict(type="stdio", command=executable, args=args,
+                    env={name: "${" + name + "}" for name in ENV_NAMES})
+                self.argv = ["--restricted", "--strict-mcp-config", "--mcp-config",
+                    json.dumps(dict(mcpServers=dict(camol_peers=server)), separators=(",", ":")),
+                    "--setting-sources", "", "--settings", json.dumps(settings(), separators=(",", ":")),
+                    "--tools", ",".join(self.profile.allowed_tools), "--allowedTools",
+                    *self.profile.allowed_tools, *("mcp__camol_peers__" + name for name in NAMES)]
+                return self
             config = dict(command=executable, args=args, cwd=str(self.parent), env_vars=list(ENV_NAMES),
                 required=True, enabled=True, enabled_tools=list(NAMES), startup_timeout_sec=10, tool_timeout_sec=10)
             # TOML inline-table syntax, never JSON object syntax. Secret values

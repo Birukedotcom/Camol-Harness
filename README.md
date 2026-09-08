@@ -267,8 +267,10 @@ Python embedding adapters may opt into [turn-scoped peer tools](docs/peer-tools.
 for replayable peer observations and read-before-send. Opt-in schema3 Codex worker
 profiles now register scoped peer tools with frozen admission and per-turn cleanup;
 existing profiles keep them disabled. Fake-CLI/sandbox builds are tested, but
-actual native model/tool acceptance, Claude registration and remote peers remain
-separate gates. See the profile fragment and limitations in the linked guide.
+actual native model/tool acceptance and remote peers remain separate gates.
+[Schema4 Claude profiles](docs/claude-peer-integration.md) add a separately reviewed
+restricted-mode peer tier, with explicit environment/startup limitations.
+See the profile fragments and limitations in the linked guides.
 Peer-tool attempts, failures, retries and unknown completions are visible in
 `camol profile --db PATH --run-id RUN`, without storing message prose in the
 attempt logger or equating missing timing with zero cost.

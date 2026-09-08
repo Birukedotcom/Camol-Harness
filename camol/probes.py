@@ -840,6 +840,14 @@ class AdapterBinaryProbe(Probe):
                 if help_result.exit_code or any(flag not in help_result.stdout for flag in required_flags):
                     return self.red(context, "Codex CLI lacks required worker isolation/output flags", reason="POLICY_DENIED", wake="upgrade Codex to a compatible runtime", missing=list(required_flags), facts=facts)
                 facts["execution_policy"] = profile.execution_policy
+            elif profile.peer_policy is not None:
+                help_result = context.runner((resolved, "--help"), None, 20)
+                required_flags = ("--restricted", "--strict-mcp-config", "--mcp-config", "--setting-sources",
+                    "--settings", "--tools", "--allowedTools", "--disable-slash-commands", "--permission-prompts")
+                if help_result.exit_code or any(flag not in help_result.stdout for flag in required_flags):
+                    return self.red(context, "Claude CLI lacks required explicit peer-execution flags", reason="POLICY_DENIED",
+                        wake="upgrade Claude to a compatible runtime", missing=list(required_flags), facts=facts)
+                facts["execution_policy"] = profile.execution_policy
             return self.green(context, "CLI is installed and its version was observed; model capability is checked separately under the frozen policy", command=(resolved, "--version"), tool_version=version, facts=facts)
         if adapter.get("kind") != "process":
             return self.unknown(context, "no probe adapter registered for adapter kind {!r}".format(adapter.get("kind")), reason="OPERATOR_ATTENTION", wake="register a probe adapter for this adapter kind", missing=["probe adapter for {}".format(adapter.get("kind"))], facts={"policy": policy})

@@ -247,9 +247,16 @@ does **not** establish actual native tool initialization, model-directed calls,
 shell-environment behavior, account entitlement or live model maturity. Those
 remain required native acceptance gates; no paid model call was made.
 
-## Remaining native integration
+## Claude opt-in and remaining native integration
 
-Claude registration and remote workers still need integration. It must bind the
+[Schema4 Claude worker profiles](claude-peer-integration.md) now provide explicit
+restricted-mode registration through the same owned endpoint. This does not
+change legacy safe-mode profiles. The separate tier acknowledges worker-visible
+capability environment variables, managed host policy and handshake verification
+before completion rather than a pre-inference startup guarantee. Native model
+acceptance remains open.
+
+Remote workers still need integration. They must bind the
 same run/task/box/lease/turn and preserve the observer-before-send requirement,
 bounded data, redaction, idempotency and revoked-turn behavior. It must not hand a
 worker the owner control token, silently allow network on a network-denied plan,
@@ -260,7 +267,7 @@ The direct-Python build and real stdio/socket fixtures prove their respective
 interfaces, not a hosted model autonomously calling these tools. The owner has a
 `/delegate` compatibility view and stopped-run revision-review entry point; this
 is not an agent-facing approval tool or automatic proposal generator.
-Claude registration, remote transport, broader read-only peer views,
+Native Claude acceptance, remote transport, broader read-only peer views,
 natural-language delegation and live provider acceptance remain separate gates.
 
 ### Network and remaining native acceptance boundaries
@@ -279,6 +286,6 @@ from the agent's shell environment, required-server startup failure, and tool ca
 under native provider execution. Independent SDK/fake-CLI compatibility alone does
 not establish these Codex/Claude behaviors.
 
-Claude registration must separately account for its current safe-mode and tool
+Claude native acceptance must separately verify its restricted-mode and tool
 allowlist behavior. Neither provider's account-wide configuration will be modified
 as an implicit consequence of enabling a Camol worker.

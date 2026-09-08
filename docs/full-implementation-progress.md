@@ -61,8 +61,10 @@ results, explicit unknown outcomes and per-task/operation timing profiles.
 An explicit per-turn Unix endpoint and bounded MCP stdio relay now exercise
 cross-process peer communication. Schema3 Codex profiles now opt into exact
 admitted runtime/socket/environment access and per-turn registration/cleanup;
-real fake-CLI builds pass, but native live acceptance and Claude registration
-remain pending. Existing profiles keep peer tools disabled.
+real fake-CLI builds pass. Schema4 Claude profiles now have a separately explicit
+restricted-mode peer tier, including worker-visible capability and pre-completion
+(not pre-inference) handshake limits. Native live acceptance remains pending.
+Existing profiles keep peer tools disabled.
 The `/delegate` view exposes declared compatibility without readiness claims;
 new-work review reuses the exact stopped-owner revision approval and separate
 launch. Automatic proposal generation and live reassignment remain open.

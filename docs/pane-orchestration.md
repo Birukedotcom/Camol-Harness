@@ -43,7 +43,7 @@ Connected transport, account observation and task readiness are separate indicat
 | `camol box list\|resolve\|read` | Scoped observation using explicit run/box IDs, including stopped runs | Implemented; no message delivery or execution grant |
 | `camol box observe\|message\|inbox` | Lease-scoped owner CLI and embedding mailbox, idempotent sends and worker consumption receipts | Implemented; automatic peer-tool/remote integration pending |
 | `adapter.peer_tools` / `Harness.peer_tools()` | Current-turn list/observe/own-inbox and read-before-send with replayable observations | Implemented for explicit Python embeddings and opt-in Codex profiles; native live acceptance pending |
-| `PeerEndpoint` / `python -m camol.peer_mcp` | Explicit owner-issued local socket and bounded stdio peer tools | Implemented; schema3 Codex profile binds admission and lifecycle; Claude registration pending |
+| `PeerEndpoint` / `python -m camol.peer_mcp` | Explicit owner-issued local socket and bounded stdio peer tools | Implemented; schema3 Codex and separately restricted schema4 Claude profiles; native live acceptance pending |
 | `/message BOX TEXT`, `/reply MESSAGE_ID TEXT`, `/inbox [BOX [OFFSET]]`, `/outbox [REQUEST_ID]` | Interactive sends/replies, inbox pane and immutable pending-request inspection | Implemented; explicit `/message retry ID` preserves its original scope |
 | `/delegate [TASK] [--json] [--offset N] [--limit N]` | Inspect declared capability matches and recorded assignments | Implemented; not readiness or a scheduling decision |
 | `/delegate --from RUNBOOK --reason TEXT [--effects POLICY.json]` | Review new/redistributed work through the existing stopped-owner revision workflow | Implemented; exact `/revise apply DIGEST` and separate `/run` remain required |
@@ -188,9 +188,9 @@ contracts, grants, budgets, leases, evaluations, plan approval or worker executi
 ## Agent-to-agent bridge
 
 The [turn-scoped peer API](peer-tools.md) supports explicit Python embedding
-adapters and opt-in schema3 Codex worker profiles through a local MCP relay.
+adapters and opt-in Codex/Claude worker profiles through a local MCP relay.
 Its recorded observations bind the caller's current turn. Live native acceptance,
-Claude registration and remote workers remain open integration gates.
+provider-specific startup enforcement and remote workers remain open integration gates.
 
 Observation and mutation are separate commands. A read receipt should bind the
 exact subject/generation and observed cursor, not merely a temporary file indicating
@@ -225,7 +225,7 @@ closure without worker termination; and exact plan approval for new delegated wo
 Overview and switcher tests cover metadata/projection and keyboard navigation.
 Tiled metadata monitoring, explicit Python peer tools and opt-in Codex local MCP
 transport are implemented as described above. Native model-directed tool use,
-Claude registration, remote peer transport and external tmux attachment are not
+live Claude tool use, remote peer transport and external tmux attachment are not
 claimed verified. The durable mailbox core has its own local execution/CLI tests.
 
 ## Delegation review

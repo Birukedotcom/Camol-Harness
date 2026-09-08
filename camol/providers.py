@@ -130,15 +130,20 @@ class ModelProfile:
         if self.credential_read_paths and not self.credential_refs:
             raise ProviderError("credential_read_paths require an opaque credential reference")
         if self.execution_policy is not None:
-            from .codex_policy import validate_codex_policy
-            validate_codex_policy(self)
+            if self.adapter_kind == "claude_cli" and self.peer_policy is not None:
+                from .claude_peer_policy import validate
+                validate(self)
+            else:
+                from .codex_policy import validate_codex_policy
+                validate_codex_policy(self)
+            object.__setattr__(self, "execution_policy", dict(self.execution_policy))
         elif self.adapter_kind in {"codex_cli", "codex_oss"} or self.local_provider is not None or self.local_endpoint is not None:
             raise ProviderError("Codex workers require a schema2 explicit execution_policy")
         if self.peer_policy is not None:
             from .native_peers import validate_peer_policy
             validate_peer_policy(self.peer_policy)
-            if self.adapter_kind not in {"codex_cli", "codex_oss"} or self.execution_policy is None:
-                raise ProviderError("native peer policy is currently supported only by explicit Codex execution profiles")
+            if self.adapter_kind not in {"codex_cli", "codex_oss", "claude_cli"} or self.execution_policy is None:
+                raise ProviderError("native peer policy requires an explicit supported execution profile")
             object.__setattr__(self, "peer_policy", json.loads(json.dumps(self.peer_policy)))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -171,7 +176,11 @@ class ModelProfile:
         if self.peer_policy is not None:
             from .native_peers import validate_peer_policy
             validate_peer_policy(self.peer_policy)
-            result.update(schema_version=3, peer_policy=json.loads(json.dumps(self.peer_policy)))
+            if self.adapter_kind == "claude_cli":
+                from .claude_peer_policy import validate
+                validate(self)
+            result.update(schema_version=4 if self.adapter_kind == "claude_cli" else 3,
+                peer_policy=json.loads(json.dumps(self.peer_policy)))
         return result
 
     def digest(self) -> str:
@@ -182,11 +191,11 @@ class ModelProfile:
         if not isinstance(payload, dict):
             raise ProviderError("model profile must be an object")
         version = payload.get("schema_version")
-        if type(version) is not int or version not in {1, 2, 3}:
-            raise ProviderError("model profile schema_version must be 1, 2 or 3")
+        if type(version) is not int or version not in {1, 2, 3, 4}:
+            raise ProviderError("model profile schema_version must be 1, 2, 3 or 4")
         require_schema_header(payload, cls.SCHEMA, version, "model profile")
         fields = set(cls.FIELDS) | ({"execution_policy", "local_provider", "local_endpoint"} if version >= 2 else set())
-        if version == 3:
+        if version >= 3:
             fields.add("peer_policy")
         reject_unknown_fields(payload, fields, "model profile")
         missing = sorted(fields - set(payload))
@@ -195,8 +204,11 @@ class ModelProfile:
         values = {key: payload[key] for key in fields if key not in {"schema", "schema_version"}}
         if version >= 2 and payload["execution_policy"] is None:
             raise ProviderError("schema2 execution_policy cannot be null")
-        if version == 3 and payload["peer_policy"] is None:
+        if version >= 3 and payload["peer_policy"] is None:
             raise ProviderError("schema3 peer_policy cannot be null")
+        if ((version == 4 and payload["adapter_kind"] != "claude_cli")
+                or (version == 3 and payload["adapter_kind"] == "claude_cli")):
+            raise ProviderError("Claude peer execution requires schema4; Codex peer execution requires schema3")
         for name in (
             "allowed_resolved_models", "allowed_tools", "network_destinations",
             "credential_refs", "credential_read_paths",

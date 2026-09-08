@@ -152,6 +152,7 @@ class PeerEndpoint:
                             scope = dict(subject=dict(self.tools.caller), turn_number=self.tools.turn)
                             result = dict(scope, scope_digest=canonical_digest(scope),
                                 operations=["list", "observe", "inbox", "send"], readiness_proven=False)
+                            self._counts["authenticated_handshakes"] += 1
                         elif value["operation"] == "send":
                             args = value["arguments"]
                             fields(args, {"target", "body", "kind", "correlation_id", "ttl_seconds"})

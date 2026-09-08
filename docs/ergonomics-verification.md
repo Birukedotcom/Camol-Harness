@@ -699,3 +699,32 @@ stdlib parser with no sentinel execution. Graph product code is unchanged. The
 corrected **9-test graph group passed on Python 3.12 in 1.686 seconds** and on
 **Python 3.9 in 1.660 seconds with one stdlib-version skip**. The full Python 3.12
 gate must be rerun; these focused results do not erase the earlier failure.
+
+## Explicit Claude peer tier checkpoint
+
+The separate `codex/v0-claude-peers` checkout adds the schema4 tier documented in
+[Claude peer integration](claude-peer-integration.md). Existing Claude profiles
+keep safe mode and remain peer-disabled. The new tier explicitly names restricted
+settings, managed host policy, worker-visible capability variables and handshake
+verification before completion, not before inference. These limitations are
+included in the exact profile/launch review; no existing authority is widened.
+
+Seven new tests passed on **Python 3.12 in 13.068 seconds** and on **Python 3.9
+in 14.162 seconds**. A subsequent expanded group passed **101 tests on Python
+3.12 in 80.412 seconds** and **101 tests on Python 3.9 in 88.714 seconds**, each
+with one optional installed-Codex parser skip. The group includes legacy Claude,
+Codex, native peers, transport, probes, profiles and launch manifests. Full-suite
+and installed-package gates remain separate.
+
+The new fixture initially imported the local-target helper from the wrong module;
+after correcting that import, two build cases exposed a fixture variable collision
+between the worker's final result and the relay's initialization response. Keeping
+those records separate repaired the fixture without weakening the adapter's
+unknown-field rejection. Failure/cleanup paths retain provider-observed usage;
+the deliberately missing relay handshake refuses task completion.
+
+Installed Claude 2.1.263 was inspected with help-only commands, including the
+proposed flags. No prompt or print mode was supplied to that real executable.
+This proves available option syntax, not settings enforcement, OAuth viability,
+MCP initialization, model use or a pre-inference readiness guarantee. All provider
+execution and capability receipts in the seven new tests are controlled fixtures.
