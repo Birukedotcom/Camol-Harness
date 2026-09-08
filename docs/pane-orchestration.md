@@ -3,6 +3,44 @@
 This extends the product plan using the two user-supplied references. It does not
 replace durable orchestration with a multiplexer and does not install either tool.
 
+## Operator quick reference
+
+In the interactive Camol client with a selected plan/run:
+
+```text
+/overview
+/overview --attention
+/layout grid
+/switch
+/box next
+/box previous
+/layout focus
+```
+
+Use `/overview` for the whole run, `--attention` for waits and human gates,
+and `/layout grid` to keep the orchestrator alongside paginated worker tiles.
+Alt+B opens the searchable selector; arrows and Enter choose a box. Escape
+leaves the picker without submitting or discarding the composer draft.
+Alt+Left/Alt+Right page the tiled monitor. The bottom box navigator remains
+available. These commands inspect or organize work; they do not launch it.
+
+After `/boxes` shows the exact box IDs, use `/pin BOX_ID`,
+`/group BOX_ID API build`, or `/box BOX_ID tools`. Replace `BOX_ID` with an
+actual listed ID; it is not a pane number. `/delegate` explains declared task
+matches and assignments. `/message BOX_ID TEXT` is a separate explicit send,
+subject to mailbox admission; selecting a tile never sends a message.
+
+The intended loop is **review plan → approve exact plan → admit/assign work →
+observe boxes → inspect evidence or gates → review any revision**. There may
+be N boxes, reused across tasks as dependencies and resources permit. Opening
+another view does not allocate a worker, and closing a view does not cancel one.
+
+These interfaces are implemented on the isolated development branches described
+below, not necessarily in a user's older installed V0. Check that build's `/help`
+before treating a missing command as an installation or login failure. The tiles
+show recorded metadata, not mirrored terminal screens. External tmux attachment
+and project/target folding remain separate unfinished features.
+
 ## References reviewed
 
 - [tmax at 7aff1b0](https://github.com/theo-kirby/tmax/tree/7aff1b0a27a5744fa5a440e16b886aadd16a9b35): grouped session switching,

@@ -209,9 +209,16 @@ def command_worker_enrollment(args: argparse.Namespace) -> int:
 def command_worker_delivery(args: argparse.Namespace) -> int:
     from .worker_delivery import DeliveryError, WorkerDelivery, read_enrollment_key
     try:
+        if args.action == "flush" and (not args.allow_network or not args.target or args.role != "producer"):
+            raise DeliveryError("worker flush requires a producer, an exact --target and explicit --allow-network")
         stream = load_contract(args.binding, max_bytes=8192)
         delivery = WorkerDelivery(args.root, stream, read_enrollment_key(args.key_file), role=args.role)
-        _write_json(delivery.inspect(after=args.after, limit=args.limit))
+        if args.action == "flush":
+            from .worker_tls import WorkerTLSClient
+            client = WorkerTLSClient(load_contract(args.target, max_bytes=16384))
+            _write_json(asyncio.run(client.deliver(delivery, allow_network=True)))
+        else:
+            _write_json(delivery.inspect(after=args.after, limit=args.limit))
     except DeliveryError as error:
         raise SchemaError(str(error)) from error
     return 0
@@ -1029,14 +1036,16 @@ def build_parser() -> argparse.ArgumentParser:
                 operation.add_argument("--reason", required=True)
         operation.set_defaults(handler=command_worker_enrollment)
 
-    delivery = subparsers.add_parser("worker-delivery", help="inspect a private worker evidence spool; never enroll, connect or execute")
-    delivery.add_argument("action", choices=["inspect"])
+    delivery = subparsers.add_parser("worker-delivery", help="inspect a private spool or explicitly flush one TLS evidence batch; never execute work")
+    delivery.add_argument("action", choices=["inspect", "flush"])
     delivery.add_argument("--root", required=True, help="existing private producer or receiver directory")
     delivery.add_argument("--binding", required=True, help="exact owner-enrolled worker stream JSON")
     delivery.add_argument("--key-file", required=True, help="explicit private raw 32-byte enrollment key; never printed")
     delivery.add_argument("--role", required=True, choices=["producer", "receiver"])
     delivery.add_argument("--after", type=int, default=0)
     delivery.add_argument("--limit", type=int, default=100)
+    delivery.add_argument("--target", help="exact pinned TLS endpoint JSON, required by flush")
+    delivery.add_argument("--allow-network", action="store_true", help="explicitly authorize one TLS evidence exchange")
     delivery.set_defaults(handler=command_worker_delivery)
 
     vcs = subparsers.add_parser("vcs", help="record candidate relationships and inspect prospective verification impact; never Git mutation")

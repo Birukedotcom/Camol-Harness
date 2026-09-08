@@ -83,7 +83,10 @@ class SourceBindingTests(unittest.TestCase):
     def test_bound_execution_refines_integrates_replays_and_reconstructs_missing_sidecar(self):
         orchestrator, store, runner, source = self.harness()
         final = asyncio.run(runner.run_until_terminal("source-bound"))
-        self.assertEqual(final["status"], "awaiting_acceptance", final.get("terminal"))
+        self.assertEqual(final["status"], "awaiting_acceptance", {
+            "terminal": final.get("terminal"),
+            "waiting": {key: task.get("waiting") for key, task in final["tasks"].items()},
+        })
         self.assertEqual(final["source_binding"]["source"], source)
         self.assertEqual(project(store.read("source-bound")), final)
         record = binding_path(self.state, "source-bound")

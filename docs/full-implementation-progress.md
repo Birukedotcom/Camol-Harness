@@ -70,6 +70,12 @@ callback's lease-mutation race for users of that service, not the distributed
 executor gap. It neither promotes worker claims into kernel results nor adopts a
 machine; see [enrollment boundaries](worker-enrollment.md).
 
+The `codex/v0-worker-tls` follow-up adds opt-in encrypted evidence delivery with
+CA/name/leaf-pin validation, pre-handshake connection limits, cancellation and an
+explicit CLI flush. Real socket and child-process tests do not prove distributed
+execution. Supervisor listener integration, durable transport telemetry, target
+admission/launch and kernel promotion remain open; see [TLS scope](worker-tls.md).
+
 The user supplied tmax and smux as pane/delegation references. The pinned source
 review and command-by-command implementation status are in
 [pane orchestration](pane-orchestration.md). A shared metadata-only `/overview`

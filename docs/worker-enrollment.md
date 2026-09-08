@@ -86,7 +86,11 @@ resume a worker without the required secure material and fresh lease checks.
 
 ## Remaining distributed-execution work
 
-Machine discovery/adoption, authenticated confidential transport, target-side
+An opt-in [TLS evidence transport](worker-tls.md) now connects the service to
+bounded encrypted sockets and an explicit one-batch CLI flush. It does not
+automatically configure a listener, distribute keys or launch workers.
+
+Machine discovery/adoption, production transport lifecycle, target-side
 readiness and launch, source/artifact transfer, native event pumping, trusted usage
 measurement, promotion cursors, remote cancellation, salvage and lifecycle recovery
 remain open. Tests here exercise real local kernel leases, competing SQLite writers,

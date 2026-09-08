@@ -24,18 +24,23 @@ class VCSLineageTests(unittest.TestCase):
     def setUpClass(cls):
         cls.fixture = fixture.HarnessApiTests()
         cls.fixture.setUp()
+        cls.addClassCleanup(cls.fixture.tearDown)
         with Harness(cls.fixture.workspace, cls.fixture.state_dir) as harness:
             state = harness.prepare(fixture.ROOT / "examples/local-n-box-runbook.json")
             harness.approve(by="owner", digest=state["plan_digest"])
             cls.final = harness.run()
-            assert cls.final["status"] == "completed", cls.final
+            assert cls.final["status"] == "completed", {
+                "status": cls.final["status"],
+                "tasks": {key: {"status": row["status"], "waiting": row.get("waiting")}
+                          for key, row in cls.final["tasks"].items()},
+            }
             cls.events = harness.events()
         cls.ids = sorted(cls.final["candidates"])
         assert len(cls.ids) >= 3
 
     @classmethod
     def tearDownClass(cls):
-        cls.fixture.tearDown()
+        pass  # Class cleanup also runs when fixture construction fails.
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

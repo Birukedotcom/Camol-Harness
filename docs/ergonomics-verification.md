@@ -1609,3 +1609,92 @@ Both full suites for this frozen product have started in
 `/tmp/camol-worker-enrollment-full-py39.log`; they remain pending. The preceding
 worker-delivery full suites remain independent live processes, not substituted
 verification. Main and the user installation are unchanged.
+
+## Worker TLS checkpoint — 2026-09-08
+
+Isolated branch `codex/v0-worker-tls`, based on enrollment documentation commit
+`42c24bb0cb7d53191560d0d3519c8b2537d915b9`. This adds encrypted evidence transport,
+not remote worker execution; see [its actual boundary](worker-tls.md). The main
+checkout remains clean at `cca1b4bdfe222db7be37621157fe21aa4bbe4517` and the user
+installation has not been replaced. No native account/model calls were made.
+
+### Predecessor gates now terminal
+
+The worker-delivery full suites at product
+`0ba54c5d406cd35d81be2115b5d25a04c3651555` **failed**, not passed:
+
+- Python 3.12: 1,138 tests in 1,118.843 seconds, one class-setup error in VCS
+  observations; readiness expired before integration. Eight tests were omitted
+  by the failed class fixture.
+- Apple Python 3.9: 1,135 tests in 1,436.704 seconds, one VCS class-setup error
+  and one source-binding completion failure, three optional skips. Eleven VCS
+  tests were omitted by fixture failure. The VCS state recorded expired active
+  lease proofs and salvage rather than claiming completed work.
+
+The host power log records maintenance sleep at 08:20:46–08:29:33 Pacific,
+matching the observed VCS lease-expiry gap; later sleeps also occurred. This is
+evidence for those stale-proof waits, not proof of every failure's cause. No
+expiry policy was weakened. On the same frozen product, the complete affected
+VCS/observation/source-binding groups then passed **27 tests in 42.510 seconds**
+on 3.12 and **27 in 47.009 seconds** on Apple 3.9. Logs:
+`/tmp/camol-worker-delivery-failure-recheck-py312.log` and `-py39.log`.
+The new tests preserve strict completion assertions while making failure
+diagnostics compact and ensuring class-fixture cleanup also runs after failure.
+
+The worker-enrollment full suites at product
+`610d27b590dc8bb269a7727cc01b5e60eaab14b7` also **failed**:
+
+- Python 3.12: **1,156 tests in 1,392.336 seconds, five failures**: delegated
+  successor completion, model-assisted successor completion, draft supervisor
+  startup timeout, redacted evaluation completion and revision API completion.
+- Apple Python 3.9: **1,156 tests in 1,508.204 seconds, five failures, three
+  optional skips**: delegated successor completion, draft startup timeout,
+  redacted evaluation completion, expired observation schedule and revision API
+  completion.
+
+All five exact failing tests passed when rerun on their unchanged predecessor
+product: **75.980 seconds on 3.12**, **76.119 seconds on Apple 3.9**, in
+`/tmp/camol-worker-enrollment-failure-recheck-py312.log` and `-py39.log`.
+These reruns do not replace a clean full-suite gate or establish the precise
+cause of every timing failure. Original failed logs remain retained.
+
+### Transport tests and runtime boundary
+
+- Initial real TLS suite: **9 tests in 8.708 seconds, Python 3.12, passed**.
+- The same initial tests on Apple's 3.9 runtime had **nine errors in 8.058
+  seconds**: LibreSSL 2.8.3 lacks TLS 1.3. This is now an explicit
+  `TLS13_RUNTIME_REQUIRED` error; there is no silent TLS downgrade. Local harness
+  operation remains available. Its separate capability check passed **2 tests
+  in 0.072 seconds**, with the real-TLS test class explicitly skipped, not passed.
+- A temporary managed Python **3.9.25 with OpenSSL 3.5.4** was downloaded for
+  actual minimum-Python TLS coverage; neither the user installation nor global
+  interpreter selection was changed.
+- Expanded transport/enrollment/delivery group: **35 tests in 22.146 seconds**
+  on 3.12 and **35 in 22.503 seconds** on modern 3.9, passed.
+- Final integration group, including unsafe material, opt-in ordering, VCS and
+  source-binding fixture checks: **64 tests in 63.280 seconds** on 3.12 and
+  **64 in 63.982 seconds** on modern 3.9, passed. Logs:
+  `/tmp/camol-worker-tls-integration-py312.log` and `-modern39.log`.
+
+Tests use generated temporary certificates, real loopback TLS sockets, actual
+enrolled kernel leases and a separate CLI flush process. They verify revoked and
+wrong-MAC rejection, CA/name/leaf pin rejection before sending, lost receipt
+recovery, invalid receipts and local cursor-commit failure, timeout/cancellation,
+extra/truncated/oversized frames and a pre-handshake connection cap. Worker claims
+never change kernel task success, gates or provider usage. This remains local
+transport evidence, not distributed execution or a native model acceptance gate.
+
+The preceding pane-reference check also passed **38 tests in 15.695 seconds**;
+its quick-reference documentation is retained in `pane-orchestration.md`.
+
+### Installed-package gate
+
+The source distribution was built into a wheel and installed into a fresh Python
+3.12 environment under `/tmp/camol-worker-tls-package.k4huwlmt/venv`. From outside
+the checkout, isolated imports confirmed `site-packages` ownership and byte-for-byte
+agreement for both changed product modules (`worker_tls.py`, `cli.py`) before
+loading source test fixtures. No Textual, MCP or cryptography package was installed.
+The same **64 tests passed in 79.886 seconds**, including the real child-process
+CLI flush, in `/tmp/camol-worker-tls-installed.log`. The V1 example validates and
+`git diff --check` passes. A fresh whole-suite gate for this product is still required;
+the predecessor failures above are not erased by this focused gate.

@@ -124,6 +124,10 @@ Explicit owner-side remote mailbox relay is available separately through the
 Python `RemoteMailbox` API and allowlisted `remote request` commands. It requires
 an exact lease observation and does not turn messages into task authority; see
 [observe/review/send and retry rules](docs/ssh-control.md#scoped-remote-mailbox-relay).
+Owner embeddings can additionally use [encrypted worker evidence delivery](docs/worker-tls.md)
+and explicit `camol worker-delivery flush` for an already-enrolled stream. This
+requires a TLS 1.3-capable runtime and reviewed endpoint/key material; it does not
+provision a machine, launch a remote worker or turn evidence into task success.
 `camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL` inspects local
 content-free RPC counts, durations and byte measurements without connecting.
 These measurements include monitor reads, not provider billing. See
