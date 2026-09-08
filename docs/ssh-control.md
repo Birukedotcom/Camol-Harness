@@ -38,6 +38,12 @@ hash, resolved Python executable path/hash, and control protocol version 3.
 The handshake is an authenticated host's **self-report**, not hardware/software
 attestation; a compromised host can lie.
 
+Identity hashing measures bounded, stable public installation bytes regardless
+of their write-permission bits. Managed runtime caches may make executables
+group/world writable; their exact hashes still need owner approval. This is not
+a claim that those permissions are safe. Control credentials, owner policy,
+known-host inputs and dispatch journals keep their separate strict file checks.
+
 The local strict target profile has these fields:
 
 ```text

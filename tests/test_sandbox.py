@@ -129,6 +129,43 @@ assert oracle.read_text() == 'good'
         self.assertNotIn(str(Path.home()), paths)
         self.assertNotIn(str(self.root), paths)
 
+    def test_root_selected_owner_installed_xcode_is_not_confused_with_private_credentials(self):
+        from camol import sandbox
+        applications = self.root / "Applications"
+        developer = applications / "Xcode_26.app" / "Contents" / "Developer"
+        developer.mkdir(parents=True)
+        alias = applications / "Xcode.app"
+        alias.symlink_to(developer.parents[1], target_is_directory=True)
+        selector = self.root / "private" / "var" / "select" / "developer_dir"
+        selector.parent.mkdir(parents=True)
+        selector.symlink_to(alias / "Contents" / "Developer", target_is_directory=True)
+        real_lstat = Path.lstat
+        system_paths = {applications, selector.parent, selector}
+        runtime_owner = [os.getuid()]
+        def metadata(path):
+            values = list(real_lstat(path))
+            if path in system_paths:
+                values[4] = 0
+            elif path == alias or applications in path.parents:
+                values[4] = runtime_owner[0]
+            return os.stat_result(values)
+        with patch.object(sandbox.sys, "platform", "darwin"), patch.object(sandbox, "_MACOS_APPLICATIONS", applications), patch.object(
+                sandbox, "_MACOS_DEVELOPER_SELECTOR", selector), patch.object(Path, "lstat", metadata):
+            paths = system_read_paths(sys.executable)
+            self.assertIn(str(developer), paths)
+            self.assertNotIn(str(applications), paths)
+            self.assertNotIn(str(self.root), paths)
+            self.assertNotIn(str(Path.home()), paths)
+            runtime_owner[0] = os.getuid() + 1000
+            with self.assertRaisesRegex(SandboxError, "unsafe system/owner"):
+                system_read_paths(sys.executable)
+            runtime_owner[0] = os.getuid()
+            for mode in (0o775, 0o777):
+                developer.chmod(mode)
+                with self.assertRaisesRegex(SandboxError, "unsafe system/owner"):
+                    system_read_paths(sys.executable)
+            developer.chmod(0o755)
+
     def test_xcode_selector_adds_only_trusted_selected_runtime_and_link_metadata(self):
         from camol import sandbox
         applications = self.root / "Applications"
@@ -162,7 +199,7 @@ assert oracle.read_text() == 'good'
             self.assertIn('(allow file-read-metadata (literal "{}"))'.format(selected), profile)
             self.assertNotIn('(allow file-read* (subpath "{}"))'.format(selected), profile)
             developer.chmod(0o777)
-            with self.assertRaisesRegex(SandboxError, "root-owned"):
+            with self.assertRaisesRegex(SandboxError, "unsafe system/owner"):
                 system_read_paths(sys.executable)
             developer.chmod(0o755)
             selector.unlink()
@@ -190,7 +227,7 @@ assert oracle.read_text() == 'good'
         with patch.object(sandbox.sys, "platform", "darwin"), patch.object(sandbox, "_MACOS_APPLICATIONS", applications), patch.object(
                 sandbox, "_MACOS_DEVELOPER_SELECTOR", selector):
             with patch.object(Path, "lstat", lambda path: fake_owner(path, 501)):
-                with self.assertRaisesRegex(SandboxError, "root-owned"):
+                with self.assertRaisesRegex(SandboxError, "unsafe system/owner|root-owned"):
                     system_read_paths(sys.executable)
             with patch.object(Path, "lstat", lambda path: fake_owner(path, 0)):
                 with self.assertRaisesRegex(SandboxError, "cyclic"):

@@ -584,13 +584,16 @@ _MACOS_COMMAND_LINE_TOOLS = Path("/Library/Developer/CommandLineTools")
 
 
 def _macos_developer_selection():
-    """Read only the root-owned selected Xcode toolchain, never a user override.
+    """Read only the administrator-selected Xcode toolchain, never a user override.
 
     /usr/bin/git is an Apple launcher. CI selects a versioned Xcode app outside
     /Library; denying the selector makes that otherwise installed Git unusable.
-    Resolve a bounded OS-owned link chain without running xcode-select or
+    Resolve a bounded system-selected link chain without running xcode-select or
     honoring ambient DEVELOPER_DIR. A selector into user storage is not an
-    implicit permission to read it.
+    implicit permission to read it. Xcode bundles installed by the current
+    trusted host owner may be owner-owned (as on hosted CI); the system selector
+    and its parent must still be root-owned. This is runtime discovery, not a
+    root-only package immutability or publisher attestation claim.
     """
     if sys.platform != "darwin":
         return (), ()
@@ -601,12 +604,13 @@ def _macos_developer_selection():
         # CommandLineTools installations commonly have no explicit selector.
         return (), ()
 
-    def trusted(path, *, directory=True, container=False):
+    def trusted(path, *, directory=True, container=False, owner_runtime=False):
         info = path.lstat()
-        if (info.st_uid != 0 or (directory and not stat.S_ISDIR(info.st_mode))
+        owners = {0, os.getuid()} if owner_runtime else {0}
+        if (info.st_uid not in owners or (directory and not stat.S_ISDIR(info.st_mode))
                 or (not directory and not stat.S_ISLNK(info.st_mode))
                 or (directory and info.st_mode & (0o002 if container else 0o022))):
-            raise SandboxError("selected macOS developer runtime is not trusted root-owned system metadata")
+            raise SandboxError("selected macOS developer runtime has unsafe system/owner metadata")
         return info
 
     trusted(selector.parent)
@@ -637,14 +641,14 @@ def _macos_developer_selection():
             cursor = cursor / part
             info = cursor.lstat()
             if stat.S_ISLNK(info.st_mode):
-                trusted(cursor, directory=False)
+                trusted(cursor, directory=False, owner_runtime=True)
                 links.append(str(cursor))
                 link = Path(os.readlink(cursor))
                 linked = link if link.is_absolute() else cursor.parent / link
                 pending = Path(os.path.abspath(str(linked.joinpath(*relative.parts[index + 1:]))))
                 changed = True
                 break
-            trusted(cursor)
+            trusted(cursor, owner_runtime=True)
         if not changed:
             break
     else:

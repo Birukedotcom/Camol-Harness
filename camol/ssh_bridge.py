@@ -18,7 +18,39 @@ from .schema import canonical_digest
 from .probes import Redactor
 from .supervisor import SupervisorPaths
 from .ssh_protocol import (REQUEST_LIMIT, RESPONSE_LIMIT, ALL_COMMANDS, SSHTransportError,
-    encode_frame, fields, load_bridge_policy, read_frame, read_regular, sha256, strict_json, text)
+    encode_frame, fields, load_bridge_policy, read_frame, read_regular, strict_json, text)
+
+
+def _measure_public_file(path, *, maximum):
+    """Hash public installed bytes, not their permissions or a trust assertion.
+
+    Managed runtimes (including hosted CI tool caches) can be group/world
+    writable. This is an authenticated host self-report that the owner pins,
+    not authority to execute an arbitrary file or remote attestation. Keep the
+    separate private/control-file reader's permission checks unchanged.
+    """
+    try:
+        descriptor = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+                raise OSError("public identity input is not a bounded regular file")
+            hasher, size = hashlib.sha256(), 0
+            while True:
+                content = stream.read(min(1 << 20, maximum - size + 1))
+                if not content:
+                    break
+                size += len(content)
+                if size > maximum:
+                    raise OSError("public identity input exceeds its byte bound")
+                hasher.update(content)
+            after = os.fstat(stream.fileno())
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode", "st_uid", "st_gid")
+            if size != before.st_size or any(getattr(before, field) != getattr(after, field) for field in fields):
+                raise OSError("public identity input changed while measured")
+            return "sha256:" + hasher.hexdigest(), size
+    except OSError as error:
+        raise SSHTransportError("IDENTITY_DENIED", "installed identity file is missing, nonregular, oversized or changed during measurement") from error
 
 
 def bridge_identity():
@@ -28,14 +60,14 @@ def bridge_identity():
     for path in sorted(root.rglob("*")):
         if "__pycache__" in path.parts or path.suffix not in {".py", ".json", ".txt", ".tcss"}:
             continue
-        data = read_regular(path, maximum=16 << 20, owner=False)
-        size += len(data)
-        if size > 64 << 20 or len(inventory) > 10000:
+        digest, measured_bytes = _measure_public_file(path, maximum=16 << 20)
+        size += measured_bytes
+        if size > 64 << 20 or len(inventory) >= 10000:
             raise SSHTransportError("IDENTITY_DENIED", "installed bridge package exceeds the identity bound")
-        inventory[str(path.relative_to(root))] = sha256(data)
+        inventory[str(path.relative_to(root))] = digest
     executable = Path(sys.executable).resolve()
     return dict(camol_version=__version__, python_executable=str(executable),
-                python_sha256=sha256(read_regular(executable, maximum=256 << 20, owner=False)),
+                python_sha256=_measure_public_file(executable, maximum=256 << 20)[0],
                 package_sha256=canonical_digest(inventory), control_version=3)
 
 
