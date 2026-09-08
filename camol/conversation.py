@@ -155,7 +155,7 @@ def require_tool_free_provider(selection: ProviderSelection) -> None:
         )
 
 
-def _verify_tool_free_cli(executable: str, workspace: Path, runner: Any) -> None:
+def _verify_tool_free_cli(executable: str, workspace: Path, runner: Any, *, extra_flags=()) -> None:
     binary = Path(executable).resolve()
     if binary == Path(workspace).resolve() or Path(workspace).resolve() in binary.parents:
         raise ConversationError("proposal planning runtime cannot be executable code inside the source workspace")
@@ -169,7 +169,7 @@ def _verify_tool_free_cli(executable: str, workspace: Path, runner: Any) -> None
             raise ConversationError("cannot verify the Claude no-tools runtime flags; no planning request sent") from error
     output = completed.stdout.decode("utf-8", "replace")
     required = ("--tools", "--safe-mode", "--strict-mcp-config", "--mcp-config", "--setting-sources",
-                "--disable-slash-commands", "--permission-prompts", "--max-turns")
+                "--disable-slash-commands", "--permission-prompts", "--max-turns") + tuple(extra_flags)
     if completed.returncode or any(flag not in output for flag in required):
         raise ConversationError("installed Claude runtime lacks verified no-tools controls; no planning request sent")
 

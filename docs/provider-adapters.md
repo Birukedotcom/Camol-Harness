@@ -46,6 +46,9 @@ identifier and a provider response returns it.
 
 The preflight is never called by `doctor`, admission, or test discovery. It uses
 one no-tools request, a one-turn limit, and the profile's per-turn dollar ceiling.
+Its one-shot intent, failed-call usage and uncertain-spend holds are described in
+[capability preflight accounting](provider-preflight-accounting.md). Repeating
+an operation never silently launches another probe.
 Revoked login, absent or stale capability, a different target, a changed profile,
 an unexpected resolved model, or an exhausted task/run budget prevents launch.
 

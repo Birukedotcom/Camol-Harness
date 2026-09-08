@@ -335,6 +335,7 @@ def command_provider_preflight(args: argparse.Namespace) -> int:
         cwd=workspace,
         accept_spend=args.accept_spend,
         spend_ceiling_cents=args.max_usd_cents,
+        operation_id=args.operation_id,
     )
     _write_json({
         "ready": True,
@@ -346,6 +347,24 @@ def command_provider_preflight(args: argparse.Namespace) -> int:
         "cost_usd_micros": receipt.cost_usd_micros,
     })
     return 0
+
+
+def command_preflight_status(args: argparse.Namespace) -> int:
+    from .preflight_journal import PreflightJournal, PreflightJournalError
+    try:
+        with PreflightJournal(Path(args.state_dir), read_only=True) as journal:
+            rows = journal.inventory()
+    except PreflightJournalError as error:
+        raise ProviderError(str(error)) from error
+    held = any(row["outcome"] is None or row["outcome"]["status"] == "unknown" for row in rows)
+    _write_json({"schema": "camol.provider_preflight_inventory", "schema_version": 1,
+                 "held": held, "requests": rows,
+                 "known_cost_usd_micros": sum(row["outcome"]["usage"]["cost_usd_micros"] or 0
+                                             for row in rows if row["outcome"] is not None),
+                 "unresolved_reserved_usd_cents": sum(row["intent"]["max_usd_cents"] for row in rows
+                                                     if row["outcome"] is None or row["outcome"]["usage"]["cost_usd_micros"] is None),
+                 "coverage": "capability preflights only; excludes worker, planning and unrelated account costs"})
+    return 2 if held else 0
 
 
 def command_serve(args: argparse.Namespace) -> int:
@@ -835,6 +854,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--workspace", required=True, help="clean source repository root")
     preflight.add_argument("--state-dir", required=True, help="external Camol state directory")
     preflight.add_argument("--target-id", help="target identity (default: local host)")
+    preflight.add_argument("--operation-id", help="explicit one-shot probe identity; repeating it cannot spend again")
     preflight.add_argument(
         "--accept-spend", action="store_true",
         help="authorize this one no-tools model request up to the profile's max_turn_usd_cents",
@@ -844,6 +864,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum spend for this preflight (default 10; also capped by the profile)",
     )
     preflight.set_defaults(handler=command_provider_preflight)
+    preflight_status = subparsers.add_parser("preflight-status", help="read capability-probe usage and uncertain holds without spending")
+    preflight_status.add_argument("--state-dir", required=True, help="existing external Camol state directory")
+    preflight_status.set_defaults(handler=command_preflight_status)
 
     serve = subparsers.add_parser("serve", help="run the authoritative supervisor in the foreground")
     serve.add_argument("runbook")
