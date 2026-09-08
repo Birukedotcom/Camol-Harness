@@ -46,6 +46,12 @@ per-invocation caps and provider overrun caveats alone did not fix the race.
 
 ## Acceptance ledger
 
+The [native acceptance checklist](native-acceptance.md) maps M5–M7 evidence to the
+actual current tests. The opt-in provider smoke only checks capability/model/cost;
+it is not the full build/refine/recover/human-acceptance gate. Executing the shipped
+native example's verifier confirms its normal-newline behavior without a provider
+call; its runbook and spending limits remain unchanged.
+
 The isolated recovery sequence follows the pane/peer/cancellation checkpoints:
 ordinary archive boundary, encrypted captured-workspace recovery, then
 `codex/v0-run-recovery` for owner-reviewed completed-run evidence and code.

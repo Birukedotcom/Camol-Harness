@@ -1895,3 +1895,33 @@ modules before loading test fixtures. Textual, MCP and cryptography were absent.
 The same **80 tests passed in 19.760 seconds**, including the live child CLI paths;
 log: `/tmp/camol-target-runtime-installed.log`. No current-product whole gate is
 claimed. Main and the user installation remain unchanged.
+
+## Gateway full result and native acceptance audit — 2026-09-08
+
+The exact gateway process completed successfully: product
+`a86c54ff0a4a2cc8c6f4455705f14fa3add15d85` passed **1,190 tests in 1,352.798
+seconds on Python 3.12**. Log: `/tmp/camol-worker-gateway-full-py312.log`.
+The process exited zero; it was not restarted after intermediate observation waits.
+This is not a whole gate for the subsequent target-adoption/runtime changes.
+
+The isolated `codex/v0-native-example` follow-up contains verification and documentation
+only, based on runtime product `aa8e5c2258b2610aed03550206c500652ef6dde8`. A source
+inspection initially suggested incorrect newline escaping in the native example.
+Executing the actual oracle disproved that hypothesis: normal newline passes and
+literal backslash-n fails. The runbook, adapter profile, budgets and product modules
+are unchanged. Four regression tests retain this evidence, including missing/wrong/
+extra content and the unchanged one-turn token envelope. They passed **4 tests in
+0.145 seconds on Python 3.12** and **4 in 0.128 seconds on modern Python 3.9**;
+logs: `/tmp/camol-native-example-final-py312.log` and `-py39.log`.
+
+The [native acceptance audit](native-acceptance.md) also confirms that the existing
+opt-in live test proves only capability/model/cost, not the full M7 workflow. No
+live account call was made. Native build/refinement/recovery/human acceptance and
+the other distributed/release gates remain open.
+
+The temporary modern Python 3.9.25/OpenSSL 3.5.4 environment at
+`/tmp/camol-tls-py39.KagAXUWx/modern` now contains Textual 8.2.8, cryptography 50.0.1
+and tomli 2.4.1 for a fuller minimum-Python regression gate. This changed only the
+temporary test runtime, not the user installation or global interpreter selection.
+The latest code still requires its own whole-suite results on both supported
+runtime lines. No second full suite was started while the gateway process was live.
