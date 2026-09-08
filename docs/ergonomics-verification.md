@@ -907,3 +907,18 @@ Permission for bounded live provider builds has been requested and is not assume
 Retention was also re-audited against SPEC §9: the inventory implementation does
 not enforce expiry, archive/restore recovery data or authorize purge. Those remain
 explicit implementation work, not a verification-only checkbox.
+
+The combined repaired terminal/delegation group passed **58 tests on Python 3.12
+in 66.634 seconds** and **58 tests on Python 3.9 in 72.783 seconds**. Product
+checkpoint `c083aaa1a60faffe9f1cae552d4ec7b3478e0083` was then built sdist-to-wheel
+and installed with TUI/graph extras into a fresh Python 3.12 environment.
+**49 installed-package tests passed in 50.604 seconds**, including the complete
+terminal group and all linked delegation-proposal tests. The install was selected
+from `site-packages` before loading source fixtures.
+
+Canonical full-suite reruns for this combined product are active on Python 3.12
+and 3.9, using verbose names and per-test stall tracebacks. Their results are not
+yet established. The failed 981-test predecessor results remain recorded above;
+focused and installed results do not supersede the missing full gate. The isolated
+branch is pushed under the owner's identity; main and the user's installation
+remain unchanged.
