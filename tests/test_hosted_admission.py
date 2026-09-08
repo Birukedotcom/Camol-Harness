@@ -15,7 +15,7 @@ from camol.runbook import (
     runbook_digest,
 )
 from camol.workspace import WorkspaceManager
-from tests.test_providers import Completed, profile_payload
+from tests.test_providers import Completed, fixture_runner, profile_payload
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +75,7 @@ else:
             capability = create_claude_capability(
                 profile, target_id="local:test", state_dir=self.state, cwd=self.source,
                 accept_spend=True, now=self.now,
-                runner=lambda *args, **kwargs: Completed(),
+                runner=fixture_runner(Completed()),
             )
             self.now += timedelta(seconds=profile.capability_ttl_seconds - 1)
             controller = AdmissionController(self.runbook, WorkspaceManager(self.source, self.state), target_id="local:test", clock=lambda: self.now)
@@ -105,7 +105,7 @@ else:
             profile = load_model_profile(self.source, "profiles/models/test-fable.yaml")
             create_claude_capability(
                 profile, target_id="local:test", state_dir=self.state, cwd=self.source,
-                accept_spend=True, now=self.now, runner=lambda *args, **kwargs: Completed(),
+                accept_spend=True, now=self.now, runner=fixture_runner(Completed()),
             )
             green, _ = controller.prepare(
                 plan_digest=runbook_digest(self.runbook), task=task, agent=agent, granted_by="human",
