@@ -1,8 +1,24 @@
 # Dependency rail and repository graph
 
-Status: specified, not implemented.
+Status: initial static slice implemented; runtime readiness overlays, remote signed
+fragments, Terraform/CI/Compose scanners, and the interactive graph pane remain
+specified follow-up work.
 
-This subsystem gives the human and orchestrator two immediate answers:
+`camol.repository_graph` exposes `crawl_repository`, an extensible scanner protocol,
+strict content-hashed snapshots, `GraphStore`, and shared impact/why/cycle/diff/layout
+queries. The built-in scanners cover Git inventory, Python AST imports and available
+TOML packaging, npm package/workspace declarations, Dockerfile base images, and
+Camol task/box/evaluator declarations. DOT and GraphML export need no renderer.
+
+This first slice records static evidence references with source hashes, not live
+capability proof. It never executes project code, reads `.env` or credential files,
+or follows source symlinks. Ignored/excluded files are intentionally outside the
+snapshot; byte/file ceilings, parser failures, and unresolved dynamic imports make
+the result `OBSERVATION_INCOMPLETE`. On Python 3.9/3.10, packaging requires an
+installed `tomli` outside the crawled repository; otherwise the omission is visible.
+
+The intended subsystem answers two questions; the current static implementation
+addresses the second. The first still requires the specified readiness overlays:
 
 1. What capabilities are actually usable in each box right now?
 2. If this file, package, service, or deployment changes, what could be affected?
@@ -10,7 +26,73 @@ This subsystem gives the human and orchestrator two immediate answers:
 The implementation is Python-native and terminal-native. It does not require a web
 application, and the durable graph model is independent of the eventual TUI library.
 
+### Read-only crawl boundary
+
+The graph-boundary checkpoint resolves Git only from `/usr/bin:/bin`, uses a
+private temporary home/current directory, discards inherited Git configuration and
+repository-provided PATH binaries, and retains callback-disabling arguments.
+There is no arbitrary project-command execution. Missing system Git is an explicit
+error rather than a fallback to a repository executable. Custom runtime discovery
+is separate from this trusted inventory implementation; this is a POSIX local
+boundary, not a Windows portability claim.
+
+Each Git query has a 30-second timeout and a combined 32 MiB stdout/stderr ceiling
+enforced while reading, rather than after unbounded capture. The shared subprocess
+reader retains its 1 MiB default for provider preflights. Git's
+[`GIT_ALLOW_PROTOCOL` and `GIT_NO_LAZY_FETCH`](https://git-scm.com/docs/git)
+settings explicitly prohibit protocol use and on-demand object fetching. A missing
+local object is not an invitation to fetch data during a graph crawl.
+
+Repository contents are read relative to one open root descriptor. Intermediate
+symlinks, special files and (by default) hard-linked files cannot become parser input. A file
+replaced by a FIFO is opened nonblocking and refused before consuming data.
+Accepted file identities are checked again at the end; a change to an already
+read member refuses the inventory. Skipped unsafe/unreadable entries produce an
+incomplete observation. Existing files, Git refs and user configuration are not
+rewritten to make a crawl pass.
+
+Some managed checkouts use hard links for their ordinary source files. The strict
+reader skips those files too; a one-node incomplete graph is not a useful complete
+crawl. For an explicitly chosen source layout, the source-policy checkpoint supports:
+
+```sh
+camol repo crawl --workspace . --allow-hardlinked-source
+```
+
+The interactive equivalent is `/repo --allow-hardlinked-source`; it can also be
+combined with `summary`, `impact`, `why` or `cycles`. Embeddings use
+`CrawlPolicy(allow_hardlinked_source=True)`. The option must be an actual boolean
+in Python. It grants permission to read hard-linked files as the chosen project
+input; **other aliases may exist outside the selected repository**. Camol does
+not claim to know every alias or its ownership. Choose this policy only for source
+you intend to inspect, or use an independent checkout with ordinary files.
+
+The opt-in is scoped to that crawl, not retained as a session setting or silently
+inherited by the next command. Its value changes the graph configuration digest;
+an explicit warning remains in the saved snapshot, which is labeled incomplete
+rather than asserting alias isolation. The option cannot reinterpret a stored
+snapshot. Ordinary file limits, excluded paths, symlink/special-file rejection,
+read-only behavior and end-of-read identity checks still apply. Mutation through
+another hard-link name is detected by those checks.
+
+Only the read-only source reader accepts this policy. Archive and recovery readers
+remain single-link, and this command grants no restore, execution, overwrite,
+cleanup or additional filesystem-write authority. Camol does not automatically
+copy the project or sever links to make a crawl pass.
+
+The explicit initial root resolves the caller's selected path (including macOS
+temporary-directory aliases). This is not an atomic filesystem snapshot, a
+hostile-kernel boundary, a same-owner adversarial filesystem sandbox, or proof of
+runtime readiness. The installed Git/parser implementations and explicit custom
+scanner plugins remain trusted code. Limits constrain captured data/process I/O,
+not total CPU or whole-host memory/disk consumption.
+
 ## 1. Terminal shape
+
+The shapes and readiness overlays below are the target design. For the currently
+implemented navigation commands, metadata-only tiles and the exact meaning of
+connection glyphs, use [pane orchestration](pane-orchestration.md) and the README;
+an observed workspace is not equivalent to a task-ready runtime.
 
 The main view reserves the upper-right for a compact dependency rail:
 

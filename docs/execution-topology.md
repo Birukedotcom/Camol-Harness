@@ -1,6 +1,25 @@
 # Execution topology and N-box scheduling
 
-Status: specified; the local registered-worker subset is executable.
+Status: specified; the local registered-worker subset is executable. A separate
+[durable worker evidence delivery primitive](worker-delivery.md) now provides
+lease-bound producer/receiver spools and authenticated acknowledgments.
+[Owner stream enrollment](worker-enrollment.md) adds exact review, revocation and
+controller-serialized receipt ingestion. [Pinned TLS transport](worker-tls.md)
+and [owner capture into run history](worker-import.md) now cover encrypted evidence
+delivery and unverified report visibility. An optional, owner-reviewed
+[supervisor gateway](worker-gateway.md) now owns the listener and automatically
+captures bounded report pages. Machine adoption, target-side launch and trusted
+result promotion remain open; receiving a report does not authorize execution.
+An [owner-reviewed target registry](target-adoption.md) now records distinct provider,
+harness, generation and transport-profile identities. Registry adoption is not yet
+authenticated machine adoption or execution-backed readiness.
+An [offline provider inventory decoder](target-inventory.md) supplies compatible
+provider identities from GCP dumps while exposing rejected rows, pagination and
+schema drift. Its unauthenticated imported claims do not create targets or leases.
+[SSH runtime observation](target-ssh-runtime.md) now measures an existing remote
+supervisor through an explicitly permitted pinned bridge, with exact adoption and
+response bindings. It does not repurpose that supervisor as a worker endpoint or
+establish provider ownership, task readiness or distributed execution.
 
 Camol's replaceable orchestration agent may propose as many boxes as a plan can
 justify within its approved resource envelope. The deterministic harness admits and

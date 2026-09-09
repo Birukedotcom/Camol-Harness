@@ -1,0 +1,274 @@
+# Optional SSH control-plane attachment
+
+This adapter connects to an **already running** Camol supervisor. It does not
+provision a machine, admit remote workers, deploy a repository, forward model
+accounts, or prove distributed execution readiness. Local Camol has no SSH or
+cmux dependency. The reusable client is `camol.ssh_transport.SSHControlClient`.
+
+## Trust and setup
+
+Install the approved Camol package on the remote host. The fixed
+`camol-ssh-bridge` entry point must be on the remote account's noninteractive
+PATH (a pipx/venv install needs that entry point exposed explicitly). Start the
+supervisor on that host using its ordinary local owner-approved workflow.
+Configure its bridge policy as an owner-only regular file at
+`~/.config/camol/ssh-bridge.json`:
+
+```json
+{
+  "schema": "camol.ssh_bridge_policy",
+  "schema_version": 1,
+  "targets": {
+    "project": {
+      "state_dir": "/absolute/remote/camol-state",
+      "run_id": "approved-run",
+      "plan_digest": "sha256:<64 lowercase hex digits>",
+      "owner": "project-owner",
+      "allowed_commands": ["status", "boxes", "box", "plan", "events"]
+    }
+  }
+}
+```
+
+The symbolic digests above are placeholders, not valid configuration. Obtain the
+actual plan digest from that supervisor. Obtain the installed bridge identity by
+running `camol remote identity` **on that trusted host**, then verify it through
+your own authenticated channel. This contains Camol version, package inventory
+hash, resolved Python executable path/hash, and control protocol version 3.
+The handshake is an authenticated host's **self-report**, not hardware/software
+attestation; a compromised host can lie.
+
+Identity hashing measures bounded, stable public installation bytes regardless
+of their write-permission bits. Managed runtime caches may make executables
+group/world writable; their exact hashes still need owner approval. This is not
+a claim that those permissions are safe. Control credentials, owner policy,
+known-host inputs and dispatch journals keep their separate strict file checks.
+
+The local strict target profile has these fields:
+
+```text
+schema = "camol.ssh_target"; schema_version = 1
+name, host, port, login
+known_hosts = absolute local pinned public-host-key file
+known_hosts_sha256 = sha256 of that file's exact bytes
+identity_file = absolute private-key file reference (never its contents)
+target_id = key in remote policy's targets mapping
+target_digest = canonical_digest(remote policy's exact target object)
+run_id, plan_digest, owner = exact matching remote policy values
+bridge_identity = exact object reported on the approved host
+allowed_commands = explicit subset; omitted defaults to read-only commands
+```
+
+Use `camol.schema.canonical_digest` for the target object, not a hash of arbitrary
+JSON whitespace. Host keys must be verified out of band before pinning; there is
+no accept-new or automatic trust-on-first-use path. Camol snapshots the bounded
+known-hosts file privately and verifies its digest before launch. It checks the
+private-key file's ownership/type/mode but never reads or logs key bytes; OpenSSH
+uses the explicitly selected file. Batch mode means passphrase/password prompts
+and agent-only keys are unsupported in this slice.
+
+The adapter ignores ambient SSH config and disables agents, agent forwarding,
+X11, tunnels, proxies, jump hosts, multiplexing and credential forwarding. These
+are explicit OpenSSH options, not a custom encryption layer. See the official
+[ssh(1)](https://man.openbsd.org/ssh.1) and
+[ssh_config(5)](https://man.openbsd.org/ssh_config.5) manuals.
+
+All remote arguments are framed JSON on stdin. The SSH remote command is the
+constant `camol-ssh-bridge`; no target names, paths, owner input or control
+parameters are interpolated into a shell command. The remote account still has
+its normal SSH account privileges. The bridge's command allowlist is not an OS
+account sandbox; deployments needing an account-level restriction must configure
+that on their SSH server.
+
+## Use and outcome handling
+
+```text
+camol remote validate --target /absolute/target.json
+camol remote request --target /absolute/target.json --state-dir /absolute/local-journal --command status
+camol remote receipts --target /absolute/target.json --state-dir /absolute/local-journal
+```
+
+Validation and receipt inspection are offline; receipt inspection does not create
+missing directories. Mutation requires both the remote owner policy and local
+target profile to permit the command, plus CLI `--allow-mutation --by OWNER`.
+`--params /absolute/params.json` supplies strict JSON, never command text. The
+supervisor checks the run/plan binding at authoritative dispatch, including a
+second check around asynchronous force-stop cancellation. Changed policy,
+owner, run, plan or bridge identity fails closed.
+
+One request uses one SSH process and one bounded frame (60 KiB request, 8 MiB
+response). The overall timeout covers launch, handshake, writes and reads;
+stderr is drained into a byte count/hash rather than retained as a raw banner.
+Local cleanup is bounded. If the direct process has exited but another process
+holds its pipes, Camol closes its local pipe transports instead of signalling an
+unowned/reused process group. This does not claim containment or termination of
+hostile remote descendants.
+
+Mutations get a fsynced dispatch journal with the command and parameter **digest**,
+not raw parameters. A disconnect/cancellation after possible dispatch is
+`unknown`, never presumed rollback. There is no automatic retry. Outstanding
+unknown mutations block subsequent mutations for that target; read-only queries
+remain available. Reuse the same local journal across reconnects/restarts.
+
+After inspecting the remote authoritative state, an owner can explicitly clear
+the local hold with `remote acknowledge-unknown --target ... --state-dir ...
+--request-id ... --by OWNER --reason ...`. This only acknowledges uncertainty; it
+does not prove completion, reconcile a provider bill, erase history or replay the
+request. Secret-shaped notes are rejected. Embedded callers can retrieve a
+cancelled request's identity with `cancellation_receipt(cancelled_error)`;
+Python 3.9 may wrap the enriched cancellation in an ordinary `CancelledError`,
+so the durable journal remains the recovery source.
+
+Tests use local process bridges and fake SSH executables, including broken frames,
+policy drift, retained descendant pipes, backpressure and uncertain mutations.
+No live SSH host, production key, remote provisioning or paid provider has been
+tested by this checkpoint.
+
+## Remote terminal monitor
+
+`camol remote monitor --target /absolute/target.json --state-dir /absolute/local-journal`
+opens a separate, read-only terminal monitor (`[tui]` extra required). Use an
+existing pinned target configured as above; both the profile and remote bridge
+policy must permit `status` and `box`. It does not discover a host, create a
+supervisor, authorize a worker, forward an account or start a model invocation.
+
+The left pane lists registered workers, including dormant ones, 50 per page.
+Arrow keys and Enter select an exact box; the filter accepts literal words and
+spaces. Ctrl+N / Ctrl+P page through matches. Escape returns to the overview;
+`r` refreshes when not editing the filter. Ctrl+C always detaches; `q` also
+detaches outside text input. The remote run is unchanged when the monitor exits.
+
+The overview shows run/plan identity, reported state and model-token usage. Box
+details contain the latest 100 matching ledger events and the existing bounded
+artifact previews, with their snapshot digest. These are retained observations,
+not a mirrored PTY, interactive shell, agent chat or worker-readiness proof.
+Supervisor status and box detail are successive reads, not one atomic event cut.
+Each read is nevertheless bound to the same pinned target, run and plan; box
+detail additionally binds the exact box ID and content digest.
+
+Polling defaults to five seconds (`--interval 2..300`). Only one refresh is active
+at a time; a refresh performs one status request and, when selected, one box read.
+Each uses the existing bounded one-request SSH process and timeout. Late responses
+from an earlier selection cannot replace the current pane. Failures retain only
+the last in-memory observation, labeled `STALE` with its time and actual selected
+box; an initial failure says `UNAVAILABLE` and has no local-project fallback.
+Reopening requires the target again and starts without a cached healthy state.
+
+The monitor exposes no mutating dispatch method and rejects CLI mutation/request
+options, even if the supplied profile permits them. Remote strings render literally
+with credential redaction, terminal-control escaping and a 64,000-character display
+ceiling. Inventory is capped at 10,000 boxes and transport frames remain capped at
+8 MiB; overflow fails explicitly. The owner's local dispatch directory may be
+created, but read-only requests do not append mutation receipts. Remote SSH access
+is still an authenticated host self-report, not hardware attestation.
+
+Local-process SSH bridge/supervisor tests and headless terminal keyboard tests cover
+the monitor. Actual SSH-host acceptance remains a separate live gate. This feature
+implements the remote-control-plane *inspection* topology, not distributed workers,
+provisioning, remote mailbox control or a local scheduler launching on another host.
+
+## Scoped remote mailbox relay
+
+The bridge also supports owner-authorized `box-observe`, `box-inbox` and
+`box-message` control calls. The first two are reads; `box-message` is a mutation.
+Both the remote bridge policy and the local target profile must explicitly permit
+each command. Existing profiles are not silently widened: review the changed
+policy digest and newly installed package identity before updating pins. The
+terminal monitor remains read-only and never invokes these message operations.
+
+These calls address an **existing running fenced box** on an already-running
+supervisor. They do not register workers, assign tasks, edit a frozen plan, approve
+an evaluator, provision machines or inject keystrokes. The authenticated owner is
+recorded as a human/control-plane sender; this is not cross-host worker-identity
+authentication or an autonomous peer transport.
+
+The reusable Python API is `camol.remote_mailbox.RemoteMailbox(client)`, where
+`client` is an explicitly configured `SSHControlClient`:
+
+1. `await mailbox.observe(box_id)` obtains a short-lived lease observation and
+   wraps it with the exact pinned target-profile digest. Pane indices and labels
+   are not accepted as substitutes for box identity.
+2. `mailbox.prepare(observation, request_id=stable_id, body=text, ...)` creates a
+   deep-copied review object without making a request. Persist this intent privately
+   before sending. Its digest covers the target, sender, body, kind, correlation,
+   TTL and observed task/lease/fence. Preparation redacts credential-shaped text.
+3. After explicit owner review, `await mailbox.send(intent, approved_by=owner,
+   approval_digest=confirmed_digest)` sends only that exact intent. It never
+   refreshes a stale observation, changes a request ID or retries automatically.
+4. `await mailbox.inbox(box_id, offset=0, limit=100)` reports queued, delivered,
+   consumed, stale or expired records. Posting is not delivery; delivery is not
+   consumption, task success or new execution authority.
+
+The remote kernel checks current lease generation, fencing and observation expiry
+for new posts. The client validates record shape/digests but does not compare local
+and remote clocks. Reuse an exact saved request for deliberate retry; changed
+content under the same request ID is refused. A lost post response leaves the
+transport journal `unknown`, blocking later mutations. Read the exact remote inbox
+and reconcile explicitly with `remote acknowledge-unknown` before retrying. That
+acknowledgment does not itself prove success; the remote mailbox deduplicates the
+unchanged request. No helper automatically clears the hold.
+
+CLI automation can use `camol remote request --command box-observe` or
+`box-inbox`, with the existing `--target`, `--state-dir` and `--params` file options.
+Parameters contain exact `run_id`, `plan_digest`, `box_id`; inbox may add `offset`
+and `limit`. For `box-message`, the parameters are the prepared intent's `params`
+object, **not** its outer wrapper. CLI sending additionally requires
+`--allow-mutation --by OWNER`. The Python helper adds exact-intent digest approval
+on top of those transport/kernel controls.
+
+Messages are at most 2,000 characters, one of `information`, `question`, `proposal`
+or `warning`, with TTL 1..3,600 seconds. Terminal controls are rejected. The transport
+journal retains request/parameter digests, not message bodies; the remote run ledger
+retains redacted message content and delivery state. Locally persisted intents are
+the caller's responsibility. All verification so far uses disposable local bridge,
+supervisor and lease fixtures, not real SSH hosts or hosted model accounts.
+
+## Local RPC usage audit
+
+`camol remote usage --target PROFILE --state-dir LOCAL_JOURNAL --after 0 --limit 100`
+reads the private local audit without SSH, model calls, state creation or mutation
+reconciliation. Substitute the same actual target profile and journal directory
+used for your requests. Python embeddings use `SSHControlClient.usage(...)`;
+constructing a client with `read_only=True` permits only local inspection, never
+network dispatch, including remote read commands.
+
+Validated remote calls now append content-free metadata to `rpc-audit.sqlite3`,
+separate from the mutation-only dispatch receipts. Monitor polling is included.
+Rows contain generated request ID, exact target-profile digest, command name,
+mutation flag, transport status, timestamps and measurements. They contain no
+host name, actor name, key path, params, message body, response or stderr text.
+This is owner-controlled local storage, not a tamper-proof audit against the owner
+UID. Legacy calls and pre-validation denials are explicitly unmeasured.
+
+The report filters by the exact current profile digest. `entries` paginate by
+`next_seq` (`--after`) with `more`; `by_command` aggregates all retained calls for
+that profile, not just the page. `limit` is 1..1,000. Changed profiles have separate
+coverage; an empty report is not proof that no historical remote work occurred.
+
+- `elapsed_ms` is local monotonic time through transport cleanup, including audit
+  preparation and waits, but excluding the final audit commit. It is not remote
+  execution time or provider-internal latency.
+- `request_bytes` counts the encoded request frame, including its four-byte header,
+  not proof that those bytes reached the remote process. Zero means no encoded
+  frame was produced for the recorded call.
+- `stdout_bytes` counts consumed protocol pipe bytes, including hello/frame headers
+  and partial reads; `stderr_bytes` counts a completed stderr drain. These are not
+  total wire bytes or SSH encryption overhead. An unfinished stderr drain is null.
+- Prepared/dispatched rows left after interruption retain null measurements;
+  aggregate `known_calls` distinguishes measured zeros from missing values.
+  `known_total` is only the sum of observed measurements. Provider tokens and cost
+  remain null: RPC counts/bytes cannot establish a model bill.
+
+Audit preparation must succeed before SSH launch. Unsafe files, invalid schema,
+bounded lock contention or a full audit deny new dispatch. The store permits up
+to 1,000,000 records, then stops new calls; this is a record ceiling, not a disk
+quota. No automatic deletion, archive rotation or complete retention workflow is
+implemented. Do not delete the journal to clear uncertain mutation holds.
+
+If final audit persistence fails after a confirmed remote result, the API reports
+`AUDIT_UNAVAILABLE` with that known `outcome` and request ID. Inspect the independent
+mutation receipt before any retry: a completed mutation is not made safe to repeat
+by a logging failure. During a transport error or cancellation, that original
+outcome is preserved with `audit_error`; cancellation remains cancellation. Abrupt
+termination can leave pending audit rows. Audit rows cannot authorize execution,
+clear mutation uncertainty, or prove delivery, consumption or task success.

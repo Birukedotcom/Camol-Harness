@@ -7,7 +7,148 @@ ledger. A changed file cannot silently resume the old run.
 See [examples/three-agent-runbook.json](../examples/three-agent-runbook.json) for a
 complete runnable example.
 
+## Schema versions
+
+Five `schema_version` values are readable. Any other value is rejected with
+`unsupported schema_version`.
+
+| Version | Status | Differences |
+|---|---|---|
+| `1` | frozen; digests pinned in `tests/test_runbook.py` | Accepts the legacy `run.max_agents` alias, ignores unknown fields, and has no readiness fields. Normalization is byte-identical to the pre-M0 kernel, so existing frozen plans still resume. |
+| `2` | frozen | Requires `run.max_concurrency` (the alias is rejected), rejects unknown fields at every object level, rejects booleans in integer fields, requires `run.readiness_policy`, and requires `trust_tier` on every agent. |
+| `3` | frozen | Preserves v2 semantics and adds a provider-neutral hosted-adapter shape: `kind`, workspace-relative `profile`, optional strict `profile_snapshot`, and `timeout_seconds`. Process adapters retain `kind`, `argv`, and `timeout_seconds`. |
+| `4` | frozen | Preserves v3 semantics, requires an explicit `evaluator_assets` list on every task, and permits an explicit verification-command `cwd` of `box` or `workspace_root`. Protected asset manifests/bytes and evaluator location are digest-bound; changed workspace copies cannot pass. |
+| `5` | current | Adds an explicit `state_model`: versioned invariants, obligations, task gates, and owner-written mappings from each frozen verification command to evaluator families and invariant IDs. Candidate and integration gates are replayed before acceptance, and the final integrated outcome requires human acceptance. |
+
+A v1 file that contains a v2 field (`readiness_policy` or `trust_tier`) is rejected
+rather than partially reinterpreted. Upgrading is explicit:
+
+```python
+from camol.runbook import migrate_runbook_v1_to_v2
+
+v2 = migrate_runbook_v1_to_v2(
+    v1_runbook,
+    readiness_policy={"receipt_ttl_seconds": 300},
+    trust_tiers={"strategist": "developer_trusted", "builder": "developer_trusted"},
+)
+```
+
+Nothing is defaulted during migration; every agent needs a trust tier and the
+readiness policy must be supplied. The migrated plan has a different digest from its
+v1 source because it freezes more decisions.
+
+Migration from v2 to v3 is also explicit:
+
+```python
+from camol.runbook import migrate_runbook_v2_to_v3
+
+v3 = migrate_runbook_v2_to_v3(v2)
+```
+
+For existing process workers no new choices are defaulted. To use Claude CLI,
+replace that worker's adapter only after migration:
+
+```json
+{
+  "kind": "claude_cli",
+  "profile": "profiles/models/claude-fable-5-1.yaml",
+  "timeout_seconds": 1800
+}
+```
+
+Hosted adapters cannot supply arbitrary `argv`; invocation authority lives in
+the versioned profile and adapter implementation. See
+[Provider and model adapters](provider-adapters.md).
+
+Product-generated executable plans include `profile_snapshot`, a complete
+digest-bound effective profile after approved effort and cost/token/turn ceilings
+have been applied. Hand-authored legacy runbooks may continue to reference only the
+profile path. Process adapters cannot carry a hosted profile snapshot.
+
+Migration from v3 to v4 requires an explicit choice for every task—even when a
+self-contained evaluator has no external assets:
+
+```python
+from camol.runbook import migrate_runbook_v3_to_v4
+
+v4 = migrate_runbook_v3_to_v4(
+    v3,
+    evaluator_assets={"build": ["tests/frozen"], "docs": []},
+)
+```
+
+The v2 additions look like this:
+
+```json
+{
+  "schema_version": 2,
+  "run": {
+    "max_concurrency": 3,
+    "readiness_policy": {
+      "receipt_ttl_seconds": 300
+    }
+  },
+  "agents": [
+    {"id": "builder", "trust_tier": "developer_trusted"}
+  ]
+}
+```
+
+`trust_tier` is one of `developer_trusted`, `developer_sandboxed`, or `sandboxed`
+and describes the worker's process/credential posture. It is distinct from a
+workspace's `filesystem_policy` (`read_only`, `isolated_worktree_write`,
+`shared_checkout_write`), which describes actual source access.
+
+There is no plan field that turns readiness proof off. `require_readiness_receipt`
+is rejected explicitly, whatever its value; `READY_TO_LEASE` is a kernel invariant,
+not a runbook option.
+
+The scheduler enforces both fields. A task cannot lease without a fresh task/worker/
+target-bound admission bundle, and the selected sandbox backend must satisfy the
+declared trust tier.
+
+Plan digests use `camol.schema.canonical_digest`: sorted keys, `,`/`:` separators,
+ASCII-escaped UTF-8, SHA-256, and a hard rejection of NaN, infinities, non-string
+keys, and non-JSON values. The same function hashes readiness receipts, workspace
+receipts, reservations, grants, and lease fences (`camol.readiness`).
+
 ## Run
+
+Schema V5 adds a required root `state_model` object:
+
+```text
+invariants: [camol.invariant/v1 records]
+obligations: [camol.obligation/v1 records]
+gates: [{task_id, policy: camol.gate_policy/v1, invariant_ids,
+         obligation_ids, evaluators: [{verification_index, family, invariant_ids}]}]
+final_acceptance: "human"
+```
+
+Mappings are explicit decisions reviewed with the plan. Camol never infers that an
+arbitrary green test establishes a prose invariant. Every verification command and
+obligation is mapped; every inherited global invariant is included in each task
+gate. Threshold definitions and mappings are part of the evaluator digest and are
+included in worker context. Missing property, metamorphic, adaptive, integration,
+rollback, or real-boundary checks cannot silently downgrade a named threshold.
+
+The evaluator command boundary generates executed command and test-result evidence.
+Gate replay verifies exact command arguments, task lease, plan, evaluator,
+environment identity, and candidate or integration artifact identity. Worker claims
+cannot satisfy these obligations. A `NOT_DISPROVED_WITHIN_BUDGET` result cannot
+substitute for required positive target evidence.
+
+Task gates requiring a human set a durable `gate_wait` on that task. The candidate
+stays immutable and other tasks may continue. `approve_task_gate(run_id, task_id,
+approved_by, assessment_digest)` accepts only the exact pending gate and run owner;
+verification resumes after readiness is re-proven. Final completion stops at
+`awaiting_acceptance`, exposing an outcome digest covering the plan, integrations,
+gates, evidence, and debug cases. `accept_run(run_id, approved_by, outcome_digest)`
+accepts only that exact outcome and the original human approver. These methods are
+available on the embeddable orchestrator as well as terminal controls.
+
+V1–V4 retain their original completion semantics. There is no automatic upgrade to
+V5 because evaluator-to-invariant mappings require human judgment. Import an explicit
+V5 runbook to use these gates.
 
 ```json
 {
@@ -105,10 +246,17 @@ Each task declares:
 - `required_evidence` — required kinds before success;
 - `max_attempts` — bounded retry count;
 - `steps` — ordered agent instructions and expected commands;
-- `verification` — commands the orchestrator runs outside the agent claim.
+- `verification` — commands the orchestrator runs outside the agent claim;
+- `evaluator_assets` (v4) — repository-relative evaluator files/directories whose
+  canonical bytes are stored outside builder write authority.
 
 Tasks may only depend on tasks declared earlier. This makes cycles structurally
-impossible in v1.
+impossible in every schema version.
+
+In v4, `verification` commands and human-approved acceptance/rule text are compiled
+with the expanded evaluator-asset manifest. Their digest is bound into readiness and
+the lease. The candidate runs in a separate verifier worktree; a protected asset
+change is a counterexample and the command is not launched.
 
 ## Steps and commands
 
@@ -128,6 +276,14 @@ impossible in v1.
   ]
 }
 ```
+
+In schema V4, verification commands may set `cwd`; it is optional and defaults to
+`box`. `workspace_root` runs the evaluator from the root of the independent verifier
+or integration worktree. Product V0 uses that explicit root for its generated final
+gate so a repository-wide check sees every accepted task. Step commands do not
+accept `cwd`: workers always operate inside their isolated box, and changing that
+requires a future versioned worker-execution contract. Older schema versions reject
+`cwd`; their verification location remains the historical box default.
 
 The command list is an explicit route through the task, not permission to fake the
 result. A reasoning agent may discover that a declared command is stale; it should
@@ -150,6 +306,7 @@ task goal + acceptance + remaining steps
 verified dependency receipts
 latest checkpoint
 latest verification failure
+latest evaluator counterexample
 turn and run token budgets
 structured return contract
 ```
@@ -188,9 +345,10 @@ The adapter must write JSON to `{result}`:
 }
 ```
 
-Evidence kinds are `command`, `tool_call`, `transcript`, `environment`, `artifact`,
-`diff`, `test_result`, and `claim`. Store sensitive or large bodies outside SQLite;
-put redacted metadata and content hashes in the result.
+Evidence kinds are `command`, `tool_call`, `model_request`, `model_usage`,
+`transcript`, `environment`, `artifact`, `diff`, `test_result`, and `claim`. Store
+sensitive or large bodies outside SQLite; put redacted metadata and content hashes
+in the result.
 
 In production, the adapter wrapper should populate token counts from provider/runtime
 usage receipts rather than asking the reasoning model to estimate its own consumption.
@@ -204,7 +362,9 @@ channels.
 ```text
 RUN:  draft -> ready -> running -> completed | blocked
 
-TASK: pending -> leased -> running -> verifying -> succeeded
+TASK: pending <-> waiting
+         |
+         +-> leased -> running -> verifying -> succeeded
                              |           |
                              +-> retry <-+
                              |
@@ -229,7 +389,12 @@ python3 -m camol init runbook.json --db .camol/run.sqlite3
 python3 -m camol approve --db .camol/run.sqlite3 --run-id RUN --by NAME
 
 # Execute or resume until a declared terminal state
-python3 -m camol run runbook.json --db .camol/run.sqlite3 --workspace .
+python3 -m camol run runbook.json --workspace . \
+  --state-dir /absolute/path/outside/repository/state \
+  --db /absolute/path/outside/repository/state/run.sqlite3
+
+# Prove task-specific readiness without starting work (read-only; exit 0/2/3)
+python3 -m camol doctor runbook.json --workspace . --state-dir /outside/repo --json
 
 # Read projection or immutable history
 python3 -m camol status --db .camol/run.sqlite3 --run-id RUN

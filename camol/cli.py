@@ -3,14 +3,48 @@
 import argparse
 import asyncio
 import json
+import sqlite3
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from .orchestrator import Orchestrator, StateTransitionError
-from .runner import HarnessRunner, summary
+from .artifacts import ArtifactError, ArtifactStore, RunArchive
+from .benchmark import BenchmarkError, BenchmarkTrial, compare_trials
+from .runner import summary
+from ._version import __version__
+from .doctor import DoctorOptions, run_doctor
 from .runbook import RunbookError, load_runbook
-from .store import SQLiteEventStore
+from .schema import SchemaError
+from .store import SQLiteEventStore, ReadOnlyEventStore
+from .debugger import Debugger, DebuggerError
+from .usage import UsageError, usage_report
+from .watchers import WatcherError, WatchSpec
+from .watch_runtime import WatchRuntime, normalize_schedule
+from .repository_graph import CrawlPolicy, GraphError, GraphStore, RepositoryGraph, crawl_repository, diff_snapshots
+from .workspace import WorkspaceError, WorkspaceManager
+from .providers import ProviderError, create_claude_capability, load_model_profile
+from .probes import local_target_id
+from .supervisor import Supervisor, SupervisorError, send_control, send_control_v2, spawn_supervisor
+from .connections import ConnectionError
+from .conversation import ConversationError
+from .session import SessionError
+from .app import InteractiveError
+from .api import Harness
+from .revisions import RevisionError, collect_revision_lineage
+from .campaign import BenchmarkCampaign, CampaignStore, validate_campaign
+from .schema import canonical_digest
+from .capacity import CapacityBroker, CapacityError, validate_supply
+from .models import DownloadPlan, ModelStore, ModelError
+from .diagnostics import profile_run, event_metadata
+from .json_contracts import load_contract
+from .ssh_protocol import ALL_COMMANDS as SSH_COMMANDS, MUTATING_COMMANDS as SSH_MUTATIONS, SSHTarget, SSHTransportError
+from .source_binding import SourceBindingError
+from .retention import RetentionError, RetentionPolicy, inspect_retention
+from .overview import fleet_overview, render_overview
+from .box_inspection import BoxInspector, BoxInspectionError
+from .recovery import RecoveryError
+from .vcs import VCSError, RELATIONS as VCS_RELATIONS, CHANGES as VCS_CHANGES
 
 
 def _write_json(value: Any) -> None:
@@ -65,7 +99,7 @@ def command_approve(args: argparse.Namespace) -> int:
 
 
 def command_status(args: argparse.Namespace) -> int:
-    store = SQLiteEventStore(Path(args.db))
+    store = ReadOnlyEventStore(Path(args.db))
     try:
         run_id = _run_id(store, args.run_id)
         _write_json(summary(Orchestrator(store).state(run_id)))
@@ -75,7 +109,7 @@ def command_status(args: argparse.Namespace) -> int:
 
 
 def command_events(args: argparse.Namespace) -> int:
-    store = SQLiteEventStore(Path(args.db))
+    store = ReadOnlyEventStore(Path(args.db))
     try:
         run_id = _run_id(store, args.run_id)
         _write_json(store.read(run_id, after_seq=args.after))
@@ -84,33 +118,1066 @@ def command_events(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_usage(args: argparse.Namespace) -> int:
+    store = ReadOnlyEventStore(Path(args.db))
+    try:
+        _write_json(usage_report(store.read(_run_id(store, args.run_id))))
+    finally:
+        store.close()
+    return 0
+
+
+def command_profile(args: argparse.Namespace) -> int:
+    store = ReadOnlyEventStore(Path(args.db))
+    try:
+        _write_json(profile_run(store.read(_run_id(store, args.run_id))))
+    finally:
+        store.close()
+    return 0
+
+
+def command_logs(args: argparse.Namespace) -> int:
+    if args.after < 0:
+        raise StateTransitionError("logs --after must be a non-negative cursor")
+    store = ReadOnlyEventStore(Path(args.db))
+    try:
+        events = store.iter_events(_run_id(store, args.run_id), after_seq=args.after, limit=args.limit)
+        for event in events:
+            print(json.dumps(event_metadata(event), sort_keys=True, separators=(",", ":")))
+    finally:
+        store.close()
+    return 0
+
+
+def command_retention(args: argparse.Namespace) -> int:
+    # No latest-run lookup, live store, inferred policy, or cleanup authorization.
+    policy = RetentionPolicy.from_dict(load_contract(args.policy, max_bytes=65536))
+    inventory = inspect_retention(state_dir=Path(args.state_dir), database=Path(args.db),
+                                  run_id=args.run_id, policy=policy)
+    _write_json(dict(inventory=inventory.to_dict(), inventory_digest=inventory.digest()))
+    return 0
+
+
+def command_overview(args: argparse.Namespace) -> int:
+    if args.offset < 0:
+        raise StateTransitionError("overview offset must be nonnegative")
+    store = None
+    try:
+        store = ReadOnlyEventStore(Path(args.db))
+        state = Orchestrator(store).state(args.run_id)
+        if state["run_id"] != args.run_id:
+            raise StateTransitionError("overview requires an existing exact run")
+        report = fleet_overview(state, attention=args.attention, offset=args.offset, limit=args.limit)
+    except sqlite3.Error as error:
+        raise StateTransitionError("overview ledger is unreadable; snapshot unavailable") from error
+    finally:
+        if store is not None:
+            store.close()
+    if args.json:
+        _write_json(report)
+    else:
+        print(render_overview(report))
+    return 0
+
+
+def command_target_inventory(args: argparse.Namespace) -> int:
+    from .target_inventory import MAX_BYTES, capabilities, normalize_inventory
+    from .targets import TargetError
+    if args.action == "inventory-formats":
+        _write_json(capabilities())
+        return 0
+    try:
+        report = normalize_inventory(load_contract(args.input, max_bytes=MAX_BYTES),
+            format=args.format, account=args.account, project=args.project)
+    except TargetError as error:
+        print("camol: {}".format(error), file=sys.stderr)
+        return 2
+    _write_json(report)
+    return 2 if report["issues"] or report["coverage"]["more_pages"] or report["coverage"]["unreachable_count"] or report["coverage"]["warning_count"] else 0
+
+
+def command_target(args: argparse.Namespace) -> int:
+    from .targets import TargetError, snapshot
+    from .target_runtime import local_profile
+    try:
+        if args.action == "local-profile" and not args.live:
+            if any((args.state_dir, args.db, args.run_id, args.plan_digest)):
+                raise TargetError("local-profile without --live measures this process; omit supervisor scope arguments")
+            _write_json(local_profile())
+            return 0
+        if args.live:
+            if not args.plan_digest or not args.state_dir or not args.run_id:
+                raise TargetError("live target control requires exact --state-dir, --run-id and --plan-digest")
+            params = {}
+            if args.db:
+                params["expected_database"] = str(Path(args.db).resolve())
+            if args.action == "local-profile":
+                pass
+            elif args.action == "inspect":
+                params.update(offset=args.offset, limit=args.limit)
+            else:
+                params.update(approved_by=args.by, expected_workspace=str(Path(args.workspace).resolve()))
+                if args.action == "propose":
+                    params.update(descriptor=load_contract(args.descriptor, max_bytes=8192), expires_at=args.expires_at)
+                elif args.action == "adopt":
+                    params.update(proposal=load_contract(args.proposal, max_bytes=16384), approval_digest=args.approval_digest)
+                elif args.action in {"observe-local", "observe-ssh"}:
+                    params.update(generation=args.generation, adoption_digest=args.adoption_digest,
+                                  request_id=args.request_id, ttl_seconds=args.ttl_seconds)
+                    if args.action == "observe-ssh":
+                        params.update(ssh_profile=load_contract(args.ssh_profile, max_bytes=16384), allow_network=args.allow_network)
+                else:
+                    params.update(generation=args.generation, adoption_digest=args.adoption_digest, reason=args.reason)
+            response = asyncio.run(send_control_v2(Path(args.state_dir), "target-" + args.action,
+                requested_by=getattr(args, "by", "operator"), params=params,
+                expected_run_id=args.run_id, expected_plan_digest=args.plan_digest))
+            _write_json(response["result"])
+            return 0
+        inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+        if args.action == "inspect":
+            state, _, _ = inspector._cut(args.run_id)
+            if args.plan_digest is not None and args.plan_digest != state["plan_digest"]:
+                raise TargetError("target inspection plan differs from the selected ledger")
+            result = snapshot(state, offset=args.offset, limit=args.limit)
+        else:
+            with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+                if harness.run_id != args.run_id or harness.orchestrator.state(args.run_id)["plan_digest"] != args.plan_digest:
+                    raise TargetError("target control requires the exact current run and plan")
+                if args.action == "propose":
+                    result = harness.targets.propose(load_contract(args.descriptor, max_bytes=8192), by=args.by, expires_at=args.expires_at)
+                elif args.action == "adopt":
+                    result = harness.targets.adopt(load_contract(args.proposal, max_bytes=16384), by=args.by, approval_digest=args.approval_digest)
+                elif args.action == "observe-local":
+                    result = harness.targets.observe_local(args.generation, by=args.by, adoption_digest=args.adoption_digest,
+                                                          request_id=args.request_id, ttl_seconds=args.ttl_seconds)
+                elif args.action == "observe-ssh":
+                    result = asyncio.run(harness.targets.observe_ssh(args.generation, by=args.by, adoption_digest=args.adoption_digest,
+                        request_id=args.request_id, ttl_seconds=args.ttl_seconds, state_dir=harness.paths.state_dir,
+                        ssh_profile=load_contract(args.ssh_profile, max_bytes=16384), allow_network=args.allow_network))
+                else:
+                    result = harness.targets.retire(args.generation, by=args.by, adoption_digest=args.adoption_digest, reason=args.reason)
+        _write_json(result)
+        return 0
+    except TargetError as error:
+        print("camol: {}".format(error), file=sys.stderr)
+        return 2
+
+
+def command_worker_enrollment(args: argparse.Namespace) -> int:
+    from .worker_delivery import DeliveryError
+    try:
+        if getattr(args, "live", False):
+            if not args.plan_digest:
+                raise DeliveryError("live worker control requires the exact --plan-digest")
+            params = {}
+            if args.action not in {"inspect", "records"}:
+                params["approved_by"] = args.by
+                params["expected_workspace"] = str(Path(args.workspace).resolve())
+            if args.db is not None:
+                params["expected_database"] = str(Path(args.db).resolve())
+            if args.action == "prepare":
+                params["stream"] = load_contract(args.stream, max_bytes=8192)
+            elif args.action == "approve":
+                params.update(proposal=load_contract(args.proposal, max_bytes=16384), review_digest=args.review_digest)
+            else:
+                params["scope"] = args.scope
+                if args.action == "revoke":
+                    params["reason"] = args.reason
+                elif args.action == "import":
+                    params.update(request_id=args.request_id, limit=args.limit)
+                elif args.action == "records":
+                    params.update(after=args.after, limit=args.limit)
+            result = asyncio.run(send_control_v2(Path(args.state_dir), "worker-stream-" + args.action,
+                requested_by=getattr(args, "by", "operator"), params=params,
+                expected_run_id=args.run_id, expected_plan_digest=args.plan_digest))
+            _write_json(result["result"])
+            return 0
+        inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+        if args.action in {"inspect", "records"}:
+            state, _, _ = inspector._cut(args.run_id)
+            if args.action == "records":
+                from .worker_import import snapshot
+                result = snapshot(state, args.scope, after=args.after, limit=args.limit)
+            else:
+                result = state.get("worker_streams", {}).get(args.scope)
+                if result is None:
+                    raise DeliveryError("unknown enrolled worker stream")
+        else:
+            with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+                if harness.run_id != args.run_id:
+                    raise DeliveryError("worker enrollment requires the exact current run")
+                service = harness.worker_streams
+                if args.action == "prepare":
+                    result = service.prepare(load_contract(args.stream, max_bytes=8192), by=args.by)
+                elif args.action == "approve":
+                    result = service.approve(load_contract(args.proposal, max_bytes=16384), by=args.by, review_digest=args.review_digest)
+                elif args.action == "import":
+                    result = service.import_received(args.scope, by=args.by, request_id=args.request_id, limit=args.limit)
+                else:
+                    result = service.revoke(args.scope, by=args.by, reason=args.reason)
+        _write_json(result)
+    except DeliveryError as error:
+        raise SchemaError(str(error)) from error
+    return 0
+
+
+def command_worker_delivery(args: argparse.Namespace) -> int:
+    from .worker_delivery import DeliveryError, WorkerDelivery, read_enrollment_key
+    try:
+        if args.action == "flush" and (not args.allow_network or not args.target or args.role != "producer"):
+            raise DeliveryError("worker flush requires a producer, an exact --target and explicit --allow-network")
+        stream = load_contract(args.binding, max_bytes=8192)
+        delivery = WorkerDelivery(args.root, stream, read_enrollment_key(args.key_file), role=args.role)
+        if args.action == "flush":
+            from .worker_tls import WorkerTLSClient
+            client = WorkerTLSClient(load_contract(args.target, max_bytes=16384))
+            _write_json(asyncio.run(client.deliver(delivery, allow_network=True)))
+        else:
+            _write_json(delivery.inspect(after=args.after, limit=args.limit))
+    except DeliveryError as error:
+        raise SchemaError(str(error)) from error
+    return 0
+
+
+def command_worker_gateway(args: argparse.Namespace) -> int:
+    params = {}
+    if args.action == "configure":
+        params = dict(policy=load_contract(args.policy, max_bytes=32768), approval_digest=args.approval_digest, approved_by=args.by)
+    elif args.action == "stop":
+        params = dict(configuration_id=args.configuration_id, policy_digest=args.policy_digest, approved_by=args.by)
+    response = asyncio.run(send_control_v2(Path(args.state_dir), "worker-gateway-" + args.action,
+        requested_by=args.by, params=params, expected_run_id=args.run_id, expected_plan_digest=args.plan_digest))
+    _write_json(response["result"])
+    return 0
+
+
+def command_vcs(args: argparse.Namespace) -> int:
+    from .vcs import snapshot, propose, impact
+    if args.vcs_action == "observe" and not args.allow_network:
+        raise VCSError("vcs observe requires explicit --allow-network; no login or mutation is performed")
+    # Reuse the bounded, noncreating exact-run reader, including unsafe-path and
+    # malformed-ledger checks. Applying also acquires the execution leader lock.
+    inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+    state, _, _ = inspector._cut(args.run_id)
+    if args.vcs_action == "inspect":
+        result = snapshot(state)
+    elif args.vcs_action == "impact":
+        result = impact(state, candidates=args.candidate, change=args.change)
+    elif args.vcs_action == "propose":
+        result = propose(state, source=args.source, target=args.target, relation=args.relation,
+                         action=args.action, reason=args.reason)
+    elif args.vcs_action == "propose-push":
+        from .vcs_push import propose as propose_push
+        from datetime import datetime, timezone
+        result = propose_push(state, candidate_id=args.candidate, integration_id=args.integration,
+            target=load_contract(args.target, max_bytes=65536), expected_old=args.expected_old,
+            request_id=args.request_id, issued_at=datetime.now(timezone.utc).isoformat(),
+            expires_at=args.expires_at, timeout_seconds=args.timeout)
+    elif args.vcs_action == "push-status":
+        result = state.get("vcs_pushes", {}).get(args.request_id)
+        if result is None:
+            raise VCSError("unknown exact push request ID")
+    elif args.vcs_action == "propose-push-ack":
+        from .vcs_push import propose_acknowledgment
+        from datetime import datetime, timezone
+        result = propose_acknowledgment(state, request_id=args.request_id, reason=args.reason,
+            issued_at=datetime.now(timezone.utc).isoformat(), expires_at=args.expires_at)
+    elif args.vcs_action == "acknowledge-push":
+        proposal = load_contract(args.proposal, max_bytes=65536)
+        with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+            if harness.run_id != args.run_id:
+                raise VCSError("push acknowledgment requires the exact current run")
+            result = harness.acknowledge_vcs_push(proposal, by=args.by, review_digest=args.review_digest)
+    elif args.vcs_action == "push":
+        import os
+        import re
+        token = None
+        if args.token_env is not None:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", args.token_env):
+                raise VCSError("token-env must name one explicit environment variable")
+            token = os.environ.get(args.token_env)
+            if not token:
+                raise VCSError("the explicitly named push credential is unavailable")
+        proposal = load_contract(args.proposal, max_bytes=65536)
+        with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+            if harness.run_id != args.run_id:
+                raise VCSError("push requires the exact current run")
+            result = harness.push_vcs(proposal, by=args.by, review_digest=args.review_digest,
+                allow_write=args.allow_write, allow_network=args.allow_network, token=token)
+    elif args.vcs_action == "observation":
+        result = state.get("vcs_observations", {}).get(args.request_id)
+        if result is None:
+            raise VCSError("unknown exact VCS observation request ID")
+    elif args.vcs_action == "observe":
+        import os
+        import re
+        from .github_vcs import target
+        destination = target(load_contract(args.target, max_bytes=65536))
+        token = None
+        if args.token_env is not None:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", args.token_env):
+                raise VCSError("token-env must name one explicit environment variable")
+            token = os.environ.get(args.token_env)
+            if not token:
+                raise VCSError("the explicitly named credential environment variable is unavailable")
+        with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+            if harness.run_id != args.run_id:
+                raise VCSError("VCS observation requires the exact current run")
+            result = harness.observe_vcs(candidate_id=args.candidate, integration_id=args.integration,
+                target=destination, by=args.by, allow_network=True, request_id=args.request_id,
+                token=token, timeout=args.timeout)
+    else:
+        proposal = load_contract(args.proposal, max_bytes=65536)
+        with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+            if harness.run_id != args.run_id:
+                raise VCSError("VCS apply requires the exact current run of this state directory")
+            result = harness.apply_vcs_relation(proposal, by=args.by, review_digest=args.review_digest)
+    _write_json(result)
+    if args.vcs_action == "push":
+        receipt = result.get("receipt")
+        return 0 if receipt and receipt["result"]["status"] in {"confirmed", "already_present"} else 2
+    if args.vcs_action == "observe":
+        receipt = result.get("receipt")
+        if not receipt or receipt["status"] != "observed":
+            return 2
+        observed = receipt["result"]
+        if (not observed["branch_readback"]["matches_integration"]
+                or (observed["pull_request"] is not None and not observed["pull_request"]["matches_integration"])
+                or any(item["status"] != 200 or (isinstance(item["data"], dict) and item["data"].get("complete") is False)
+                       for item in observed["observations"])):
+            return 2
+    return 0
+
+
+def command_box(args: argparse.Namespace) -> int:
+    if args.box_command in {"observe", "message", "inbox"}:
+        from .supervisor import send_control_v2
+        params = dict(run_id=args.run_id, plan_digest=args.plan_digest, box_id=args.box_id)
+        if args.box_command == "message":
+            from .json_contracts import load_contract
+            target = load_contract(args.target_receipt, max_bytes=65536)
+            params.update(target=target, request_id=args.request_id, body=args.body,
+                          kind=args.kind, correlation_id=args.correlation_id, ttl_seconds=args.ttl)
+        elif args.box_command == "inbox":
+            params.update(offset=args.offset, limit=args.limit)
+        command = {"observe": "box-observe", "message": "box-message", "inbox": "box-inbox"}[args.box_command]
+        _write_json(asyncio.run(send_control_v2(Path(args.state_dir), command, requested_by=args.sender, params=params))["result"])
+        return 0
+    inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+    if args.box_command == "list":
+        report = inspector.list(args.run_id)
+    elif args.box_command == "resolve":
+        report = inspector.resolve(args.run_id, args.box_id)
+    else:
+        report = inspector.read(args.run_id, args.box_id, after_seq=args.after, limit=args.limit,
+                                tail=args.tail, previews=not args.no_previews)
+    _write_json(report)
+    return 0
+
+
+def command_debug(args: argparse.Namespace) -> int:
+    store = ReadOnlyEventStore(Path(args.db))
+    try:
+        run_id = _run_id(store, args.run_id)
+        debugger = Debugger(Orchestrator(store), run_id)
+        _write_json(debugger.inbox() if args.inbox else debugger.inspect(args.case_id))
+    finally:
+        store.close()
+    return 0
+
+
+def command_export(args: argparse.Namespace) -> int:
+    store = ReadOnlyEventStore(Path(args.db))
+    try:
+        run_id = _run_id(store, args.run_id)
+        artifacts = ArtifactStore(Path(args.state_dir))
+        manifest = RunArchive.export(run_id, store.read(run_id), artifacts, Path(args.output),
+                                     lineage_events=collect_revision_lineage(store, run_id))
+        _write_json(manifest)
+    finally:
+        store.close()
+    return 0
+
+
+def command_watchers(args: argparse.Namespace) -> int:
+    store = ReadOnlyEventStore(Path(args.db))
+    try:
+        watches = WatchRuntime(Orchestrator(store), _run_id(store, args.run_id)).inspect()
+        if args.watcher_id and args.watcher_id not in watches:
+            raise WatcherError("unknown watcher")
+        _write_json(watches[args.watcher_id] if args.watcher_id else watches)
+    finally:
+        store.close()
+    return 0
+
+
+def command_watch(args: argparse.Namespace) -> int:
+    spec = WatchSpec.from_dict(load_contract(args.spec)) if args.spec else None
+    schedule = normalize_schedule(load_contract(args.schedule)) if args.schedule else None
+    if args.watch_action == "validate":
+        if spec is None and schedule is None:
+            raise WatcherError("watch validate requires --spec or --schedule")
+        _write_json(dict(spec=spec.to_dict() if spec else None, spec_digest=canonical_digest(spec.to_dict()) if spec else None,
+                         schedule=schedule, schedule_digest=canonical_digest(schedule) if schedule else None))
+        return 0
+    if not args.state_dir:
+        raise WatcherError("watch operations require --state-dir")
+    if args.watch_action == "create":
+        if spec is None or args.digest != canonical_digest(spec.to_dict()) or not args.by:
+            raise WatcherError("watch create requires --spec, --by and its exact --digest")
+        params = dict(spec=spec.to_dict(), approval_digest=args.digest, approved_by=args.by)
+    elif args.watch_action == "schedule":
+        if schedule is None or args.digest != canonical_digest(schedule) or not args.by:
+            raise WatcherError("watch schedule requires --schedule, --by and its exact --digest")
+        params = dict(schedule=schedule, approval_digest=args.digest, approved_by=args.by)
+    elif args.watch_action in {"stop", "reopen"}:
+        if not args.watcher_id or not args.by or not args.reason:
+            raise WatcherError("watch stop/reopen requires --watcher-id, --by and --reason")
+        params = dict(watcher_id=args.watcher_id, approved_by=args.by, reason=args.reason)
+        if args.watch_action == "reopen":
+            params["cursor"] = args.cursor
+    else:
+        params = {}
+    if args.live:
+        if args.watch_action in {"poll", "run"}:
+            raise WatcherError("a live daemon already schedules approved watches; use inspect")
+        response = asyncio.run(send_control_v2(Path(args.state_dir), "watch-" + args.watch_action, requested_by=args.by or "operator", params=params))
+        _write_json(response.get("result", response))
+        return 0
+    if args.watch_action == "inspect":
+        from .supervisor import SupervisorPaths
+        store = ReadOnlyEventStore(SupervisorPaths.under(Path(args.state_dir)).database)
+        try:
+            _write_json(WatchRuntime(Orchestrator(store), _run_id(store, None)).inspect())
+        finally:
+            store.close()
+        return 0
+    with Harness(Path(args.workspace), Path(args.state_dir)) as harness:
+        runtime = harness.observers()
+        if args.watch_action == "create":
+            result = harness.watch(spec, approved_by=args.by).inspect()
+        elif args.watch_action == "schedule":
+            result = runtime.configure(schedule, approved_by=args.by, approval_digest=args.digest)
+        elif args.watch_action == "stop":
+            result = runtime.stop(args.watcher_id, approved_by=args.by, reason=args.reason)
+        elif args.watch_action == "reopen":
+            result = harness.watcher(args.watcher_id).reopen(approved_by=args.by, reason=args.reason, cursor=args.cursor)
+        else:
+            result = asyncio.run(runtime.run_until_settled() if args.watch_action == "run" else runtime.tick())
+        _write_json(result)
+    return 0
+
+
+def command_repo(args: argparse.Namespace) -> int:
+    store = None
+    try:
+        if args.allow_hardlinked_source and args.db and args.repo_action != "crawl":
+            raise GraphError("--allow-hardlinked-source applies to a new source crawl, not a stored snapshot")
+        policy = CrawlPolicy(max_files=args.max_files, allow_hardlinked_source=args.allow_hardlinked_source)
+        if args.repo_action == "crawl":
+            if args.selectors or args.snapshot:
+                raise GraphError("crawl does not accept selectors or an existing snapshot")
+            snapshot = crawl_repository(Path(args.workspace), policy=policy)
+            if args.db:
+                store = GraphStore(Path(args.db))
+                store.save(snapshot)
+            graph = RepositoryGraph(snapshot)
+        elif args.db:
+            store = GraphStore(Path(args.db), read_only=True)
+            if args.repo_action == "list":
+                _write_json(store.list_snapshots())
+                return 0
+            if args.repo_action == "diff":
+                if len(args.selectors) != 2:
+                    raise GraphError("repo diff requires two snapshot IDs")
+                _write_json(diff_snapshots(store.load(args.selectors[0]), store.load(args.selectors[1])))
+                return 0
+            graph = RepositoryGraph(store.load(args.snapshot))
+        else:
+            if args.snapshot or args.repo_action in {"list", "diff"}:
+                raise GraphError("snapshot/list/diff requires --db with a saved graph database")
+            graph = RepositoryGraph(crawl_repository(Path(args.workspace), policy=policy))
+        count = {"impact": 1, "why": 2}.get(args.repo_action, 0)
+        if len(args.selectors) != count:
+            raise GraphError("repo {} requires {} node selectors".format(args.repo_action, count))
+        if args.repo_action == "impact":
+            _write_json(graph.impact(args.selectors[0]))
+        elif args.repo_action == "why":
+            _write_json(graph.why(*args.selectors))
+        elif args.repo_action == "cycles":
+            _write_json({"snapshot_id": graph.snapshot.snapshot_id, "cycles": graph.cycles()})
+        elif args.repo_action == "layers":
+            _write_json({"snapshot_id": graph.snapshot.snapshot_id, "layers": graph.layers()})
+        else:
+            print(graph.render_text() if args.format == "text" else graph.export(args.format))
+        return 0
+    finally:
+        if store is not None:
+            store.close()
+
+
+def command_verify_export(args: argparse.Namespace) -> int:
+    from .state import project
+
+    # Project exactly the verified snapshot, not a second independently read
+    # archive whose manifest or events may have changed in between.
+    manifest, events = RunArchive.verify(Path(args.archive))
+    state = project(events)
+    _write_json({"valid": True, "manifest": manifest, "run": summary(state)})
+    return 0
+
+
 def command_run(args: argparse.Namespace) -> int:
     runbook = load_runbook(Path(args.runbook))
-    store = SQLiteEventStore(Path(args.db))
-    try:
-        orchestrator = Orchestrator(store)
-        state = orchestrator.initialize(runbook)
-        run_id = state["run_id"]
+    workspace = Path(args.workspace)
+    state_dir = Path(args.state_dir)
+    # Foreground execution shares exactly the embedding/daemon owner lock.
+    with Harness(workspace, state_dir, database=Path(args.db) if args.db else None) as harness:
+        state = harness.prepare(runbook)
         if state["status"] == "draft":
             if not args.approve_by:
                 raise StateTransitionError(
                     "the plan is draft; run `python -m camol approve` or pass --approve-by"
                 )
-            orchestrator.approve_plan(run_id, args.approve_by, state["plan_digest"])
-        final_state = asyncio.run(
-            HarnessRunner(orchestrator, Path(args.workspace)).run_until_terminal(run_id)
-        )
+            harness.approve(by=args.approve_by, digest=state["plan_digest"])
+        final_state = harness.run()
         _write_json(summary(final_state))
         return 0 if final_state["status"] == "completed" else 2
+
+
+def command_doctor(args: argparse.Namespace) -> int:
+    report = run_doctor(
+        DoctorOptions(
+            runbook=Path(args.runbook),
+            workspace=Path(args.workspace),
+            state_dir=Path(args.state_dir),
+            json_output=args.json,
+            now=args.now,
+            receipt_ttl_seconds=args.receipt_ttl_seconds,
+            min_free_bytes=args.min_free_bytes,
+            services=tuple(args.require_service or ()),
+            target_id=args.target_id,
+            task_id=args.task_id,
+            agent_id=args.agent_id,
+        )
+    )
+    return report.exit_code
+
+
+def command_provider_preflight(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    state_dir = Path(args.state_dir).resolve()
+    WorkspaceManager(workspace, state_dir)
+    profile = load_model_profile(workspace, args.profile)
+    receipt = create_claude_capability(
+        profile,
+        target_id=args.target_id or local_target_id(),
+        state_dir=state_dir,
+        cwd=workspace,
+        accept_spend=args.accept_spend,
+        spend_ceiling_cents=args.max_usd_cents,
+        operation_id=args.operation_id,
+    )
+    _write_json({
+        "ready": True,
+        "profile_id": profile.profile_id,
+        "profile_digest": profile.digest(),
+        "resolved_model": receipt.resolved_model,
+        "receipt_digest": receipt.digest(),
+        "expires_at": receipt.expires_at,
+        "cost_usd_micros": receipt.cost_usd_micros,
+    })
+    return 0
+
+
+def command_preflight_status(args: argparse.Namespace) -> int:
+    from .preflight_journal import PreflightJournal, PreflightJournalError
+    try:
+        with PreflightJournal(Path(args.state_dir), read_only=True) as journal:
+            rows = journal.inventory()
+    except PreflightJournalError as error:
+        raise ProviderError(str(error)) from error
+    held = any(row["outcome"] is None or row["outcome"]["status"] == "unknown" for row in rows)
+    _write_json({"schema": "camol.provider_preflight_inventory", "schema_version": 1,
+                 "held": held, "requests": rows,
+                 "known_cost_usd_micros": sum(row["outcome"]["usage"]["cost_usd_micros"] or 0
+                                             for row in rows if row["outcome"] is not None),
+                 "unresolved_reserved_usd_cents": sum(row["intent"]["max_usd_cents"] for row in rows
+                                                     if row["outcome"] is None or row["outcome"]["usage"]["cost_usd_micros"] is None),
+                 "coverage": "capability preflights only; excludes worker, planning and unrelated account costs"})
+    return 2 if held else 0
+
+
+def command_serve(args: argparse.Namespace) -> int:
+    source_options = {}
+    if getattr(args, "source_binding_digest", None) is not None:
+        source_options["source_binding_digest"] = args.source_binding_digest
+    asyncio.run(
+        Supervisor(
+            Path(args.runbook), Path(args.workspace), Path(args.state_dir),
+            database=Path(args.db) if args.db else None, approve_by=args.approve_by,
+            **source_options,
+        ).serve()
+    )
+    return 0
+
+
+def command_start(args: argparse.Namespace) -> int:
+    _write_json(spawn_supervisor(
+        Path(args.runbook), Path(args.workspace), Path(args.state_dir),
+        database=Path(args.db) if args.db else None,
+        approve_by=args.approve_by,
+    ))
+    return 0
+
+
+def command_control(args: argparse.Namespace) -> int:
+    if args.control_command in {"acceptance", "accept", "gate-approve"}:
+        params = {}
+        if args.control_command != "acceptance":
+            if not args.digest:
+                raise SupervisorError("this approval requires the exact --digest shown by acceptance")
+            params = {"approved_by": args.by}
+            if args.control_command == "accept":
+                params["outcome_digest"] = args.digest
+            else:
+                if not args.task_id:
+                    raise SupervisorError("gate-approve requires --task-id")
+                params.update(task_id=args.task_id, assessment_digest=args.digest)
+        response = asyncio.run(send_control_v2(Path(args.state_dir), args.control_command,
+                                              requested_by=args.by, params=params))
+    else:
+        response = asyncio.run(send_control(Path(args.state_dir), args.control_command, requested_by=args.by))
+    _write_json(response.get("result", response))
+    return 0
+
+
+def command_bench_compare(args: argparse.Namespace) -> int:
+    direct = BenchmarkTrial.from_dict(load_contract(args.direct))
+    camol = BenchmarkTrial.from_dict(load_contract(args.camol))
+    _write_json(compare_trials(direct, camol))
+    return 0
+
+
+def command_campaign(args: argparse.Namespace) -> int:
+    if args.campaign_action == "validate":
+        if not args.manifest:
+            raise BenchmarkError("campaign validate requires --manifest")
+        manifest = validate_campaign(load_contract(args.manifest, max_bytes=8 << 20))
+        _write_json(dict(valid=True, manifest_digest=canonical_digest(manifest),
+                         expected_trials=len(manifest["tasks"]) * len(manifest["arms"]) * manifest["repetitions"]))
+        return 0
+    if not args.db or not args.campaign_id:
+        raise BenchmarkError("campaign inspection requires --db and --campaign-id")
+    store = CampaignStore(Path(args.db), read_only=True)
+    try:
+        campaign = BenchmarkCampaign(store, args.campaign_id)
+        _write_json(campaign.report() if args.campaign_action == "report" else campaign.state())
     finally:
         store.close()
+    return 0
+
+
+def command_swebench(args: argparse.Namespace) -> int:
+    from .swebench import OfflineVerifiedDataset, freeze_offline_lock
+    if args.swebench_action == "freeze":
+        if not args.images or not args.environment or not args.dataset_revision:
+            raise BenchmarkError("swebench freeze requires --images, --environment and a full --dataset-revision")
+        lock = freeze_offline_lock(Path(args.dataset), Path(args.prepared), dataset_revision=args.dataset_revision,
+                 images=load_contract(args.images),
+                 environment=load_contract(args.environment))
+        _write_json(dict(lock=lock, lock_digest=canonical_digest(lock), download_performed=False, grader_executed=False))
+        return 0
+    if not args.lock:
+        raise BenchmarkError("swebench inspect requires --lock")
+    lock = load_contract(args.lock, max_bytes=8 << 20)
+    dataset = OfflineVerifiedDataset(Path(args.dataset), Path(args.prepared), lock)
+    identities = [item["instance_id"] for item in dataset.lock["instances"]]
+    if args.task_id:
+        if args.task_id not in identities:
+            raise BenchmarkError("task is absent from the frozen cohort")
+        identities = [args.task_id]
+    _write_json(dict(lock_digest=canonical_digest(lock), harness_commit=lock["harness_commit"],
+                     task_manifests=[dataset.task(identity) for identity in identities],
+                     worker_inputs=[dataset.public_task(identity) for identity in identities],
+                     grader_executed=False, oracle_bodies_excluded=True))
+    return 0
+
+
+def command_capacity(args: argparse.Namespace) -> int:
+    supply = None
+    if args.capacity_action == "publish":
+        if not args.supply or not args.by or not args.digest:
+            raise CapacityError("publish requires --supply, --by and the exact reviewed --digest")
+        supply = validate_supply(load_contract(args.supply))
+        if supply["provenance"] != "owner_declared":
+            raise CapacityError("a JSON file is owner-declared supply, not an executed observer receipt")
+        if supply["namespace"] != args.namespace or supply["source"] != "owner/" + args.by:
+            raise CapacityError("supply must name the exact namespace and source owner/BY")
+        if canonical_digest(supply) != args.digest:
+            raise CapacityError("supply approval has a stale digest")
+    broker = CapacityBroker(Path(args.db), read_only=args.capacity_action != "publish")
+    try:
+        if args.capacity_action == "publish":
+            _write_json(dict(supply_digest=broker.publish(supply), approved_by=args.by,
+                             claim="owner-declared scheduling capacity, not measured hardware or provider quota"))
+        elif args.capacity_action == "reservations":
+            _write_json(broker.reservations(namespace=args.namespace))
+        else:
+            _write_json(broker.inventory(args.namespace))
+    finally:
+        broker.close()
+    return 0
+
+
+def command_models(args: argparse.Namespace) -> int:
+    plan = DownloadPlan.from_dict(load_contract(args.plan)) if args.plan else None
+    if args.model_action in {"validate", "prepare"} and plan is None:
+        raise ModelError("model validate/prepare requires --plan")
+    if args.model_action == "validate":
+        _write_json(dict(plan=plan.to_dict(), plan_digest=plan.digest(), starts_download=False, loads_model=False))
+        return 0
+    if args.model_action not in {"list", "prepare"} and not args.digest:
+        raise ModelError("this model operation requires the exact --digest")
+    if args.model_action in {"approve", "download", "discard-partial"} and not args.by:
+        raise ModelError("model approval/download requires --by naming the plan owner")
+    if args.model_action == "discard-partial" and not args.confirm_discard:
+        raise ModelError("discard-partial permanently removes this plan's unverified bytes; inspect status, then pass --confirm-discard")
+    from .session import default_state_root
+    root = Path(args.root).expanduser() if args.root else default_state_root() / "models"
+    with ModelStore(root, read_only=args.model_action in {"list", "status", "events", "artifacts"}) as store:
+        if args.model_action == "prepare":
+            result = store.prepare(plan)
+        elif args.model_action == "approve":
+            result = store.approve(args.digest, args.by)
+        elif args.model_action == "download":
+            result = store.download(args.digest, args.by)
+        elif args.model_action == "discard-partial":
+            result = store.discard_partial(args.digest, args.by)
+        elif args.model_action == "list":
+            result = store.list()
+        elif args.model_action == "events":
+            result = store.events(args.digest)
+        elif args.model_action == "artifacts":
+            result = store.verified_artifacts(args.digest)
+        else:
+            result = store.status(args.digest, verify=args.verify)
+    _write_json(result)
+    return 0
+
+
+def command_model_host(args: argparse.Namespace) -> int:
+    from .model_host import LlamaCppModelHost, ModelHostPlan, ModelHostUnload
+    from .session import default_state_root
+
+    action = args.host_action
+    plan = ModelHostPlan.from_dict(load_contract(args.plan)) if args.plan else None
+    if action in {"validate", "prepare"} and plan is None:
+        raise ModelError("model-host validate/prepare requires --plan")
+    if action == "validate":
+        _write_json(dict(plan=plan.to_dict(), plan_digest=plan.digest(), starts_process=False,
+                         downloads_model=False, proves_inference=False))
+        return 0
+    if action not in {"prepare", "inventory", "unload"} and not args.plan_digest:
+        raise ModelError("this model-host operation requires --plan-digest")
+    if action in {"approve", "load", "unload"} and not args.by:
+        raise ModelError("this model-host operation requires --by naming the exact owner")
+    if action in {"load", "propose-unload"} and not args.operation_id:
+        raise ModelError("load/propose-unload requires a unique --operation-id")
+    if action == "unload" and (not args.request or not args.digest):
+        raise ModelError("unload requires --request and the exact reviewed request --digest")
+    request = ModelHostUnload.from_dict(load_contract(args.request)) if action == "unload" else None
+    if args.live and action != "status":
+        raise ModelError("--live is only valid with status; other inspections do not contact a model host")
+    root = Path(args.root).expanduser() if args.root else default_state_root() / "model-hosts"
+    with LlamaCppModelHost(root, read_only=action in {"status", "inventory", "events", "propose-unload"}) as host:
+        if action == "prepare":
+            result = host.prepare(plan)
+        elif action == "approve":
+            result = host.approve(args.plan_digest, args.by)
+        elif action == "load":
+            result = host.load(args.plan_digest, args.by, operation_id=args.operation_id)
+        elif action == "inventory":
+            result = host.inventory()
+        elif action == "events":
+            result = host.events(args.plan_digest)
+        elif action == "propose-unload":
+            proposal = host.propose_unload(args.plan_digest, args.operation_id)
+            result = dict(request=proposal.to_dict(), request_digest=proposal.digest(), stops_process=False)
+        elif action == "unload":
+            result = host.unload(request, args.by, approve_digest=args.digest)
+        else:
+            result = host.status(args.plan_digest, live=args.live)
+    _write_json(result)
+    # A durable operation receipt is not success by itself. Scripts must not
+    # treat an uncertain/failed allocation or stop as a completed transition.
+    if action == "load":
+        return 0 if result.get("status") == "loaded" and result.get("loaded") == "observed" else 2
+    if action == "unload":
+        return 0 if result.get("status") == "unloaded" and result.get("loaded") == "no" else 2
+    return 0
+
+
+def command_model_inference(args: argparse.Namespace) -> int:
+    from .model_inference import ModelInference, ModelInferencePlan, prompt_file_identity, validate_prompt_file
+    from .session import default_state_root
+
+    action = args.inference_action
+    allowed = {
+        "plan": {"validate", "prepare"}, "prompt_file": {"fingerprint", "validate", "prepare", "infer"},
+        "plan_digest": {"approve", "infer", "status", "events"}, "by": {"approve", "infer"},
+        "show_response": {"infer"},
+    }
+    for field, actions in allowed.items():
+        if getattr(args, field) and action not in actions:
+            raise ModelError("--{} is not valid with model-inference {}".format(field.replace("_", "-"), action))
+    if action in {"fingerprint", "infer"} and not args.prompt_file:
+        raise ModelError("model-inference fingerprint/infer requires --prompt-file (never inline prompt text)")
+    if action == "fingerprint":
+        _write_json(dict(prompt_file_identity(args.prompt_file), sends_prompt=False, stores_prompt=False))
+        return 0
+    if action in {"validate", "prepare"} and not args.plan:
+        raise ModelError("model-inference validate/prepare requires --plan")
+    plan = ModelInferencePlan.from_dict(load_contract(args.plan)) if args.plan else None
+    if plan is not None and args.prompt_file:
+        validate_prompt_file(args.prompt_file, plan)
+    if action == "validate":
+        _write_json(dict(plan=plan.to_dict(), plan_digest=plan.digest(), sends_prompt=False,
+                         stores_prompt=False, proves_inference=False))
+        return 0
+    if action in {"approve", "infer", "status", "events"} and not args.plan_digest:
+        raise ModelError("this model-inference operation requires --plan-digest")
+    if action in {"approve", "infer"} and not args.by:
+        raise ModelError("this model-inference operation requires --by naming the exact owner")
+    root = Path(args.root).expanduser() if args.root else default_state_root() / "model-hosts"
+    with ModelInference(root, read_only=action in {"status", "inventory", "events"}) as inference:
+        if action == "prepare":
+            result = inference.prepare(plan)
+        elif action == "approve":
+            result = inference.approve(args.plan_digest, args.by)
+        elif action == "infer":
+            result = inference.infer(args.plan_digest, args.by, prompt_path=args.prompt_file)
+            # Text is only available on the original successful invocation.
+            # Metadata output is safe to collect by default; opting in can put
+            # sensitive model text in terminal scrollback or caller logs.
+            if not args.show_response:
+                result = dict(result, response_text=None)
+        elif action == "inventory":
+            result = inference.inventory()
+        elif action == "events":
+            result = inference.events(args.plan_digest)
+        else:
+            result = inference.status(args.plan_digest)
+    _write_json(result)
+    if action == "infer":
+        return 0 if result.get("status") == "completed" else 2
+    return 0
+
+
+def command_remote(args: argparse.Namespace) -> int:
+    from .ssh_bridge import bridge_identity
+    from .ssh_transport import SSHControlClient
+
+    if args.remote_action == "identity":
+        _write_json(dict(identity=bridge_identity(), provenance="local host self-report, not hardware attestation",
+                         contacts_remote=False))
+        return 0
+    if not args.target:
+        raise SSHTransportError("POLICY_DENIED", "remote operation requires --target")
+    target = SSHTarget.from_dict(load_contract(args.target))
+    if args.remote_action == "validate":
+        _write_json(dict(target=target.to_dict(), profile_digest=target.digest(), contacts_remote=False,
+                         proves_worker_readiness=False))
+        return 0
+    if not args.state_dir:
+        raise SSHTransportError("POLICY_DENIED", "remote operation requires a private --state-dir for dispatch receipts")
+    if args.remote_action == "monitor":
+        if any((args.remote_command, args.params, args.by, args.allow_mutation, args.request_id, args.reason)):
+            raise SSHTransportError("POLICY_DENIED", "remote monitor is read-only; request and mutation options are not accepted")
+        from .remote_monitor import RemoteMonitor
+        try:
+            from .remote_tui import RemoteMonitorApp
+        except ImportError as error:
+            raise SSHTransportError("DEPENDENCY_MISSING", "remote monitor requires the camol-harness[tui] extra") from error
+        client = SSHControlClient(target, state_dir=Path(args.state_dir), ssh_binary=args.ssh_binary, timeout=args.timeout)
+        RemoteMonitorApp(RemoteMonitor(client), interval=args.interval).run()
+        return 0
+    if args.remote_action == "request":
+        if not args.remote_command:
+            raise SSHTransportError("POLICY_DENIED", "remote request requires --command")
+        if args.remote_command in SSH_MUTATIONS and (not args.allow_mutation or not args.by):
+            raise SSHTransportError("POLICY_DENIED", "remote mutation requires explicit --allow-mutation and --by; profile and remote policy must also permit it")
+    if args.remote_action == "acknowledge-unknown" and (not args.request_id or not args.by or not args.reason):
+        raise SSHTransportError("POLICY_DENIED", "acknowledge-unknown requires --request-id, --by and --reason; it does not establish success")
+    params = load_contract(args.params) if args.params else {}
+    client = SSHControlClient(target, state_dir=Path(args.state_dir), ssh_binary=args.ssh_binary,
+                              timeout=args.timeout, read_only=args.remote_action in {"receipts", "usage"})
+    if args.remote_action == "receipts":
+        result = client.receipts()
+    elif args.remote_action == "usage":
+        result = client.usage(after=args.after, limit=args.limit)
+    elif args.remote_action == "acknowledge-unknown":
+        result = client.acknowledge_unknown(args.request_id, requested_by=args.by, note=args.reason)
+    else:
+        result = asyncio.run(client.request(args.remote_command, params=params, requested_by=args.by))
+    _write_json(result)
+    return 2 if isinstance(result, dict) and result.get("ok") is False else 0
+
+
+def command_revise(args: argparse.Namespace) -> int:
+    if args.revision_action == "show":
+        from .supervisor import SupervisorPaths
+        store = ReadOnlyEventStore(SupervisorPaths.under(Path(args.state_dir)).database)
+        try:
+            state = Orchestrator(store).state(_run_id(store, args.run_id))
+            _write_json(dict(run_id=state["run_id"], status=state["status"], proposals=state.get("revision_proposals", {}),
+                             revision=state.get("revision"), successor=state.get("successor")))
+        finally:
+            store.close()
+        return 0
+    with Harness(Path(args.workspace), Path(args.state_dir)) as harness:
+        if args.run_id and args.run_id != harness.run_id:
+            raise RevisionError("only the current execution owner may amend this state directory's run")
+        if args.revision_action == "propose":
+            if not args.runbook or not args.reason:
+                raise RevisionError("revise propose requires --runbook and --reason")
+            effects = load_contract(args.effect_reruns) if args.effect_reruns else None
+            _write_json(harness.propose_revision(Path(args.runbook), reason=args.reason, effect_reruns=effects))
+        else:
+            if not args.by or not args.digest:
+                raise RevisionError("revise apply requires --by and the exact --digest shown by propose")
+            _write_json(summary(harness.apply_revision(by=args.by, proposal_digest=args.digest)))
+    return 0
+
+
+def command_interactive(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    state_root = Path(args.state_home).expanduser().resolve() if args.state_home else None
+    if not args.no_tui:
+        try:
+            from .tui import run_tui
+        except ModuleNotFoundError as error:
+            if not (error.name or "").startswith("textual"):
+                raise
+        else:
+            return run_tui(workspace, state_root=state_root, show_boot=not args.no_boot)
+    from .line_ui import run_line_ui
+    return run_line_ui(workspace, state_root=state_root, show_boot=not args.no_boot)
+
+
+def command_target_prepare(args: argparse.Namespace) -> int:
+    from datetime import datetime, timezone
+    from . import target_preparation
+    from .recovery import load_recovery_key
+    if args.preparation_action == "plan":
+        result = target_preparation.propose(source_proposal=load_contract(args.source_proposal, max_bytes=65536),
+            source_export_digest=args.source_export_digest, runbook=load_runbook(Path(args.runbook)),
+            agent_id=args.agent_id, evaluator_digest=args.evaluator_digest,
+            state_dir=str(Path(args.state_dir).resolve()), request_id=args.request_id, by=args.by,
+            issued_at=datetime.now(timezone.utc).isoformat(), expires_at=args.expires_at)
+    elif args.preparation_action == "inspect":
+        result = target_preparation.inspect(Path(args.state_dir))
+    else:
+        result = asyncio.run(target_preparation.prepare(load_contract(args.proposal, max_bytes=target_preparation.MAX_BYTES),
+            by=args.by, review_digest=args.review_digest, archive=Path(args.archive),
+            key=load_recovery_key(path=Path(args.key_file))))
+    _write_json(result)
+    if args.preparation_action == "apply" and result["status"] != "prepared":
+        return 2
+    return 0
+
+
+def command_source_handoff(args: argparse.Namespace) -> int:
+    from .source_handoff import propose, receive_source
+    from .recovery import load_recovery_key
+    from datetime import datetime, timezone
+    if args.handoff_action == "doctor":
+        from .handoff_doctor import inspect_handoff
+        result = inspect_handoff(proposal=load_contract(args.proposal, max_bytes=65536), review_digest=args.review_digest,
+            by=args.by, archive=Path(args.archive), key=load_recovery_key(path=Path(args.key_file)),
+            runbook=Path(args.runbook), workspace=Path(args.workspace), state_dir=Path(args.state_dir),
+            target_id=args.target_id, generation=args.generation, agent_id=args.agent_id, evaluator_digest=args.evaluator_digest)
+        _write_json(result)
+        return result["exit_code"]
+    elif args.handoff_action == "receive":
+        result = receive_source(archive=Path(args.archive), key=load_recovery_key(path=Path(args.key_file)),
+            proposal=load_contract(args.proposal, max_bytes=65536), review_digest=args.review_digest,
+            target_id=args.target_id, generation=args.generation, by=args.by, output=Path(args.output))
+    else:
+        inspector = BoxInspector(Path(args.state_dir), database=Path(args.db) if args.db else None)
+        state, _, _ = inspector._cut(args.run_id)
+        if args.handoff_action == "plan":
+            result = propose(state, generation=args.generation, adoption_digest=args.adoption_digest,
+                destination_workspace=args.destination_workspace, request_id=args.request_id, by=args.by,
+                issued_at=datetime.now(timezone.utc).isoformat(), expires_at=args.expires_at,
+                task_id=args.task_id, source_workspace=args.source_workspace)
+        elif args.handoff_action == "inspect":
+            records = state.get("source_handoffs", {})
+            result = records if args.request_id is None else records.get(args.request_id)
+            if result is None:
+                raise RecoveryError("unknown exact source handoff request")
+        else:
+            with Harness(Path(args.workspace), Path(args.state_dir), database=inspector.database) as harness:
+                if harness.run_id != args.run_id:
+                    raise RecoveryError("source handoff requires the exact current run")
+                result = harness.export_source_handoff(load_contract(args.proposal, max_bytes=65536), by=args.by,
+                    review_digest=args.review_digest, key=load_recovery_key(path=Path(args.key_file)), output=Path(args.output))
+    _write_json(result)
+    return 0
+
+
+def command_recovery(args: argparse.Namespace) -> int:
+    from .recovery import (export_workspace_recovery, generate_recovery_key,
+                           load_recovery_key, restore_workspace_recovery, verify_workspace_recovery)
+    from .workspace import SalvageReceipt
+
+    if args.recovery_action == "keygen":
+        result = generate_recovery_key(output=Path(args.output))
+    elif args.recovery_action in {"plan-run", "export-run"}:
+        state_dir = Path(args.state_dir)
+        database = Path(args.db) if args.db else state_dir / "camol.sqlite3"
+        if state_dir.is_symlink() or database.is_symlink() or not database.is_file():
+            raise RecoveryError("run recovery requires an existing non-linked run database")
+        with Harness(Path(args.source), state_dir, database=database) as harness:
+            harness.run_id = args.run_id
+            if args.recovery_action == "plan-run":
+                result = harness.recovery_plan()
+            else:
+                result = harness.export_recovery(Path(args.output), by=args.by,
+                    review_digest=args.review_digest, allow_encrypted_raw=args.allow_encrypted_raw,
+                    key=load_recovery_key(path=Path(args.key_file)))
+    else:
+        key = load_recovery_key(path=Path(args.key_file))
+        if args.recovery_action in {"verify-run", "restore-run"}:
+            from .run_recovery import restore_run_recovery, verify_run_recovery
+            if args.recovery_action == "verify-run":
+                result = verify_run_recovery(archive=Path(args.archive), key=key)
+            else:
+                result = restore_run_recovery(archive=Path(args.archive), key=key, output=Path(args.output))
+        elif args.recovery_action == "export":
+            result = export_workspace_recovery(
+                source=Path(args.source), state_dir=Path(args.state_dir),
+                salvage=SalvageReceipt.from_dict(load_contract(Path(args.salvage))),
+                policy=load_contract(Path(args.policy)), key=key, output=Path(args.output))
+        elif args.recovery_action == "restore":
+            result = restore_workspace_recovery(archive=Path(args.archive), key=key, output=Path(args.output))
+        else:
+            result = verify_workspace_recovery(archive=Path(args.archive), key=key)
+    _write_json(result)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="camol", description="Persistent plan-driven agent orchestration harness"
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--workspace", default=".", help="workspace for the interactive client")
+    parser.add_argument("--version", action="version", version="%(prog)s " + __version__)
+    parser.add_argument("--state-home", help="override the private interactive state root")
+    parser.add_argument("--no-tui", action="store_true", help="use dependency-light line mode")
+    parser.add_argument("--no-boot", action="store_true", help="skip branded boot art")
+    parser.set_defaults(handler=command_interactive)
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     validate = subparsers.add_parser("validate", help="validate an executable runbook")
     validate.add_argument("runbook")
@@ -138,12 +1205,550 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--after", type=int, default=0)
     events.set_defaults(handler=command_events)
 
+    usage = subparsers.add_parser("usage", help="inspect measured, reported and unknown usage by task, box and model")
+    usage.add_argument("--db", required=True)
+    usage.add_argument("--run-id")
+    usage.add_argument("--json", action="store_true", help="JSON is the default machine-readable output")
+    usage.set_defaults(handler=command_usage)
+
+    debug = subparsers.add_parser("debug", help="inspect durable debug cases, experiments and regression evidence")
+    debug.add_argument("--db", required=True)
+    debug.add_argument("--run-id")
+    debug_selection = debug.add_mutually_exclusive_group()
+    debug_selection.add_argument("--case-id")
+    debug_selection.add_argument("--inbox", action="store_true", help="show untriaged real evaluator counterexamples")
+    debug.set_defaults(handler=command_debug)
+
+    watchers = subparsers.add_parser("watchers", help="inspect durable observation cursors, readiness and terminality")
+    watchers.add_argument("--db", required=True)
+    watchers.add_argument("--run-id")
+    watchers.add_argument("--watcher-id")
+    watchers.set_defaults(handler=command_watchers)
+
+    profile = subparsers.add_parser("profile", help="inspect content-free cost hotspots, retry/wait counts and lifecycle envelopes")
+    profile.add_argument("--db", required=True)
+    profile.add_argument("--run-id")
+    profile.set_defaults(handler=command_profile)
+
+    logs = subparsers.add_parser("logs", help="emit content-free JSONL event metadata for an external logger")
+    logs.add_argument("--db", required=True)
+    logs.add_argument("--run-id")
+    logs.add_argument("--after", type=int, default=0)
+    logs.add_argument("--limit", type=int, choices=range(1, 10001), default=1000, metavar="1..10000")
+    logs.set_defaults(handler=command_logs)
+
+    overview = subparsers.add_parser("overview", help="inspect exact run boxes, task dependencies and attention without starting work")
+    overview.add_argument("--db", required=True)
+    overview.add_argument("--run-id", required=True)
+    overview.add_argument("--attention", action="store_true")
+    overview.add_argument("--offset", type=int, default=0)
+    overview.add_argument("--limit", type=int, choices=range(1, 201), default=50, metavar="1..200")
+    overview.add_argument("--json", action="store_true")
+    overview.set_defaults(handler=command_overview)
+
+    enrollment = subparsers.add_parser("worker-enrollment", help="owner-review an exact lease-bound evidence stream; not machine adoption or execution")
+    enrollment_actions = enrollment.add_subparsers(dest="action", required=True)
+    for name in ("prepare", "approve", "revoke", "inspect", "import", "records"):
+        operation = enrollment_actions.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--db")
+        operation.add_argument("--run-id", required=True)
+        operation.add_argument("--live", action="store_true", help="use the existing supervisor instead of taking ownership")
+        operation.add_argument("--plan-digest", help="required exact plan binding for --live")
+        if name not in {"inspect", "records"}:
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--by", required=True)
+        if name == "prepare":
+            operation.add_argument("--stream", required=True, help="exact current worker stream binding JSON")
+        elif name == "approve":
+            operation.add_argument("--proposal", required=True)
+            operation.add_argument("--review-digest", required=True)
+        else:
+            operation.add_argument("--scope", required=True)
+            if name == "revoke":
+                operation.add_argument("--reason", required=True)
+            elif name == "import":
+                operation.add_argument("--request-id", required=True)
+                operation.add_argument("--limit", type=int, default=6)
+            elif name == "records":
+                operation.add_argument("--after", type=int, default=0)
+                operation.add_argument("--limit", type=int, default=100)
+        operation.set_defaults(handler=command_worker_enrollment)
+
+    targets = subparsers.add_parser("target", help="review adopted target identities; never connect, execute, provision or delete")
+    target_actions = targets.add_subparsers(dest="action", required=True)
+    from .target_inventory import FORMATS
+    inventory_formats = target_actions.add_parser("inventory-formats", help="list supported offline inventory decoders and limits")
+    inventory_formats.set_defaults(handler=command_target_inventory)
+    inventory = target_actions.add_parser("inventory", help="decode an existing provider JSON dump; never contact a provider")
+    inventory.add_argument("--input", required=True)
+    inventory.add_argument("--format", choices=FORMATS, required=True)
+    inventory.add_argument("--account", required=True, help="declared non-secret account scope, not a credential")
+    inventory.add_argument("--project", required=True)
+    inventory.set_defaults(handler=command_target_inventory)
+    for name in ("inspect", "propose", "adopt", "retire", "local-profile", "observe-local", "observe-ssh"):
+        operation = target_actions.add_parser(name)
+        operation.add_argument("--state-dir", required=name != "local-profile")
+        operation.add_argument("--db")
+        operation.add_argument("--run-id", required=name != "local-profile")
+        operation.add_argument("--live", action="store_true", help="use the existing supervisor without taking ownership")
+        operation.add_argument("--plan-digest", required=name not in {"inspect", "local-profile"})
+        if name == "local-profile":
+            pass
+        elif name == "inspect":
+            operation.add_argument("--offset", type=int, default=0)
+            operation.add_argument("--limit", type=int, default=50)
+        else:
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--by", required=True)
+            if name == "propose":
+                operation.add_argument("--descriptor", required=True)
+                operation.add_argument("--expires-at", required=True)
+            elif name == "adopt":
+                operation.add_argument("--proposal", required=True)
+                operation.add_argument("--approval-digest", required=True)
+            else:
+                operation.add_argument("--generation", required=True)
+                operation.add_argument("--adoption-digest", required=True)
+                if name in {"observe-local", "observe-ssh"}:
+                    operation.add_argument("--request-id", required=True)
+                    operation.add_argument("--ttl-seconds", type=int, default=300)
+                    if name == "observe-ssh":
+                        operation.add_argument("--ssh-profile", required=True)
+                        operation.add_argument("--allow-network", action="store_true")
+                else:
+                    operation.add_argument("--reason", required=True)
+        operation.set_defaults(handler=command_target)
+
+    gateway = subparsers.add_parser("worker-gateway", help="owner-control the supervisor's optional TLS evidence listener and capture pump")
+    gateway_actions = gateway.add_subparsers(dest="action", required=True)
+    for name in ("status", "configure", "stop"):
+        operation = gateway_actions.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--run-id", required=True)
+        operation.add_argument("--plan-digest", required=True)
+        operation.add_argument("--by", default="operator")
+        if name == "configure":
+            operation.add_argument("--policy", required=True)
+            operation.add_argument("--approval-digest", required=True)
+        elif name == "stop":
+            operation.add_argument("--configuration-id", required=True)
+            operation.add_argument("--policy-digest", required=True)
+        operation.set_defaults(handler=command_worker_gateway)
+
+    delivery = subparsers.add_parser("worker-delivery", help="inspect a private spool or explicitly flush one TLS evidence batch; never execute work")
+    delivery.add_argument("action", choices=["inspect", "flush"])
+    delivery.add_argument("--root", required=True, help="existing private producer or receiver directory")
+    delivery.add_argument("--binding", required=True, help="exact owner-enrolled worker stream JSON")
+    delivery.add_argument("--key-file", required=True, help="explicit private raw 32-byte enrollment key; never printed")
+    delivery.add_argument("--role", required=True, choices=["producer", "receiver"])
+    delivery.add_argument("--after", type=int, default=0)
+    delivery.add_argument("--limit", type=int, default=100)
+    delivery.add_argument("--target", help="exact pinned TLS endpoint JSON, required by flush")
+    delivery.add_argument("--allow-network", action="store_true", help="explicitly authorize one TLS evidence exchange")
+    delivery.set_defaults(handler=command_worker_delivery)
+
+    vcs = subparsers.add_parser("vcs", help="inspect candidate lineage and explicitly review bounded Git publication")
+    vcs_commands = vcs.add_subparsers(dest="vcs_action", required=True)
+    for name in ("inspect", "impact", "propose", "apply", "observe", "observation", "propose-push", "push", "push-status", "propose-push-ack", "acknowledge-push"):
+        operation = vcs_commands.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--db", help="existing database inside state-dir; default camol.sqlite3")
+        operation.add_argument("--run-id", required=True)
+        if name == "impact":
+            operation.add_argument("--candidate", action="append", required=True, help="exact captured candidate ID; repeat for multiple candidates")
+            operation.add_argument("--change", choices=VCS_CHANGES, required=True)
+        elif name == "propose":
+            operation.add_argument("--source", required=True)
+            operation.add_argument("--target", required=True)
+            operation.add_argument("--relation", choices=VCS_RELATIONS, required=True)
+            operation.add_argument("--action", choices=("add", "remove"), default="add")
+            operation.add_argument("--reason", required=True)
+        elif name == "apply":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--proposal", required=True, help="exact saved proposal JSON")
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--review-digest", required=True)
+        elif name == "observe":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--candidate", required=True)
+            operation.add_argument("--integration", required=True)
+            operation.add_argument("--target", required=True, help="strict GitHub VCS target JSON; no credentials")
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--allow-network", action="store_true", help="explicitly permit fixed read-only api.github.com requests")
+            operation.add_argument("--token-env", help="optional explicit credential variable; never logs in or reads other account stores")
+            operation.add_argument("--request-id", help="stable observation request ID; exact retry never reissues network calls")
+            operation.add_argument("--timeout", type=float, default=30)
+        elif name == "propose-push":
+            operation.add_argument("--candidate", required=True)
+            operation.add_argument("--integration", required=True)
+            operation.add_argument("--target", required=True, help="exact local_bare or github_https push target JSON")
+            previous = operation.add_mutually_exclusive_group(required=True)
+            previous.add_argument("--expected-old", help="reviewed exact destination commit")
+            previous.add_argument("--create-branch", action="store_true", help="require destination branch to be absent")
+            operation.add_argument("--request-id", required=True)
+            operation.add_argument("--expires-at", required=True, help="approval deadline, at most one hour after proposal")
+            operation.add_argument("--timeout", type=int, default=30)
+        elif name == "push":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--proposal", required=True)
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--review-digest", required=True)
+            operation.add_argument("--allow-write", action="store_true")
+            operation.add_argument("--allow-network", action="store_true")
+            operation.add_argument("--token-env", help="explicit GitHub token variable; no login or ambient credential lookup")
+        elif name in {"observation", "push-status"}:
+            operation.add_argument("--request-id", required=True)
+        elif name == "propose-push-ack":
+            operation.add_argument("--request-id", required=True)
+            operation.add_argument("--reason", required=True, help="owner rationale; acknowledgment does not prove the prior effect resolved")
+            operation.add_argument("--expires-at", required=True)
+        elif name == "acknowledge-push":
+            operation.add_argument("--workspace", required=True)
+            operation.add_argument("--proposal", required=True)
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--review-digest", required=True)
+        operation.set_defaults(handler=command_vcs)
+
+    box = subparsers.add_parser("box", help="inspect exact boxes or send lease-scoped data messages through a live controller")
+    box_commands = box.add_subparsers(dest="box_command", required=True)
+    for name in ("list", "resolve", "read"):
+        operation = box_commands.add_parser(name)
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--db", help="existing database inside state-dir; default camol.sqlite3")
+        operation.add_argument("--run-id", required=True)
+        if name != "list":
+            operation.add_argument("box_id", help="exact box ID; not a pane index or prefix")
+        if name == "read":
+            operation.add_argument("--after", type=int, default=0)
+            operation.add_argument("--limit", type=int, choices=range(1, 1001), default=200, metavar="1..1000")
+            operation.add_argument("--tail", action="store_true")
+            operation.add_argument("--no-previews", action="store_true")
+        operation.set_defaults(handler=command_box)
+
+    for name in ("observe", "message", "inbox"):
+        operation = box_commands.add_parser(name, help="lease-scoped mailbox via the authenticated live supervisor")
+        operation.add_argument("box_id", help="exact worker box ID")
+        operation.add_argument("--state-dir", required=True)
+        operation.add_argument("--run-id", required=True)
+        operation.add_argument("--plan-digest", required=True)
+        operation.add_argument("--sender", default="operator", help="human attribution; authentication uses the private controller token")
+        if name == "message":
+            operation.add_argument("--target-receipt", required=True, help="JSON receipt returned by box observe")
+            operation.add_argument("--request-id", required=True, help="stable idempotency key; reuse only for identical retries")
+            operation.add_argument("--body", required=True)
+            operation.add_argument("--kind", choices=("information", "question", "proposal", "warning"), default="information")
+            operation.add_argument("--correlation-id")
+            operation.add_argument("--ttl", type=int, default=300)
+        elif name == "inbox":
+            operation.add_argument("--offset", type=int, default=0)
+            operation.add_argument("--limit", type=int, default=100)
+        operation.set_defaults(handler=command_box)
+
+    retention = subparsers.add_parser("retention", help="inspect bounded cold-state references; never archive or delete")
+    retention.add_argument("retention_action", choices=("inspect",))
+    retention.add_argument("--state-dir", required=True, help="existing absolute canonical state directory")
+    retention.add_argument("--db", required=True, help="existing absolute database path inside the state directory")
+    retention.add_argument("--run-id", required=True, help="exact frozen run; no latest-run fallback")
+    retention.add_argument("--policy", required=True, help="strict owner-matched inspection policy JSON")
+    retention.set_defaults(handler=command_retention)
+
+    watch = subparsers.add_parser("watch", help="approve and schedule bounded, durable read-only observation")
+    watch.add_argument("watch_action", choices=("validate", "create", "schedule", "inspect", "poll", "run", "stop", "reopen"))
+    watch.add_argument("--state-dir")
+    watch.add_argument("--workspace", default=".")
+    watch.add_argument("--live", action="store_true", help="use the already-running authenticated local daemon")
+    watch.add_argument("--spec", help="strict WatchSpec JSON")
+    watch.add_argument("--schedule", help="exact source binding and polling authorization JSON")
+    watch.add_argument("--watcher-id")
+    watch.add_argument("--by")
+    watch.add_argument("--digest")
+    watch.add_argument("--reason")
+    watch.add_argument("--cursor")
+    watch.set_defaults(handler=command_watch)
+
+    repo = subparsers.add_parser("repo", help="crawl and query an evidence-linked, static repository graph")
+    repo.add_argument("repo_action", choices=("crawl", "show", "impact", "why", "cycles", "layers", "export", "list", "diff"))
+    repo.add_argument("selectors", nargs="*")
+    repo.add_argument("--workspace", default=".")
+    repo.add_argument("--db", help="optional graph snapshot database; only crawl creates/writes it")
+    repo.add_argument("--snapshot", help="saved snapshot ID; otherwise the latest is selected")
+    repo.add_argument("--max-files", type=int, default=10000)
+    repo.add_argument("--allow-hardlinked-source", action="store_true",
+                      help="explicitly read hard-linked project files; aliases may exist outside the selected root")
+    repo.add_argument("--format", choices=("text", "json", "dot", "graphml"), default="text")
+    repo.set_defaults(handler=command_repo)
+
+    export = subparsers.add_parser("export", help="export a replayable run ledger and its artifacts")
+    export.add_argument("--db", required=True)
+    export.add_argument("--state-dir", required=True)
+    export.add_argument("--run-id")
+    export.add_argument("--output", required=True)
+    export.set_defaults(handler=command_export)
+
+    verify_export = subparsers.add_parser("verify-export", help="verify and replay an exported run")
+    verify_export.add_argument("archive")
+    verify_export.set_defaults(handler=command_verify_export)
+
     run = subparsers.add_parser("run", help="run or resume the harness until terminal")
     run.add_argument("runbook")
-    run.add_argument("--db", default=".camol/camol.sqlite3")
-    run.add_argument("--workspace", default=".")
+    run.add_argument("--db", help="event database (default: STATE_DIR/camol.sqlite3)")
+    run.add_argument("--workspace", default=".", help="clean source repository root")
+    run.add_argument("--state-dir", required=True, help="external Camol state and isolated-worktree root")
     run.add_argument("--approve-by")
     run.set_defaults(handler=command_run)
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="prove task-specific readiness with read-only probes; never prepares, launches, or spends",
+    )
+    doctor.add_argument("runbook")
+    doctor.add_argument("--workspace", required=True, help="source repository root (read only)")
+    doctor.add_argument("--state-dir", required=True, help="external state directory; must be outside the workspace")
+    doctor.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    doctor.add_argument(
+        "--now",
+        help="ISO-8601 observation instant for deterministic fixtures; a receipt produced with a synthetic clock is not evidence (default: current UTC time)",
+    )
+    doctor.add_argument(
+        "--receipt-ttl-seconds",
+        type=int,
+        help="receipt validity for schema v1 runbooks (default 300); v2 runbooks freeze this in run.readiness_policy and reject a conflicting value",
+    )
+    doctor.add_argument("--min-free-bytes", type=int, default=1 << 30, help="required free disk at the state directory")
+    doctor.add_argument("--require-service", action="append", metavar="HOST:PORT", help="read-only TCP reachability check; repeatable")
+    doctor.add_argument("--target-id", help="override the local target identity (default: local:<hostname>)")
+    doctor.add_argument("--task-id", help="inspect only this exact task without changing the full plan digest")
+    doctor.add_argument("--agent-id", help="inspect only this exact worker; no fallback to another candidate")
+    doctor.set_defaults(handler=command_doctor)
+
+    preflight = subparsers.add_parser(
+        "provider-preflight",
+        help="explicitly spend up to a frozen ceiling to prove provider/model capability",
+    )
+    preflight.add_argument("--profile", required=True, help="workspace-relative versioned model profile")
+    preflight.add_argument("--workspace", required=True, help="clean source repository root")
+    preflight.add_argument("--state-dir", required=True, help="external Camol state directory")
+    preflight.add_argument("--target-id", help="target identity (default: local host)")
+    preflight.add_argument("--operation-id", help="explicit one-shot probe identity; repeating it cannot spend again")
+    preflight.add_argument(
+        "--accept-spend", action="store_true",
+        help="authorize this one no-tools model request up to the profile's max_turn_usd_cents",
+    )
+    preflight.add_argument(
+        "--max-usd-cents", type=int, default=10,
+        help="maximum spend for this preflight (default 10; also capped by the profile)",
+    )
+    preflight.set_defaults(handler=command_provider_preflight)
+    preflight_status = subparsers.add_parser("preflight-status", help="read capability-probe usage and uncertain holds without spending")
+    preflight_status.add_argument("--state-dir", required=True, help="existing external Camol state directory")
+    preflight_status.set_defaults(handler=command_preflight_status)
+
+    serve = subparsers.add_parser("serve", help="run the authoritative supervisor in the foreground")
+    serve.add_argument("runbook")
+    serve.add_argument("--db")
+    serve.add_argument("--workspace", default=".")
+    serve.add_argument("--state-dir", required=True)
+    serve.add_argument("--approve-by")
+    serve.add_argument("--source-binding-digest", help=argparse.SUPPRESS)
+    serve.set_defaults(handler=command_serve)
+
+    start = subparsers.add_parser("start", help="start a detached supervisor and return to the shell")
+    start.add_argument("runbook")
+    start.add_argument("--db")
+    start.add_argument("--workspace", default=".")
+    start.add_argument("--state-dir", required=True)
+    start.add_argument("--approve-by")
+    start.set_defaults(handler=command_start)
+
+    control = subparsers.add_parser("ctl", help="inspect or control a detached supervisor")
+    control.add_argument("control_command", choices=("ping", "status", "boxes", "approve", "drain", "resume", "stop", "force-stop", "acceptance", "accept", "gate-approve"))
+    control.add_argument("--state-dir", required=True)
+    control.add_argument("--by", default="operator")
+    control.add_argument("--digest", help="exact outcome or gate assessment digest being approved")
+    control.add_argument("--task-id", help="task whose human gate is being approved")
+    control.set_defaults(handler=command_control)
+
+    bench = subparsers.add_parser(
+        "bench-compare", help="compare a direct-Claude and Camol trial under matched conditions"
+    )
+    bench.add_argument("--direct", required=True, help="claude_direct benchmark-trial JSON")
+    bench.add_argument("--camol", required=True, help="camol_one or camol_adaptive benchmark-trial JSON")
+    bench.set_defaults(handler=command_bench_compare)
+
+    campaign = subparsers.add_parser("campaign", help="validate pinned benchmark cohorts or inspect a durable campaign")
+    campaign.add_argument("campaign_action", choices=("validate", "status", "report"))
+    campaign.add_argument("--manifest")
+    campaign.add_argument("--db")
+    campaign.add_argument("--campaign-id")
+    campaign.set_defaults(handler=command_campaign)
+
+    swebench = subparsers.add_parser("swebench", help="freeze or inspect pinned offline public-suite data; no grader, Docker or model launch")
+    swebench.add_argument("swebench_action", choices=("freeze", "inspect"))
+    swebench.add_argument("--dataset", required=True, help="protected local Verified JSON/JSONL")
+    swebench.add_argument("--prepared", required=True, help="protected pinned official prepared tasks")
+    swebench.add_argument("--dataset-revision", help="full dataset revision for a proposed lock")
+    swebench.add_argument("--images", help="reviewed per-task immutable image pins JSON")
+    swebench.add_argument("--environment", help="strict grader hardware/isolation JSON")
+    swebench.add_argument("--lock", help="exact frozen offline suite lock JSON")
+    swebench.add_argument("--task-id")
+    swebench.set_defaults(handler=command_swebench)
+
+    capacity = subparsers.add_parser("capacity", help="inspect shared capacity or publish exact owner-declared limits")
+    capacity.add_argument("capacity_action", choices=("inventory", "reservations", "publish"))
+    capacity.add_argument("--db", required=True, help="shared owner-only capacity database")
+    capacity.add_argument("--namespace", required=True)
+    capacity.add_argument("--supply", help="strict capacity-supply JSON")
+    capacity.add_argument("--by")
+    capacity.add_argument("--digest", help="exact canonical digest of the owner-reviewed supply")
+    capacity.set_defaults(handler=command_capacity)
+
+    models = subparsers.add_parser("models", help="plan, approve and verify explicit downloads; never implicitly load a model")
+    models.add_argument("model_action", choices=("validate", "prepare", "approve", "download", "list", "status", "events", "artifacts", "discard-partial"))
+    models.add_argument("--root", help="owner-only model store (default: Camol state home/models)")
+    models.add_argument("--plan", help="immutable HTTPS/file-hash/size DownloadPlan JSON")
+    models.add_argument("--digest", help="exact approved download plan digest")
+    models.add_argument("--by")
+    models.add_argument("--verify", action="store_true", help="rehash completed artifacts during status inspection")
+    models.add_argument("--confirm-discard", action="store_true", help="authorize irrecoverable removal of this plan's unverified partial bytes only")
+    models.set_defaults(handler=command_models)
+
+    model_host = subparsers.add_parser("model-host", help="explicitly prepare, approve and control a finite, owned local model process")
+    model_host.add_argument("host_action", choices=("validate", "prepare", "approve", "load", "status", "inventory", "events", "propose-unload", "unload"))
+    model_host.add_argument("--root", help="private host lifecycle state (default: Camol state home/model-hosts)")
+    model_host.add_argument("--plan", help="pinned local llama.cpp executable/model/authority contract JSON")
+    model_host.add_argument("--plan-digest", help="exact host plan subject, distinct from an unload request digest")
+    model_host.add_argument("--operation-id", help="explicit one-shot load or unload-request identity")
+    model_host.add_argument("--by", help="exact plan owner authorizing an operation")
+    model_host.add_argument("--request", help="exact frozen unload request JSON")
+    model_host.add_argument("--digest", help="canonical unload request digest approved by its owner")
+    model_host.add_argument("--live", action="store_true", help="explicitly read the exact owned endpoint during status; not inference")
+    model_host.set_defaults(handler=command_model_host)
+
+    inference = subparsers.add_parser("model-inference", help="explicitly approve one bounded prompt to an already owned model load; no automatic retry")
+    inference.add_argument("inference_action", choices=("fingerprint", "validate", "prepare", "approve", "infer", "status", "inventory", "events"))
+    inference.add_argument("--root", help="existing private model-host lifecycle state (default: Camol state home/model-hosts)")
+    inference.add_argument("--plan", help="exact inference contract binding host/load, owner, prompt bytes, token request and deadline")
+    inference.add_argument("--plan-digest", help="exact inference plan digest; not the host plan digest")
+    inference.add_argument("--prompt-file", help="bounded regular UTF-8 prompt file; text is never placed in argv or the ledger")
+    inference.add_argument("--by", help="exact plan owner approving or dispatching the one-shot request")
+    inference.add_argument("--show-response", action="store_true", help="include sensitive response text in this successful invocation's output; never retained for replay")
+    inference.set_defaults(handler=command_model_inference)
+
+    remote = subparsers.add_parser("remote", help="explicit authenticated SSH control-plane connection; never worker provisioning")
+    remote.add_argument("remote_action", choices=("validate", "identity", "request", "receipts", "acknowledge-unknown", "monitor", "usage"))
+    remote.add_argument("--target", help="strict pinned SSH target profile JSON")
+    remote.add_argument("--state-dir", help="private local dispatch journal, separate from the remote run state")
+    remote.add_argument("--command", dest="remote_command", choices=sorted(SSH_COMMANDS))
+    remote.add_argument("--params", help="strict JSON control parameters; never shell text")
+    remote.add_argument("--by", help="exact target owner")
+    remote.add_argument("--allow-mutation", action="store_true", help="explicitly opt in to the selected remote control mutation")
+    remote.add_argument("--request-id", help="exact unresolved dispatch to acknowledge without retry")
+    remote.add_argument("--reason", help="owner acknowledgment reason; not proof that a remote effect succeeded")
+    remote.add_argument("--ssh-binary", default="/usr/bin/ssh", help="explicit local OpenSSH executable")
+    remote.add_argument("--timeout", type=float, default=45)
+    remote.add_argument("--interval", type=float, default=5, help="read-only monitor refresh interval in seconds (2..300)")
+    remote.add_argument("--after", type=int, default=0, help="RPC usage entry cursor")
+    remote.add_argument("--limit", type=int, default=100, help="RPC usage page size (1..1000)")
+    remote.set_defaults(handler=command_remote)
+
+    revise = subparsers.add_parser("revise", help="review or apply an immutable successor plan (execution must be stopped before apply)")
+    revise.add_argument("revision_action", choices=("show", "propose", "apply"))
+    revise.add_argument("--workspace", default=".")
+    revise.add_argument("--state-dir", required=True)
+    revise.add_argument("--run-id")
+    revise.add_argument("--runbook", help="explicit schema V5 successor runbook")
+    revise.add_argument("--reason")
+    revise.add_argument("--effect-reruns", help="JSON containing exact owner-reviewed confirmed-effect reuse policies")
+    revise.add_argument("--by")
+    revise.add_argument("--digest", help="exact revision proposal digest being approved")
+    revise.set_defaults(handler=command_revise)
+    preparation = subparsers.add_parser("target-prepare", help="approve isolated workspace preparation on a target; never launch a worker")
+    preparation_actions = preparation.add_subparsers(dest="preparation_action", required=True)
+    for name in ("plan", "apply", "inspect"):
+        operation = preparation_actions.add_parser(name)
+        if name == "plan":
+            for flag in ("source-proposal", "source-export-digest", "runbook", "agent-id", "evaluator-digest",
+                         "state-dir", "request-id", "by", "expires-at"):
+                operation.add_argument("--" + flag, required=True)
+        elif name == "apply":
+            for flag in ("proposal", "review-digest", "by", "archive", "key-file"):
+                operation.add_argument("--" + flag, required=True)
+        else:
+            operation.add_argument("--state-dir", required=True)
+        operation.set_defaults(handler=command_target_prepare)
+
+    handoff = subparsers.add_parser("source-handoff", help="review encrypted source copy to an adopted target; never execution authority")
+    handoff_actions = handoff.add_subparsers(dest="handoff_action", required=True)
+    diagnose = handoff_actions.add_parser("doctor", help="read-only task/worker probes on an authenticated received copy; never admission or launch")
+    for flag in ("proposal", "review-digest", "by", "archive", "key-file", "runbook", "workspace", "state-dir",
+                 "target-id", "generation", "agent-id", "evaluator-digest"):
+        diagnose.add_argument("--" + flag, required=True)
+    diagnose.set_defaults(handler=command_source_handoff)
+    for name in ("plan", "export", "receive", "inspect"):
+        operation = handoff_actions.add_parser(name)
+        if name != "receive":
+            operation.add_argument("--state-dir", required=True)
+            operation.add_argument("--db")
+            operation.add_argument("--run-id", required=True)
+        if name == "plan":
+            operation.add_argument("--task-id", help="bind pending task and current accepted integration head (V2); otherwise baseline-only V1")
+            operation.add_argument("--source-workspace", help="existing clean checkout of an inherited revision; never substitutes a different commit")
+            operation.add_argument("--generation", required=True)
+            operation.add_argument("--adoption-digest", required=True)
+            operation.add_argument("--destination-workspace", required=True)
+            operation.add_argument("--request-id", required=True)
+            operation.add_argument("--by", required=True)
+            operation.add_argument("--expires-at", required=True)
+        elif name == "inspect":
+            operation.add_argument("--request-id")
+        else:
+            for flag in ("proposal", "by", "review-digest", "key-file", "output"):
+                operation.add_argument("--" + flag, required=True)
+            if name == "export":
+                operation.add_argument("--workspace", required=True)
+            else:
+                operation.add_argument("--archive", required=True)
+                operation.add_argument("--target-id", required=True)
+                operation.add_argument("--generation", required=True)
+        operation.set_defaults(handler=command_source_handoff)
+
+    recovery = subparsers.add_parser("recovery", help="explicit encrypted workspace backup and reconstruction; never resume or purge authority")
+    recovery_actions = recovery.add_subparsers(dest="recovery_action", required=True)
+    keygen = recovery_actions.add_parser("keygen", help="create a private key directory; never display key bytes")
+    keygen.add_argument("--output", required=True)
+    keygen.set_defaults(handler=command_recovery)
+    for action in ("export", "verify", "restore"):
+        descriptions = {"export": "encrypt exact captured salvage and Git history under an explicit policy",
+                        "verify": "decrypt and reconstruct in private scratch storage, then remove the scratch copy",
+                        "restore": "decrypt into a new private plaintext repository; do not execute or resume it"}
+        command = recovery_actions.add_parser(action, help=descriptions[action])
+        command.add_argument("--key-file", required=True)
+        if action == "export":
+            for name in ("source", "state-dir", "salvage", "policy", "output"):
+                command.add_argument("--" + name, required=True)
+        else:
+            command.add_argument("--archive", required=True)
+            if action == "restore":
+                command.add_argument("--output", required=True)
+        command.set_defaults(handler=command_recovery)
+    for action in ("plan-run", "export-run", "verify-run", "restore-run"):
+        command = recovery_actions.add_parser(action, help="review/export or reconstruct completed-run evidence and code; no adoption")
+        if action in {"plan-run", "export-run"}:
+            for name in ("source", "state-dir", "run-id"):
+                command.add_argument("--" + name, required=True)
+            command.add_argument("--db")
+        else:
+            command.add_argument("--archive", required=True)
+        if action != "plan-run":
+            command.add_argument("--key-file", required=True)
+        if action in {"export-run", "restore-run"}:
+            command.add_argument("--output", required=True)
+        if action == "export-run":
+            command.add_argument("--by", required=True)
+            command.add_argument("--review-digest", required=True)
+            command.add_argument("--allow-encrypted-raw", action="store_true")
+        command.set_defaults(handler=command_recovery)
     return parser
 
 
@@ -152,9 +1757,21 @@ def main(argv: Any = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (RunbookError, StateTransitionError, OSError, json.JSONDecodeError) as error:
+    except SSHTransportError as error:
+        _write_json(dict(ok=False, error=dict(code=error.code, message=str(error)),
+                         request_id=error.request_id, outcome=error.outcome,
+                         **({"audit_error": error.audit_error} if hasattr(error, "audit_error") else {})))
+        return 2
+    except (
+        ArtifactError, RecoveryError, RunbookError, SchemaError, StateTransitionError, SourceBindingError, DebuggerError, UsageError, WatcherError, GraphError, RevisionError, CapacityError, ModelError,
+        WorkspaceError, ProviderError, SupervisorError, BenchmarkError, OSError, json.JSONDecodeError,
+        ConnectionError, ConversationError, SessionError, InteractiveError, RetentionError, BoxInspectionError, VCSError,
+    ) as error:
         print("camol: {}".format(error), file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print("camol: interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

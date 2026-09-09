@@ -1,0 +1,19 @@
+{
+  "schema": "camol.runtime_soak",
+  "schema_version": 1,
+  "command": "python scripts/run_runtime_soak.py --iterations 10 --boxes 8",
+  "claim_scope": "Local subprocess fixtures, not live model/provider or cloud readiness",
+  "passed": true,
+  "trials": [
+    {"iteration": 0, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 560, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 53.714},
+    {"iteration": 1, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 559, "artifacts": 52, "source_unchanged": true, "export_replay_equal": true, "seconds": 52.385},
+    {"iteration": 2, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 561, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 52.851},
+    {"iteration": 3, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 558, "artifacts": 52, "source_unchanged": true, "export_replay_equal": true, "seconds": 56.148},
+    {"iteration": 4, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 561, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 61.712},
+    {"iteration": 5, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 560, "artifacts": 52, "source_unchanged": true, "export_replay_equal": true, "seconds": 62.031},
+    {"iteration": 6, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 561, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 55.203},
+    {"iteration": 7, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 559, "artifacts": 52, "source_unchanged": true, "export_replay_equal": true, "seconds": 56.364},
+    {"iteration": 8, "boxes": 8, "tasks": 17, "verifier_restart": false, "status": "completed", "events": 561, "artifacts": 53, "source_unchanged": true, "export_replay_equal": true, "seconds": 59.030},
+    {"iteration": 9, "boxes": 8, "tasks": 17, "verifier_restart": true, "status": "completed", "events": 558, "artifacts": 52, "source_unchanged": true, "export_replay_equal": true, "seconds": 53.814}
+  ]
+}

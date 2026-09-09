@@ -2,13 +2,27 @@
 
 import asyncio
 import hashlib
+import importlib
 import json
+import os
+import stat
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
+
+from .artifacts import ArtifactRef, ArtifactStore
+from .probes import Redactor
+from .sandbox import SandboxBackend, SandboxPolicy
 
 
 class AdapterError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, observed_evidence: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(message)
+        self.observed_evidence = list(observed_evidence or ())
+
+
+class ProcessTurnUncertain(AdapterError):
+    """An allocated process turn cannot be silently dispatched a second time."""
 
 
 def _substitute(argv: List[str], values: Dict[str, str]) -> List[str]:
@@ -22,9 +36,30 @@ def _substitute(argv: List[str], values: Dict[str, str]) -> List[str]:
 
 
 class ProcessAgentAdapter:
-    def __init__(self, workspace: Path, run_id: str):
+    def __init__(
+        self,
+        workspace: Path,
+        run_id: str,
+        *,
+        state_dir: Optional[Path] = None,
+        sandbox_backend: Optional[SandboxBackend] = None,
+        sandbox_policy: Optional[SandboxPolicy] = None,
+        artifact_store: Optional[ArtifactStore] = None,
+        redactor: Optional[Redactor] = None,
+    ):
         self.workspace = Path(workspace).resolve()
         self.run_id = run_id
+        self.state_dir = Path(state_dir).resolve() if state_dir is not None else self.workspace / ".camol"
+        self.sandbox_backend = sandbox_backend
+        if sandbox_backend is not None:
+            sandbox_backend.invocation_root = self.state_dir / "packets" / run_id
+        self.sandbox_policy = sandbox_policy
+        self.artifact_store = artifact_store
+        self.redactor = redactor or Redactor()
+        self.before_launch = None
+        self.execution_environment = None
+        if (sandbox_backend is None) != (sandbox_policy is None):
+            raise AdapterError("sandbox backend and policy must be supplied together")
 
     def _inside_workspace(self, relative: str) -> Path:
         path = (self.workspace / relative).resolve()
@@ -34,124 +69,378 @@ class ProcessAgentAdapter:
             raise AdapterError("agent path escapes the harness workspace") from error
         return path
 
-    async def execute_turn(
+    async def _authorize_launch(self, assignment, turn_number):
+        """Runtime callback runs only for a new invocation, never cache replay."""
+        if self.before_launch is not None:
+            await self.before_launch(assignment, turn_number)
+
+    async def execute_turn(self, agent, assignment, packet, turn_number, *, cost_budget_cents=None):
+        if getattr(self, "_turn_busy", False):
+            raise ProcessTurnUncertain("another call already owns this process adapter")
+        self._turn_busy, self._process_intent = True, None
+        try:
+            from .process_intents import turn_lock
+            with turn_lock(self.state_dir, self.run_id, assignment["task_id"], turn_number):
+                return await self._execute_turn(agent, assignment, packet, turn_number, cost_budget_cents=cost_budget_cents)
+        except asyncio.CancelledError:
+            raise  # The durable intent survives cancellation; never convert cancellation to success.
+        except Exception as error:
+            if self._process_intent is not None and not isinstance(error, ProcessTurnUncertain):
+                raise ProcessTurnUncertain("process turn has no recoverable validated result; reconcile retained work before retry",
+                    observed_evidence=getattr(error, "observed_evidence", ())) from error
+            raise
+        finally:
+            self._turn_busy, self._process_intent = False, None
+
+    async def _execute_turn(
         self,
         agent: Dict[str, Any],
         assignment: Dict[str, str],
         packet: Dict[str, Any],
         turn_number: int,
+        *,
+        cost_budget_cents: Optional[int] = None,
     ) -> Dict[str, Any]:
+        if type(turn_number) is not int or turn_number < 1:
+            raise AdapterError("process turn number must be a positive integer")
         box = self._inside_workspace(agent["box"])
-        packet_dir = self._inside_workspace(
-            ".camol/packets/{}/{}".format(self.run_id, assignment["task_id"])
-        )
+        packet_dir = self.state_dir / "packets" / self.run_id / assignment["task_id"]
+        try:
+            packet_dir.resolve().relative_to(self.state_dir)
+        except ValueError as error:
+            raise AdapterError("packet path escapes the state directory") from error
         box.mkdir(parents=True, exist_ok=True)
         packet_dir.mkdir(parents=True, exist_ok=True)
         packet_path = packet_dir / "turn-{:03d}.packet.json".format(turn_number)
         result_path = packet_dir / "turn-{:03d}.result.json".format(turn_number)
+        worker_dir = packet_dir / "worker-output"
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        worker_result_path = worker_dir / "turn-{:03d}.result.json".format(turn_number)
+        from .process_intents import ProcessTurnIntent
+        intent = ProcessTurnIntent(packet_dir / "turn-{:03d}.process-intent.json".format(turn_number),
+            agent=agent, assignment=assignment, run_id=self.run_id, turn_number=turn_number,
+            workspace=self.workspace, sandbox_policy=self.sandbox_policy)
+        intent.check_subject()  # Never overwrite a different lease's packet/result first.
         desired_packet_bytes = (json.dumps(packet, indent=2, sort_keys=True) + "\n").encode("utf-8")
         packet_bytes = desired_packet_bytes
-        if packet_path.exists():
+        packet_existed = packet_path.exists()
+        known_unlaunched = False
+        if packet_existed:
             try:
                 existing_packet_bytes = packet_path.read_bytes()
                 existing_packet = json.loads(existing_packet_bytes)
-                expected_lease = {
-                    "task_id": assignment["task_id"],
-                    "agent_id": assignment["agent_id"],
-                    "lease_id": assignment["lease_id"],
-                }
+                if not isinstance(existing_packet, dict):
+                    raise ProcessTurnUncertain("existing process packet is not an object")
                 if (
                     existing_packet.get("run", {}).get("id") == self.run_id
-                    and existing_packet.get("lease") == expected_lease
+                    and existing_packet.get("lease") == packet.get("lease")
                 ):
                     packet_bytes = existing_packet_bytes
                 else:
+                    known_unlaunched = intent.proves_unlaunched(hashlib.sha256(existing_packet_bytes).hexdigest())
+                    if not known_unlaunched or result_path.exists():
+                        raise ProcessTurnUncertain("prior lease packet cannot be replaced without proof it was not launched")
                     packet_path.write_bytes(desired_packet_bytes)
                     if result_path.exists():
                         result_path.unlink()
-            except (OSError, json.JSONDecodeError):
-                packet_path.write_bytes(desired_packet_bytes)
-                if result_path.exists():
-                    result_path.unlink()
+            except (OSError, json.JSONDecodeError) as error:
+                raise ProcessTurnUncertain("existing process packet is unreadable; retain it for reconciliation") from error
         else:
             packet_path.write_bytes(packet_bytes)
         packet_sha256 = hashlib.sha256(packet_bytes).hexdigest()
+        intent.bind_packet(packet_sha256)
         if result_path.exists():
             try:
                 recovered = json.loads(result_path.read_text(encoding="utf-8"))
                 self.validate_result(recovered, packet_sha256)
-                recovered_bytes = result_path.read_bytes()
-                recovered["evidence"] = [
+                recovered = self.redactor.value(recovered)
+                recovered_bytes = (json.dumps(recovered, indent=2, sort_keys=True) + "\n").encode("utf-8")
+                if recovered_bytes != result_path.read_bytes():
+                    result_path.write_bytes(recovered_bytes)
+                observed = [
                     {
                         "kind": "command",
+                        "epistemic_status": "EXECUTED",
+                        "producer": "adapter",
+                        "artifact_refs": [],
                         "data": {
                             "recovered_unconsumed_result": True,
-                            "result_sha256": hashlib.sha256(recovered_bytes).hexdigest(),
+                            "result_sha256": "sha256:" + hashlib.sha256(recovered_bytes).hexdigest(),
                         },
                     }
-                ] + recovered["evidence"]
+                ]
+                result_reference = self._store_content(
+                    recovered_bytes,
+                    assignment,
+                    channel="agent-result",
+                    media_type="application/json",
+                    redact=True,
+                )
+                if result_reference is not None:
+                    observed.append(
+                        {
+                            "kind": "transcript",
+                            "epistemic_status": "OBSERVED",
+                            "producer": "adapter",
+                            "artifact_refs": [result_reference.to_dict()],
+                            "data": {"channel": "agent-result", "recovered": True},
+                        }
+                    )
+                recovered["_camol_observed_evidence"] = observed
                 return recovered
-            except (AdapterError, json.JSONDecodeError):
-                result_path.unlink()
+            except (AdapterError, json.JSONDecodeError) as error:
+                raise ProcessTurnUncertain("cached process result is invalid; retain it for reconciliation") from error
 
+        if (packet_dir / "turn-{:03d}.invocation.json".format(turn_number)).exists() and not intent.exists():
+            raise ProcessTurnUncertain("legacy process invocation has no validated result; reconcile before migration")
+        if packet_existed and not intent.exists() and not known_unlaunched and not intent.proves_unlaunched(packet_sha256):
+            raise ProcessTurnUncertain("unjournaled process packet has no validated result; reconcile before migration")
+        try:
+            await self._authorize_launch(assignment, turn_number)
+        except BaseException:
+            try:
+                intent.record_unlaunched()
+            except Exception:
+                pass  # Without this receipt, a later retry conservatively requires reconciliation.
+            raise
         argv = _substitute(
             agent["adapter"]["argv"],
             {
                 "workspace": str(self.workspace),
                 "box": str(box),
                 "packet": str(packet_path),
-                "result": str(result_path),
+                "result": str(worker_result_path),
                 "run_id": self.run_id,
                 "task_id": assignment["task_id"],
                 "agent_id": assignment["agent_id"],
             },
         )
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(box),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+        invocation_id = str(uuid4())
+        intent.reserve()
+        self._process_intent = intent
+        if self.sandbox_backend is not None:
+            sandboxed = await self.sandbox_backend.run(
+                argv,
+                cwd=box,
+                policy=self.sandbox_policy,
+                timeout_seconds=agent["adapter"]["timeout_seconds"],
+                environment=self.execution_environment,
+                invocation_record=packet_dir / "turn-{:03d}.invocation.json".format(turn_number),
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(), timeout=agent["adapter"]["timeout_seconds"]
-            )
-        except asyncio.TimeoutError as error:
-            process.kill()
-            await process.wait()
-            raise AdapterError("agent turn timed out") from error
-        command_evidence = {
-            "kind": "command",
-            "data": {
-                "argv": argv,
-                "cwd": str(box),
-                "exit_code": process.returncode,
-                "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
-                "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
-                "stdout_bytes": len(stdout_bytes),
-                "stderr_bytes": len(stderr_bytes),
+            return_code = sandboxed.exit_code
+            stdout_bytes = sandboxed.stdout
+            stderr_bytes = sandboxed.stderr
+            stdout_sha256 = sandboxed.stdout_sha256
+            stderr_sha256 = sandboxed.stderr_sha256
+            stdout_size = sandboxed.stdout_bytes
+            stderr_size = sandboxed.stderr_bytes
+            stdout_truncated = sandboxed.stdout_truncated
+            stderr_truncated = sandboxed.stderr_truncated
+            backend = sandboxed.backend
+            sandbox_policy_digest = sandboxed.policy_digest
+            started_at = sandboxed.started_at
+            finished_at = sandboxed.finished_at
+            process_id = sandboxed.process_id
+            process_group_id = sandboxed.process_group_id
+        else:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *argv,
+                    cwd=str(box),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    process.communicate(), timeout=agent["adapter"]["timeout_seconds"]
+                )
+            except asyncio.TimeoutError as error:
+                process.kill()
+                await process.wait()
+                raise AdapterError("agent turn timed out") from error
+            return_code = process.returncode
+            stdout_sha256 = "sha256:" + hashlib.sha256(stdout_bytes).hexdigest()
+            stderr_sha256 = "sha256:" + hashlib.sha256(stderr_bytes).hexdigest()
+            stdout_size = len(stdout_bytes)
+            stderr_size = len(stderr_bytes)
+            stdout_truncated = False
+            stderr_truncated = False
+            backend = "legacy-unsandboxed"
+            sandbox_policy_digest = None
+            started_at = finished_at = "1970-01-01T00:00:00+00:00"
+            process_id = process_group_id = None
+        stdout_reference = self._store_content(
+            stdout_bytes,
+            assignment,
+            channel="stdout",
+            media_type="text/plain",
+            redact=True,
+            source_sha256=stdout_sha256,
+            source_bytes=stdout_size,
+            truncated=stdout_truncated,
+            invocation_id=invocation_id,
+        )
+        stderr_reference = self._store_content(
+            stderr_bytes,
+            assignment,
+            channel="stderr",
+            media_type="text/plain",
+            redact=True,
+            source_sha256=stderr_sha256,
+            source_bytes=stderr_size,
+            truncated=stderr_truncated,
+            invocation_id=invocation_id,
+        )
+        output_references = [
+            reference.to_dict()
+            for reference in (stdout_reference, stderr_reference)
+            if reference is not None
+        ]
+        observed_evidence = [
+            {
+                "kind": "command",
+                "epistemic_status": "EXECUTED",
+                "producer": "adapter",
+                "artifact_refs": output_references,
+                "data": {
+                    "invocation_id": invocation_id,
+                    "turn_number": turn_number,
+                    "argv": self.redactor.argv(argv),
+                    "cwd": self.redactor.text(str(box)),
+                    "exit_code": return_code,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "stdout_sha256": stdout_sha256,
+                    "stderr_sha256": stderr_sha256,
+                    "stdout_bytes": stdout_size,
+                    "stderr_bytes": stderr_size,
+                    "stdout_truncated": stdout_truncated,
+                    "stderr_truncated": stderr_truncated,
+                    "sandbox_backend": backend,
+                    "sandbox_policy_digest": sandbox_policy_digest,
+                    "process_id": process_id,
+                    "process_group_id": process_group_id,
+                    "environment_names": list(self.sandbox_policy.environment_names) if self.sandbox_policy else [],
+                },
             },
-        }
-        if process.returncode != 0:
+            {
+                "kind": "environment",
+                "epistemic_status": "OBSERVED",
+                "producer": "adapter",
+                "artifact_refs": [],
+                "data": {
+                    "sandbox_backend": backend,
+                    "sandbox_policy_digest": sandbox_policy_digest,
+                    "allowlisted_names": list(self.sandbox_policy.environment_names) if self.sandbox_policy else [],
+                    "values_persisted": False,
+                },
+            },
+        ]
+        if return_code != 0:
             raise AdapterError(
                 "agent process exited {}; stderr sha256 {}".format(
-                    process.returncode, hashlib.sha256(stderr_bytes).hexdigest()
-                )
+                    return_code, stderr_sha256
+                ),
+                observed_evidence=observed_evidence,
             )
-        if not result_path.exists():
-            raise AdapterError("agent did not write its structured result")
+        if not worker_result_path.exists():
+            raise AdapterError("agent did not write its structured result", observed_evidence=observed_evidence)
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise AdapterError("agent result is not valid JSON") from error
-        self.validate_result(result, packet_sha256)
-        result["evidence"] = [command_evidence] + result["evidence"]
+            descriptor = os.open(str(worker_result_path), os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as result_file:
+                if not stat.S_ISREG(os.fstat(result_file.fileno()).st_mode):
+                    raise ValueError("result is not a regular file")
+                raw = result_file.read((16 << 20) + 1)
+            if len(raw) > 16 << 20:
+                raise ValueError("result exceeds its capture bound")
+            result = json.loads(raw)
+        except (OSError, ValueError) as error:
+            raise AdapterError("agent result is not valid JSON", observed_evidence=observed_evidence) from error
+        try:
+            self.validate_result(result, packet_sha256)
+        except AdapterError as error:
+            raise AdapterError(str(error), observed_evidence=observed_evidence) from error
+        result = self.redactor.value(result)
+        clean_result_bytes = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        # Cache only after collection/validation in the control-owned root.
+        # Workers never receive write permission for packets, journals or logs.
+        temporary = result_path.with_suffix(".tmp")
+        temporary.write_bytes(clean_result_bytes)
+        temporary.replace(result_path)
+        result_reference = self._store_content(
+            clean_result_bytes,
+            assignment,
+            channel="agent-result",
+            media_type="application/json",
+            redact=True,
+            invocation_id=invocation_id,
+        )
+        packet_reference = self._store_content(
+            packet_bytes,
+            assignment,
+            channel="context-packet",
+            media_type="application/json",
+            redact=True,
+            invocation_id=invocation_id,
+        )
+        for channel, reference in (("context-packet", packet_reference), ("agent-result", result_reference)):
+            if reference is not None:
+                observed_evidence.append(
+                    {
+                        "kind": "transcript",
+                        "epistemic_status": "OBSERVED",
+                        "producer": "adapter",
+                        "artifact_refs": [reference.to_dict()],
+                        "data": {"channel": channel, "invocation_id": invocation_id},
+                    }
+                )
+        result["_camol_observed_evidence"] = observed_evidence
         return result
+    def _store_content(
+        self,
+        content: bytes,
+        assignment: Dict[str, str],
+        *,
+        channel: str,
+        media_type: str,
+        redact: bool,
+        source_sha256: Optional[str] = None,
+        source_bytes: Optional[int] = None,
+        truncated: bool = False,
+        invocation_id: Optional[str] = None,
+    ) -> Optional[ArtifactRef]:
+        if self.artifact_store is None:
+            return None
+        producer = {
+            "run_id": self.run_id,
+            "task_id": assignment["task_id"],
+            "agent_id": assignment["agent_id"],
+            "lease_id": assignment["lease_id"],
+            "channel": channel,
+            "role": "adapter",
+        }
+        if invocation_id:
+            producer["invocation_id"] = invocation_id
+        return self.artifact_store.put_bytes(
+            content,
+            producer=producer,
+            media_type=media_type,
+            redact=redact,
+            source_sha256=source_sha256,
+            source_bytes=source_bytes,
+            truncated=truncated,
+        )
 
     @staticmethod
     def validate_result(result: Dict[str, Any], packet_sha256: str) -> None:
         if not isinstance(result, dict):
             raise AdapterError("agent result must be an object")
+        allowed = {
+            "status", "packet_sha256", "checkpoint", "completed_step_ids",
+            "input_tokens", "output_tokens", "evidence", "messages", "summary", "blocker", "message_acknowledgments",
+        }
+        unknown = sorted(set(result) - allowed)
+        if unknown:
+            raise AdapterError("agent result has unknown fields: {}".format(", ".join(unknown)))
         if result.get("status") not in {"continue", "complete", "blocked"}:
             raise AdapterError("agent result status must be continue, complete, or blocked")
         if not isinstance(result.get("checkpoint"), str) or not result["checkpoint"].strip():
@@ -165,12 +454,20 @@ class ProcessAgentAdapter:
                 raise AdapterError("agent result {} must be a non-negative integer".format(field))
         if not isinstance(result.get("evidence"), list):
             raise AdapterError("agent result evidence must be an array")
+        for evidence in result["evidence"]:
+            if not isinstance(evidence, dict) or set(evidence) - {"evidence_id", "kind", "data"}:
+                raise AdapterError("worker evidence must contain only evidence_id, kind, and data")
         result.setdefault("messages", [])
         if not isinstance(result["messages"], list):
             raise AdapterError("agent result messages must be an array")
         for message in result["messages"]:
             if not isinstance(message, dict):
                 raise AdapterError("each agent message must be an object")
+        acknowledgments = result.get("message_acknowledgments", [])
+        if (not isinstance(acknowledgments, list) or len(acknowledgments) > 10
+                or any(not isinstance(item, str) or not item or len(item) > 100 for item in acknowledgments)
+                or len(set(acknowledgments)) != len(acknowledgments)):
+            raise AdapterError("message acknowledgments must be at most ten unique IDs")
         if result.get("packet_sha256") != packet_sha256:
             raise AdapterError("agent result does not belong to the current context packet")
         if result["status"] == "complete" and (
@@ -179,3 +476,28 @@ class ProcessAgentAdapter:
             raise AdapterError("a complete result must contain a summary")
         if result["status"] == "blocked" and not isinstance(result.get("blocker"), dict):
             raise AdapterError("a blocked result must contain a blocker object")
+
+
+_ADAPTER_FACTORIES: Dict[str, Callable[..., ProcessAgentAdapter]] = {"process": ProcessAgentAdapter}
+_BUNDLED_ADAPTER_MODULES = ("camol.claude_adapter", "camol.codex_adapter")
+
+
+def register_agent_adapter(kind: str, factory: Callable[..., ProcessAgentAdapter]) -> None:
+    """Register an adapter without adding provider logic to the runner."""
+    if not kind or not callable(factory):
+        raise AdapterError("adapter registration requires a kind and callable factory")
+    existing = _ADAPTER_FACTORIES.get(kind)
+    if existing is not None and existing is not factory:
+        raise AdapterError("execution adapter {!r} is already registered".format(kind))
+    _ADAPTER_FACTORIES[kind] = factory
+
+
+def create_agent_adapter(kind: str, *args: Any, **kwargs: Any) -> ProcessAgentAdapter:
+    """Provider-neutral adapter registry boundary used by the runner."""
+    if kind not in _ADAPTER_FACTORIES:
+        for module in _BUNDLED_ADAPTER_MODULES:
+            importlib.import_module(module)
+    factory = _ADAPTER_FACTORIES.get(kind)
+    if factory is None:
+        raise AdapterError("no execution adapter registered for {!r}".format(kind))
+    return factory(*args, **kwargs)

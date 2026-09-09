@@ -1,6 +1,8 @@
 # Evaluation and benchmark program
 
-Status: specified, not implemented.
+Status: V0 evaluator/refinement kernel, matched-pair contract and pinned embeddable
+campaign runner implemented. See [benchmark-campaigns.md](benchmark-campaigns.md).
+Public-suite adapters, scheduled hosting, and statistically powered reports remain planned.
 
 Camol uses coding benchmarks as repeatable outside pressure on the harness, not as a
 replacement for the active plan's invariants or the target repository's own tests.

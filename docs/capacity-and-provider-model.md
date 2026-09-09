@@ -1,6 +1,8 @@
 # Capacity, agent selection, and public provider model
 
-Status: specified, not implemented beyond static process-worker registration.
+Status: schema-6 shared admission and local execution are implemented and tested.
+Dynamic provider/target discovery, authenticated remote workers, auto-provisioning,
+and physical provider-request accounting through CLI internals remain unbacked.
 
 Camol is a harness. It is not a model, worker agent, or vendor account. It hosts a
 deterministic control plane and can invoke a replaceable orchestration agent to turn a
@@ -204,3 +206,152 @@ Before public use, Camol needs:
 - The harness, orchestration agent, worker agent, model, target, and provider account
   always retain separate identities.
 - Core maturity and each workflow/adapter maturity are reported independently.
+
+## 9. First hosted-model proof profile
+
+The first real hosted-model proof is a generic Claude CLI box requesting Claude
+Fable 5.1. This is an adapter profile, not a dependency of the kernel and not a claim
+that Fable runs locally. The box owns the isolated workspace, sandbox, tools, and
+evidence collector; inference uses the user's supported remote provider connection.
+
+Readiness requires a compatible CLI, supported authentication, model entitlement,
+quota and spend capacity, task capability fit, sandbox policy, isolated workspace,
+and a runnable frozen evaluator. The lease and model-call envelope record both the
+requested and resolved model so a refusal, provider fallback, or safeguard reroute
+cannot silently inherit Fable-specific capability claims.
+
+As of 2026-09-03, Anthropic documents model ID `claude-fable-5-1` and requires Claude
+Code 2.1.255 or later for Fable 5.1. Those values belong in versioned adapter
+compatibility data and must be reprobed rather than hard-coded into scheduler logic.
+The complete implementation order and dogfood acceptance gate live in
+[`v0-build-plan.md`](v0-build-plan.md).
+
+## 10. Executable shared broker (schema 6)
+
+V1–V5 retain their original digests and per-run capacity semantics. V6 opts into the
+shared SQLite admission broker and retains V5 invariant gates/final human acceptance.
+The plan freezes an exact `run.capacity_policy`:
+
+```json
+{
+  "namespace": "team-local",
+  "allocation": "saturate_connected",
+  "reservation_ttl_seconds": 90,
+  "allow_owner_declared_supply": false,
+  "rate_scope": "harness_turn_estimate"
+}
+```
+
+Each agent declares separate `capacity_pools` for `target`, `runtime`, and optional
+`provider`. Each task declares nonnegative `resource_requirements` for `cpu_millis`,
+`memory_bytes`, `gpu_millis`, `vram_bytes`, and `disk_bytes`, plus a `placement` map
+using OS, architecture, region, locality, or trust-tier constraints. A leased task
+also reserves one target slot and one runtime/provider session. Shared physical
+resources must use the same namespace and pool identity across runs; creating a
+second alias is not another machine or additional quota.
+
+Pools are versioned, expiring supply observations with capabilities, placement,
+limits, outside workload use, and explicit `observed` or `owner_declared` provenance.
+Only ready, fresh, policy-permitted supply is usable. Owner-declared supply requires
+an explicit allowance in the approved plan; it is never relabeled observed. Supply
+changes are preserved in the broker's audit table. A CLI login does not publish
+provider quota. The broker does not provision machines, load/download models, or
+inspect credentials.
+
+The default database is `capacity.sqlite3` under the per-user Camol state root;
+multiple project state directories share it. Embedded/test callers can inject an
+explicit `CapacityBroker` path. Tests use only temporary broker databases. Database
+files are owner-only. `read_only=True` inspection requires an existing database and
+does not create directories or change database configuration.
+
+Reservation is atomic across all requested pools, subtracting both observed outside
+use and all active/suspect Camol reservations. Queued admission is round-robin among
+runs and FIFO within a run. A resource-starved older request blocks conflicting
+younger work but not work using independent pools; an impossible or unready request
+does not globally stall other pools. Capacity is never fabricated to meet a desired
+box count. Every selected reservation and waiting reason is recorded in the run
+ledger; lease replay rejects missing, changed, or expired global receipts.
+
+Expiry does not make a possibly running process disappear: an expired reservation
+becomes `suspect` and continues to hold resources. The runtime stops/reconciles
+processes before release. A captured candidate awaiting human review may retain its
+slot; verification-only recovery can restore that held reservation after proving
+the worker process stopped and obtaining fresh supply. It does not authorize a new
+worker call. Source plan revisions require shared reservations to be settled too.
+
+Provider pools additionally declare a rolling window with `max_requests`,
+`max_tokens`, `window_seconds`, and `scope`. Debits occur before an uncached adapter
+invocation, are idempotent by invocation identity, and survive cancellation or
+unknown results until window expiry. Current Claude/Codex wrappers use
+`harness_turn_estimate`: one charge represents a Camol turn/CLI session, which may
+contain multiple internal provider requests. This is scheduling pressure, **not a
+hard physical RPM/TPM guarantee**. Requiring `provider_request` fails closed for these
+adapters until a request-observing execution/proxy adapter exists. Likewise CPU,
+memory, and GPU values are admission reservations, not a claim of OS/cgroup resource
+enforcement. Strong resource isolation requires an appropriate execution backend.
+
+A financial budget denial before an invocation intent can defer a reserved rate
+call. `CAPACITY_CALL_DEFERRED` binds its exact running lease/turn, live budget
+wait and pre-intent binding digest to a new deterministic call ID. Every retry
+still passes supply and rolling-window checks; the old debit is never deleted or
+refunded. It therefore cannot reuse an expired receipt, silently reset accounting,
+or treat an unknown/launched invocation as unlaunched. Even an unexpired deferred
+debit stays charged until expiry, so a replacement can temporarily wait for rate
+capacity. Broker-committed replacement receipts are recovered by the same ID if
+local event publication was interrupted. Missing durable deferral evidence is
+not reconstructed from the absence of a PID. See [usage accounting](usage-accounting.md)
+for trust and restart boundaries.
+
+The broker provides finite, shared accounting and suitability/fairness checks. It
+does not yet supply automatic historical-performance ranking, dynamic model loading,
+cloud provisioning, or an authenticated cross-host broker transport. These remain
+separate adapter and operational proof obligations.
+
+## Execution-backed local placement
+
+Capacity supply attributes describe a pool; they are not proof that a worker
+actually executes there. The current `HarnessRunner` is local. A V6 task with
+nonempty `resource_requirements.placement` now requires an additional target-bound
+`execution.placement` probe before admission and any shared reservation or lease.
+Its definition pins the exact required fields and local sandbox policy tier.
+
+- `os` and `architecture` use exact lowercased `platform.system()` and
+  `platform.machine()` values from the running harness (for example `darwin` and
+  `arm64`). There is no alias normalization, binary-architecture inspection,
+  container discovery, hardware attestation or emulation guarantee.
+- `locality` is `local`, meaning the host running this harness, including when
+  Camol itself runs inside a VM. A terminal pane or a pool named remote does not
+  change the executor.
+- `trust_tier` comes from the frozen sandbox policy; admission independently
+  requires the existing sandbox boundary probe. A developer-trusted tier is not
+  enforcing isolation. The read-only doctor does not prepare or prove that boundary
+  and therefore reports its placement trust tier as unproven.
+- `region` is unproven. No environment variable, connection name or owner-declared
+  pool label is promoted to geographic execution evidence.
+
+Mismatching or unproven required fields produce `POLICY_DENIED`, with observed
+values and a repair/review hint. The runner also validates the exact placement
+probe and re-observes local attributes on assignment/resume and before each new
+worker invocation, before rate debit. A changed observation pauses the assignment
+without starting a worker turn. Empty placement retains earlier behavior.
+
+Existing ledgers remain readable/replayable; an old admission without this proof
+cannot authorize a new placement-constrained launch. These checks are a local
+admission prerequisite, not a distributed execution protocol or a continuous
+hardware monitor. The host and embedding Python process remain trusted.
+
+### Remote execution still requires a separate lifecycle
+
+The existing SSH control client attaches to an already running remote supervisor;
+it does not make this runner's workspace, sandbox, evaluator or adapter remote.
+Before distributed workers can be called implemented, their adapter must bind
+target identity and execution observations to admission, prepare isolated source
+and immutable evaluator inputs there, execute under fenced authority, and return
+authenticated event/artifact sequences. Reconnect must reconcile the exact
+invocation rather than duplicate it. Cancellation, checkpoint/salvage and teardown
+must prove what stopped and what was retained before releasing capacity or deleting
+anything. Adoption and owner-approved provisioning are distinct operations.
+
+Those are still open implementation and fault-injection gates. This placement
+guard deliberately does not invent that authority from capacity labels, pane
+selection, an SSH connection, or the trusted `adapter_factory` embedding hook.
