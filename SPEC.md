@@ -17,6 +17,8 @@ reproduces them through its own adapters and event ledger.
 This document is the authoritative product specification for Camol. The executable
 protocol details in `docs/` refine this document but do not override it. A run becomes
 authoritative only when a human approves the exact digest of its compiled plan.
+The cross-platform host, runtime, and security contract is refined in
+[`docs/platform-portability.md`](docs/platform-portability.md).
 
 ## 1. Product thesis
 
