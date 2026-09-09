@@ -64,7 +64,7 @@ Camol requires Python 3.9+ and a Git repository. Textual is an optional dependen
 without it, bare `camol` opens the same command engine in line mode.
 
 ```bash
-git clone --branch codex/v0-next --single-branch \
+git clone --branch main --single-branch \
   https://github.com/Birukedotcom/Camol-Harness.git Camol-Harness-v0
 cd Camol-Harness-v0
 python3 -m venv .venv
@@ -80,7 +80,7 @@ from the root of the real Git project you want it to inspect; do not paste a
 placeholder directory literally.
 
 ```bash
-pipx install 'camol-harness[tui,graph] @ git+https://github.com/Birukedotcom/Camol-Harness.git@codex/v0-next'
+pipx install 'camol-harness[tui,graph] @ git+https://github.com/Birukedotcom/Camol-Harness.git@main'
 cd "$(git rev-parse --show-toplevel)"  # run while already somewhere inside your project
 camol
 ```

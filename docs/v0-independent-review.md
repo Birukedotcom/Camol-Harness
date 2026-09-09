@@ -1,7 +1,7 @@
 # V0 independent adversarial review
 
-Date: 2026-09-03  
-Reviewed head: `7dbcf93`  
+Date: 2026-09-03
+Reviewed head: `7dbcf93`
 Reviewer: separate read-only Claude Code session (Sonnet, high effort)
 
 The reviewer inspected the M1-M7 range against `SPEC.md`, the build plan, the
