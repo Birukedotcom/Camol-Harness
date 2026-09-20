@@ -1,9 +1,97 @@
-# Local classifier lab
+# Classifier lab and Qwen routed chat
 
 An observation-only Camol terminal preview compares GLiClass-Small and GLiClass-Qwen-0.5B on the
 same user request, task state and candidate procedures. It does not execute
 routes, provision workers, call a generative LLM, or change Camol's live router.
 This is the local test environment for the [routing proposal](jev-integration.md).
+The separate `chat` mode below connects Qwen routing to an actual generative LLM
+and saves conversation, routing and provider-call logs.
+
+## Qwen → prompt → LLM
+
+After setup, launch the Camol-native routed chat:
+
+```sh
+scripts/classifier-lab chat --llm claude:sonnet
+```
+
+GLiClass Qwen 0.5B runs locally on CPU and suggests a procedure. Camol assembles
+a prompt containing the original request, explicit task context and advisory
+procedure guidance; Claude generates the answer using your existing Claude CLI
+login. This mode loads only Qwen. It does not load Small or call a generative
+Qwen model. If the classifier abstains, the original request still reaches the
+LLM. An incorrect route must yield to the user's explicit instructions. This
+reduces unnecessary rewriting but cannot guarantee that an LLM never drifts.
+
+Claude requires an authenticated `claude` CLI on PATH. If needed, authenticate
+with the CLI's own `claude auth login` flow. Camol does not collect a key. For an
+already running local OpenAI-compatible server, use its actual served model ID:
+
+```sh
+scripts/classifier-lab chat --llm local:YOUR_SERVED_MODEL --endpoint http://127.0.0.1:11434/v1
+```
+
+Replace `YOUR_SERVED_MODEL` with the installed model's name. The endpoint must be
+numeric loopback; proxies and redirects are not used. A server must already be
+running. The classifier itself never downloads weights during chat. Claude
+generation uses the network and sends your request/context/recent conversation
+to Claude; a local generator stays on the configured local endpoint. The earlier
+network-blocked `run-safe` preview cannot connect to Claude. Use the chat launcher
+above instead; it is a separate mode, not a change to that sandbox.
+
+Enter a request or press F2 for this example:
+
+> Create an implementation plan for a browser-based 3D ping-pong game controlled
+> with Left/Right arrows or A/D. Include an AI opponent, ball physics, scoring,
+> restart controls, milestones and acceptance tests. Plan only; do not write code yet.
+
+The native view shows the Qwen scores, generated response, resolved generator
+identity and token usage when reported. `/model` reports the selected provider;
+`/model claude:sonnet` or `/model local:MODEL` changes it. The selection survives
+restart unless `--llm` overrides it. `/state TEXT` saves explicit task context;
+the classifier also receives a bounded previous user request for follow-ups.
+Overlength classifier inputs are rejected visibly rather than silently truncated.
+
+`/prompt` displays the last assembled request payload (the provider adapter adds
+Camol's planning system prompt and bounded conversation history). `/history`
+shows saved messages; restarting restores recent messages. `/clear` starts a
+new conversation while retaining audit files. `/cancel` interrupts generation;
+the provider may already have consumed tokens. `/quit` exits.
+
+Logs live under `.camol/classifier-lab/chat-state/projects/`, separate from live
+harness sessions. The exact directory appears at startup and in `/help`:
+
+- `session.json` and `transcript.jsonl`: saved conversation and notices.
+- `proposal-events.jsonl`: classifier scores, exact assembled prompt and digest,
+  or a routing failure that did not reach the generator.
+- `planning-calls.jsonl`: provider/model, completed/failed/cancelled status,
+  duration and token usage when available, joined to the prompt by call ID.
+
+Logs are private local files, excluded from Git, and contain conversation text.
+The generation adapter runs in a separate empty chat workspace. Claude's
+runtime-verified no-tools configuration and the local adapter's no-tools
+request/response checks apply. This chat generates text and proposed code;
+it does not edit the repository, run tasks, provision MAGI, or deploy anything.
+Live harness execution/approval/login commands are unavailable.
+
+On the tested Mac, a live Qwen → Claude request produced the 3D ping-pong plan
+with arrows/A-D, AI, physics, scoring, restart, milestones and acceptance tests.
+The installed CLI resolved `sonnet` to `claude-sonnet-5`. Qwen abstained on that
+request (top `explain` score 0.462, below 0.55), and the original request reached
+Claude through the abstention path. This is useful end-to-end connectivity
+evidence, not a correct-classification claim or a game execution test.
+A second live request, "Review this pull request for bugs and regressions,"
+was accepted as `review_changes`; Claude asked for the missing diff rather than
+inventing review findings. Sanitized synthetic requests, routes, prompts and
+responses are recorded in [the live smoke evidence](../evidence/classifier-lab/routed-chat-smoke.json).
+
+The live test also exposed a Claude adapter issue: its coding plan mode could
+produce only a preamble about writing a file. No-tools calls now replace the
+coding system prompt with Camol's planning instructions and disable plan-file
+workflow behavior while keeping all tools disabled. Error/turn-limit results
+are rejected as incomplete; streaming tool attempts are rejected too. The main
+model identity comes from the CLI's initialization event when auxiliary models
+also appear in usage. Input token totals include reported cache reads/writes.
 
 ## Start
 

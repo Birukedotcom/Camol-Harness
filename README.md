@@ -642,7 +642,9 @@ real hosted-agent run.
 
 - [Local classifier lab](docs/classifier-lab.md): run `scripts/classifier-lab setup`,
   then `scripts/classifier-lab` to compare Small and Qwen in Camol's native terminal interface;
-  includes a repeatable labeled benchmark and measured limitations.
+  use `scripts/classifier-lab chat --llm claude:sonnet` for Qwen request routing,
+  inspectable prompts, actual LLM answers and saved logs. Also includes a local
+  generator option, repeatable labeled benchmark and measured limitations.
 - [Provisioning and prompt routing](docs/provisioning-and-prompt-routing.md):
   Buckeye Sandbox integration gaps, lifecycle acceptance, and proposed bounded
   prompt classification and response validation.

@@ -119,7 +119,7 @@ def provider_argv(
         argv = [
             executable, "-p", "--output-format", "stream-json" if stream else "json",
             "--model", selection.model or "fable",
-            "--effort", effort, "--max-turns", "1", "--permission-mode", "plan",
+            "--effort", effort, "--max-turns", "1", "--permission-mode", "default" if no_tools else "plan",
             "--permission-prompts", "none", "--no-session-persistence", "--disable-slash-commands",
             "--safe-mode", "--disallowedTools", "Bash", "Edit", "Write",
         ]
@@ -127,7 +127,7 @@ def provider_argv(
             argv.extend(["--include-partial-messages", "--verbose"])
         if no_tools:
             argv.extend(["--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-                         "--setting-sources", ""])
+                         "--setting-sources", "", "--system-prompt", SYSTEM_PROMPT])
         return argv
     if selection.provider == "codex":
         executable = shutil.which("codex")
@@ -171,7 +171,7 @@ def _verify_tool_free_cli(executable: str, workspace: Path, runner: Any, *, extr
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ConversationError("cannot verify the Claude no-tools runtime flags; no planning request sent") from error
         output = completed.stdout.decode("utf-8", "replace")
-        required = ("--tools", "--safe-mode", "--strict-mcp-config", "--mcp-config", "--setting-sources",
+        required = ("--tools", "--safe-mode", "--strict-mcp-config", "--mcp-config", "--setting-sources", "--system-prompt",
                     "--disable-slash-commands", "--permission-prompts", "--max-turns") + tuple(extra_flags)
         missing = [flag for flag in required if flag not in output]
         # Some documented CLI flags are hidden from help. Do not drop the turn
@@ -202,6 +202,20 @@ def _environment() -> Dict[str, str]:
     }
 
 
+def _check_claude_result(payload):
+    if (payload.get("is_error") or str(payload.get("subtype", "")).startswith("error")
+            or payload.get("stop_reason") in ("max_tokens", "tool_use")
+            or payload.get("terminal_reason") not in (None, "completed")):
+        raise ConversationError("Claude did not complete its response ({}); partial text is not a completed answer".format(
+            Redactor().text(str(payload.get("terminal_reason") or payload.get("subtype") or payload.get("stop_reason") or "provider error"))))
+
+
+def _claude_input_tokens(usage):
+    # Anthropic reports cache reads/writes separately from uncached input.
+    fields = [usage.get("input_tokens"), usage.get("cache_read_input_tokens", 0), usage.get("cache_creation_input_tokens", 0)]
+    return sum(fields) if all(type(value) is int and value >= 0 for value in fields) else None
+
+
 def _parse_cli_reply(provider: str, stdout: bytes) -> Tuple[str, Optional[str], Optional[int], Optional[int]]:
     decoded = stdout.decode("utf-8", "replace")
     if provider == "claude":
@@ -211,13 +225,14 @@ def _parse_cli_reply(provider: str, stdout: bytes) -> Tuple[str, Optional[str], 
             raise ConversationError("Claude returned malformed JSON") from error
         if not isinstance(payload, dict):
             raise ConversationError("Claude returned a non-object response")
+        _check_claude_result(payload)
         text = payload.get("result")
         if not isinstance(text, str) or not text.strip():
             raise ConversationError("Claude returned no orchestrator message")
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
         model_usage = payload.get("modelUsage") or payload.get("model_usage")
         resolved = next(iter(model_usage)) if isinstance(model_usage, dict) and len(model_usage) == 1 else payload.get("model")
-        return text, resolved if isinstance(resolved, str) else None, usage.get("input_tokens"), usage.get("output_tokens")
+        return text, resolved if isinstance(resolved, str) else None, _claude_input_tokens(usage), usage.get("output_tokens")
     texts: List[str] = []
     input_tokens = output_tokens = None
     resolved = None
@@ -286,6 +301,7 @@ def _stream_cli(
     timeout: int,
     on_chunk: Callable[[str], None],
     cancel_event: Optional[Event] = None,
+    *, no_tools: bool = False,
 ) -> ConversationReply:
     try:
         process = subprocess.Popen(
@@ -305,6 +321,7 @@ def _stream_cli(
         line_buffer = bytearray()
         chunks: List[str] = []
         final_payload: Optional[Dict[str, Any]] = None
+        stream_model = None
         import time
         deadline = time.monotonic() + timeout
         while selector.get_map():
@@ -346,8 +363,20 @@ def _stream_cli(
                     if not isinstance(payload, dict):
                         continue
                     if selection.provider == "claude":
+                        if payload.get("type") == "system" and payload.get("subtype") == "init":
+                            stream_model = payload.get("model")
+                            if no_tools and payload.get("tools"):
+                                raise ConversationError("Claude advertised tools in a no-tools response")
+                        if no_tools and payload.get("type") == "assistant":
+                            message = payload.get("message", {})
+                            content = message.get("content") if isinstance(message, dict) else None
+                            if isinstance(content, list) and any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content):
+                                raise ConversationError("Claude attempted a tool call in a no-tools response")
                         if payload.get("type") == "stream_event":
                             event = payload.get("event")
+                            block = event.get("content_block") if isinstance(event, dict) else None
+                            if no_tools and isinstance(block, dict) and block.get("type") == "tool_use":
+                                raise ConversationError("Claude attempted a tool call in a no-tools response")
                             delta = event.get("delta") if isinstance(event, dict) else None
                             piece = delta.get("text") if isinstance(delta, dict) else None
                             if isinstance(piece, str) and piece:
@@ -371,6 +400,7 @@ def _stream_cli(
         if selection.provider == "claude":
             if final_payload is None:
                 raise ConversationError("Claude returned no final result")
+            _check_claude_result(final_payload)
             text = final_payload.get("result")
             if not isinstance(text, str) or not text.strip():
                 text = "".join(chunks)
@@ -378,13 +408,13 @@ def _stream_cli(
                 raise ConversationError("Claude returned no orchestrator message")
             usage = final_payload.get("usage") if isinstance(final_payload.get("usage"), dict) else {}
             model_usage = final_payload.get("modelUsage") or final_payload.get("model_usage")
-            resolved = next(iter(model_usage)) if isinstance(model_usage, dict) and len(model_usage) == 1 else final_payload.get("model")
+            resolved = stream_model or (next(iter(model_usage)) if isinstance(model_usage, dict) and len(model_usage) == 1 else final_payload.get("model"))
             if not chunks:
                 on_chunk(text)
             return ConversationReply(
                 Redactor().text(text), "claude", selection.model,
                 resolved if isinstance(resolved, str) else None,
-                usage.get("input_tokens") if type(usage.get("input_tokens")) is int else None,
+                _claude_input_tokens(usage),
                 usage.get("output_tokens") if type(usage.get("output_tokens")) is int else None,
             )
         text, resolved, input_tokens, output_tokens = _parse_cli_reply("codex", bytes(buffers["stdout"]))
@@ -466,7 +496,7 @@ def converse(
     if no_tools:
         _verify_tool_free_cli(argv[0], workspace, runner)
     if use_stream:
-        return _stream_cli(selection, argv, prompt, workspace, timeout, on_chunk or (lambda chunk: None), cancel_event)
+        return _stream_cli(selection, argv, prompt, workspace, timeout, on_chunk or (lambda chunk: None), cancel_event, no_tools=no_tools)
     try:
         completed = runner(
             argv,

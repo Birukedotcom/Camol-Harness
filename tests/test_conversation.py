@@ -109,7 +109,7 @@ class ConversationTests(unittest.TestCase):
         runner.assert_not_called()
 
     def test_proposal_claude_requires_and_uses_no_tools_runtime_controls(self):
-        help_text = "--tools --safe-mode --strict-mcp-config --mcp-config --setting-sources --disable-slash-commands --permission-prompts --max-turns"
+        help_text = "--tools --safe-mode --strict-mcp-config --mcp-config --setting-sources --system-prompt --disable-slash-commands --permission-prompts --max-turns"
         payload = {"result": '{"questions":["Which oracle?"]}', "usage": {"input_tokens": 2, "output_tokens": 3}}
         calls = []
         def runner(argv, **kwargs):
@@ -123,6 +123,8 @@ class ConversationTests(unittest.TestCase):
         argv = calls[1][0]
         self.assertEqual(argv[argv.index("--tools") + 1], "")
         self.assertEqual(argv[argv.index("--setting-sources") + 1], "")
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "default")
+        self.assertIn("planning-only orchestrator", argv[argv.index("--system-prompt") + 1])
         self.assertIn("--strict-mcp-config", argv)
         self.assertIn('{"mcpServers":{}}', argv)
         self.assertEqual(reply.output_tokens, 3)
@@ -247,6 +249,49 @@ class ConversationTests(unittest.TestCase):
         finally:
             timer.cancel()
         self.assertLess(time.monotonic() - started, 2)
+
+    def test_claude_error_results_never_become_successful_partial_answers(self):
+        from camol.conversation import _parse_cli_reply, _stream_cli
+        import sys
+        for fields in ({"is_error": True, "subtype": "error_max_turns"},
+                       {"stop_reason": "max_tokens"}, {"terminal_reason": "interrupted"}):
+            payload = dict(type="result", result="I will write a plan", **fields)
+            with self.subTest(fields=fields):
+                with self.assertRaisesRegex(ConversationError, "did not complete"):
+                    _parse_cli_reply("claude", json.dumps(payload).encode())
+                script = "import sys; sys.stdin.read(); print(" + repr(json.dumps(payload)) + ")"
+                with self.assertRaisesRegex(ConversationError, "did not complete"):
+                    _stream_cli(parse_selection("claude:sonnet"), [sys.executable, "-c", script],
+                                "test", self.workspace, 3, lambda _: None)
+
+    def test_no_tools_stream_rejects_advertised_or_attempted_tools(self):
+        from camol.conversation import _stream_cli
+        import sys
+        records = [
+            {"type": "system", "subtype": "init", "tools": ["Write"]},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Write"}]}},
+            {"type": "stream_event", "event": {"content_block": {"type": "tool_use", "name": "Write"}}},
+        ]
+        for record in records:
+            script = "import sys; sys.stdin.read(); print(" + repr(json.dumps(record)) + ")"
+            with self.subTest(record=record), self.assertRaisesRegex(ConversationError, "no-tools"):
+                _stream_cli(parse_selection("claude:sonnet"), [sys.executable, "-c", script],
+                            "test", self.workspace, 3, lambda _: None, no_tools=True)
+
+    def test_stream_identity_survives_auxiliary_model_usage_and_counts_cached_input(self):
+        from camol.conversation import _stream_cli
+        import sys
+        records = [
+            {"type": "system", "subtype": "init", "tools": [], "model": "claude-sonnet-test"},
+            {"type": "result", "subtype": "success", "result": "Here is the plan.",
+             "modelUsage": {"claude-sonnet-test": {}, "auxiliary": {}},
+             "usage": {"input_tokens": 2, "cache_read_input_tokens": 40, "cache_creation_input_tokens": 10, "output_tokens": 8}},
+        ]
+        script = "import sys; sys.stdin.read(); print(" + repr("\n".join(json.dumps(r) for r in records)) + ")"
+        reply = _stream_cli(parse_selection("claude:sonnet"), [sys.executable, "-c", script],
+                            "test", self.workspace, 3, lambda _: None, no_tools=True)
+        self.assertEqual(reply.resolved_model, "claude-sonnet-test")
+        self.assertEqual(reply.input_tokens, 52)
 
 
 if __name__ == "__main__":

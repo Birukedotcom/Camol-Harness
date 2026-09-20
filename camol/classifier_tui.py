@@ -11,6 +11,11 @@ from .tui import CamolApp, PromptArea, SlashCommandScreen
 
 class ClassifierPreviewApp(CamolApp):
     SUB_TITLE = "local classifier preview"
+    MODEL_CARDS = (("small", "GLiClass Small"), ("qwen", "GLiClass Qwen 0.5B"))
+    COMMANDS = PREVIEW_COMMANDS
+    PANEL_TITLE = "ROUTE COMPARISON"
+    PANEL_NOTE = "Scores rank these candidate routes. They are not certainty or permission to execute."
+    PLACEHOLDER = "Test a request · Enter compares · Shift+Enter adds a line · / opens preview commands"
     CSS = CamolApp.CSS + """
     #classifier-panel { width: 44%; min-width: 28; height: 1fr; background: #07100a; padding: 0 1; }
     #classifier-heading { height: auto; color: #68e892; text-style: bold; padding: 1 0; }
@@ -36,16 +41,16 @@ class ClassifierPreviewApp(CamolApp):
         event.prevent_default()
         panel = VerticalScroll(id="classifier-panel")
         await self.query_one("#work-area").mount(panel)
-        await panel.mount(Static("ROUTE COMPARISON", id="classifier-heading"))
-        for name, title in (("small", "GLiClass Small"), ("qwen", "GLiClass Qwen 0.5B")):
+        await panel.mount(Static(self.PANEL_TITLE, id="classifier-heading"))
+        for name, title in self.MODEL_CARDS:
             card = Vertical(classes="classifier-card")
             await panel.mount(card)
             await card.mount(Static(title, classes="model-name", markup=False),
                              Static("Loading local weights…", id="result-" + name,
                                     classes="classifier-result", markup=False))
-        await panel.mount(Static("Scores rank these candidate routes. They are not certainty or permission to execute.", id="classifier-note"),
+        await panel.mount(Static(self.PANEL_NOTE, id="classifier-note"),
                           Static("Task context: none · use /state TEXT", id="classifier-context", markup=False))
-        self.query_one("#prompt", PromptArea).placeholder = "Test a request · Enter compares · Shift+Enter adds a line · / opens preview commands"
+        self.query_one("#prompt", PromptArea).placeholder = self.PLACEHOLDER
         self.query_one("#transcript", RichLog).min_width = 0
         self.query_one(Footer).compact = True
         await super().on_mount()
@@ -81,7 +86,7 @@ class ClassifierPreviewApp(CamolApp):
         if prompt.text != "/" or self._slash_palette_open:
             return
         self._slash_palette_open = True
-        self.push_screen(SlashCommandScreen(PREVIEW_COMMANDS), self._slash_command_selected)
+        self.push_screen(SlashCommandScreen(self.COMMANDS), self._slash_command_selected)
 
     def _submit(self, text):
         if not self.controller._command_lock.locked():
@@ -93,7 +98,7 @@ class ClassifierPreviewApp(CamolApp):
         if self._client_work.closed:
             return
         if getattr(response, "reset_results", False):
-            for name in ("small", "qwen"):
+            for name, _ in self.MODEL_CARDS:
                 self.query_one("#result-" + name, Static).update("Waiting for a request.")
         for row in getattr(response, "comparison", None) or ():
             result = Text()
@@ -105,7 +110,7 @@ class ClassifierPreviewApp(CamolApp):
                 result.append("Too uncertain to propose a route.", style="yellow")
             self.query_one("#result-" + row["model"], Static).update(result)
         if self.controller.ready and not getattr(response, "comparison", None):
-            for name in ("small", "qwen"):
+            for name, _ in self.MODEL_CARDS:
                 widget = self.query_one("#result-" + name, Static)
                 if "Loading local weights" in str(widget.render()):
                     widget.update("Ready — enter a request.")
@@ -122,7 +127,7 @@ class ClassifierPreviewApp(CamolApp):
         self._dispatch_input("/clear")
 
     def on_resize(self):
-        self._resize_preview()
+        self.call_after_refresh(self._resize_preview)
 
     def _resize_preview(self):
         self.set_class(self.size.width < 85, "preview-narrow")

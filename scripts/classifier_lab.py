@@ -393,6 +393,34 @@ def tui(args, labels):
     return run_preview(controller, show_boot=not args.no_boot)
 
 
+def chat(args, labels):
+    sys.path.insert(0, str(ROOT))
+    from camol.routed_chat import RoutedChatController
+    from camol.routed_tui import run_chat
+
+    models = []
+
+    def warm():
+        if not models:
+            models.append(Classifier("qwen", args.threads, "bidirectional"))
+
+    def predict(text, state):
+        warm()
+        return compare(models, text, labels["routes"], state, args.threshold, args.margin)[0]
+
+    controller = RoutedChatController(
+        predict, labels["routes"], warm=warm,
+        workspace=ROOT / ".camol/classifier-lab/chat-workspace",
+        state_root=ROOT / ".camol/classifier-lab/chat-state",
+        model=args.llm, endpoint=args.endpoint,
+    )
+    if args.state:
+        response = controller.handle("/state " + args.state)
+        if response.error:
+            raise ValueError("could not set chat context: " + " ".join(response.messages))
+    return run_chat(controller, show_boot=not args.no_boot)
+
+
 def bounded_float(value):
     number = float(value)
     if not math.isfinite(number) or not 0 <= number <= 1:
@@ -409,7 +437,7 @@ def positive_int(value):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", nargs="?", choices=("tui", "interactive", "compare", "bench", "doctor", "download"), default="tui")
+    parser.add_argument("mode", nargs="?", choices=("chat", "tui", "interactive", "compare", "bench", "doctor", "download"), default="tui")
     parser.add_argument("text", nargs="?", help="prompt for compare")
     parser.add_argument("--state", default="", help="observed task state supplied to both models")
     parser.add_argument("--models", nargs="+", choices=tuple(MODELS), default=list(MODELS))
@@ -424,6 +452,8 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, help="save JSON, including input text/state")
     parser.add_argument("--json", action="store_true", help="machine-readable stdout for compare/bench")
     parser.add_argument("--no-boot", action="store_true", help="skip Camol boot art in the terminal preview")
+    parser.add_argument("--llm", default=None, help="chat generator: claude:sonnet or local:MODEL; otherwise restore the saved model")
+    parser.add_argument("--endpoint", default="http://127.0.0.1:11434/v1", help="local chat generator's loopback OpenAI-compatible endpoint")
     args = parser.parse_args(argv)
     if len(set(args.models)) != len(args.models):
         parser.error("models must be unique")
@@ -433,11 +463,11 @@ def main(argv=None):
         parser.error("a prompt argument is only supported by compare")
     if args.mode == "bench" and args.state:
         parser.error("put per-case state in the benchmark JSONL instead of --state")
-    if args.mode in {"interactive", "tui"} and (args.json or args.output):
+    if args.mode in {"interactive", "tui", "chat"} and (args.json or args.output):
         parser.error("--json and --output are supported by compare/bench/doctor")
     if args.mode == "tui" and args.models != list(MODELS):
         parser.error("the native comparison view requires both models; use compare/interactive for a single model")
-    if args.mode == "tui" and args.qwen_attention != "bidirectional":
+    if args.mode in {"tui", "chat"} and args.qwen_attention != "bidirectional":
         parser.error("the native comparison view requires corrected Qwen attention; use doctor for the upstream control")
     try:
         if args.qwen_attention == "upstream" and "qwen" in args.models:
@@ -458,6 +488,8 @@ def main(argv=None):
         routes = labels["routes"]
         if args.mode == "tui":
             return tui(args, labels)
+        if args.mode == "chat":
+            return chat(args, labels)
         cases = load_cases(args.cases, routes) if args.mode == "bench" else None
         if args.mode == "compare":
             input_text(args.text, args.state)

@@ -59,7 +59,7 @@ class Completed:
 
 
 class Help(Completed):
-    stdout = b"--tools --safe-mode --strict-mcp-config --mcp-config --setting-sources --disable-slash-commands --permission-prompts --max-turns --max-budget-usd --no-session-persistence --output-format"
+    stdout = b"--tools --safe-mode --strict-mcp-config --mcp-config --setting-sources --system-prompt --disable-slash-commands --permission-prompts --max-turns --max-budget-usd --no-session-persistence --output-format"
 
 
 def fixture_runner(result):

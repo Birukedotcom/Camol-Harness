@@ -316,7 +316,7 @@ class ProposalUITests(unittest.TestCase):
         def cli(argv, **kwargs):
             invocations.append(argv)
             if "--help" in argv:
-                output = "--tools --safe-mode --strict-mcp-config --mcp-config --setting-sources --disable-slash-commands --permission-prompts --max-turns"
+                output = "--tools --safe-mode --strict-mcp-config --mcp-config --setting-sources --system-prompt --disable-slash-commands --permission-prompts --max-turns"
             else:
                 self.assertEqual(argv[argv.index("--tools") + 1], "")
                 output = json.dumps({"result": json.dumps({"runbook": proposed(self.seed)}),
