@@ -1,0 +1,431 @@
+import asyncio
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import Mock, AsyncMock, patch
+
+from camol.sandbox import process_start_fingerprint
+from camol.schema import canonical_digest
+from camol.supervisor import (
+    LeaderLock,
+    Supervisor,
+    SupervisorError,
+    SupervisorPaths,
+    send_control,
+    send_control_v2,
+    spawn_supervisor,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class SupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_absent_orphan_leader_does_not_hide_a_surviving_group(self):
+        supervisor = Supervisor(ROOT / "examples/three-agent-runbook.json", self.source, self.state)
+        record = self.state / "packets" / "scope.invocation.json"
+        record.parent.mkdir(parents=True)
+        payload = {"schema": "camol.process_invocation", "schema_version": 1, "state": "active",
+            "owner_pid": 999998, "pid": 999999, "pgid": 999999, "process_started": "Mon Sep 7 01:02:03 2026",
+            "cwd": str(self.source), "argv_digest": canonical_digest(["fixture"]), "policy_digest": canonical_digest({}),
+            "started_at": "2026-09-07T00:00:00+00:00", "finished_at": None, "exit_code": None}
+        record.write_text(json.dumps(payload))
+        with patch("camol.supervisor.os.kill", side_effect=ProcessLookupError), patch("camol.supervisor.os.killpg") as group_probe:
+            recovered = supervisor._scan_invocations()
+        self.assertEqual(len(recovered), 1)
+        group_probe.assert_called_once_with(999999, 0)
+        self.assertEqual(json.loads(record.read_text())["state"], "active")
+        with patch("camol.supervisor.os.kill", side_effect=ProcessLookupError), patch("camol.supervisor.os.killpg", side_effect=ProcessLookupError):
+            self.assertEqual(supervisor._scan_invocations(), [])
+        self.assertEqual(json.loads(record.read_text())["state"], "orphan_dead")
+
+    async def test_force_stop_rechecks_exact_target_after_cancellation_await(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        supervisor.run_id = "original"
+        supervisor.orchestrator = Mock(state=Mock(return_value={"plan_digest": "original-plan"}))
+        supervisor.runner = Mock()
+        supervisor.orphans = []
+        supervisor._shutdown = asyncio.Event()
+        async def driver():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                supervisor.run_id = "changed-run"
+        supervisor._driver_task = asyncio.create_task(driver())
+        await asyncio.sleep(0)
+        await supervisor._force_shutdown("owner", expected_run_id="original", expected_plan_digest="original-plan")
+        supervisor.runner.force_interrupt.assert_not_called()
+        self.assertFalse(supervisor._shutdown.is_set())
+        self.assertEqual(supervisor.mode, "operator_attention")
+
+    async def test_weak_persisted_orphan_identity_never_authorizes_a_signal_or_false_cleanup(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        orphan = {"pid": 1234, "pgid": 1234, "process_started": "Mon Sep 7 01:02:03 2026", "path": "/not-touched"}
+        supervisor.orphans = [orphan]
+        supervisor._replace_json = Mock()
+        with patch("camol.supervisor.os.killpg") as signal_group:
+            with self.assertRaisesRegex(SupervisorError, "cannot be proven"):
+                await supervisor._terminate_orphans()
+        signal_group.assert_not_called()
+        supervisor._replace_json.assert_not_called()
+        self.assertEqual(supervisor.orphans, [orphan])
+
+    async def test_shared_capacity_wait_wakes_on_cursor_local_control_or_deadline(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        supervisor._wake = asyncio.Event()
+        supervisor.runner = Mock()
+        supervisor.runner.capacity.change_cursor.return_value = 5
+        supervisor.orchestrator = Mock(clock=lambda: datetime.now(timezone.utc))
+        waiting = asyncio.create_task(supervisor._wait_capacity_change({"capacity_waits": {"task": {}}}, 5))
+        await asyncio.sleep(0.03)
+        self.assertFalse(waiting.done(), "unchanged broker must not restart readiness probes")
+        supervisor.runner.capacity.change_cursor.return_value = 6
+        await asyncio.wait_for(waiting, timeout=1.2)
+        supervisor.runner.capacity.change_cursor.return_value = 5
+        waiting = asyncio.create_task(supervisor._wait_capacity_change({"capacity_waits": {"task": {}}}, 5))
+        supervisor._wake.set()
+        await asyncio.wait_for(waiting, timeout=0.1)
+        supervisor._wake.clear()
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        await asyncio.wait_for(supervisor._wait_capacity_change({"capacity_waits": {"task": {"wake_at": expired}}}, 5), timeout=0.1)
+
+    async def asyncSetUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.source = root / "source"
+        self.state = root / "state"
+        (self.source / "examples").mkdir(parents=True)
+        shutil.copy(ROOT / "examples/fake_agent.py", self.source / "examples/fake_agent.py")
+        subprocess.run(["git", "-C", str(self.source), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "config", "user.email", "test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.source), "commit", "-q", "-m", "fixture"], check=True)
+
+    async def asyncTearDown(self):
+        self.temporary.cleanup()
+
+    async def _wait_for(self, path, exists=True):
+        for _ in range(100):
+            if path.exists() is exists:
+                return
+            await asyncio.sleep(0.02)
+        self.fail("timed out waiting for {} existence={}".format(path, exists))
+
+    async def test_authenticated_detachable_control_and_single_leader(self):
+        supervisor = Supervisor(
+            ROOT / "examples/three-agent-runbook.json", self.source, self.state,
+        )
+        serving = asyncio.create_task(supervisor.serve())
+        await self._wait_for(supervisor.paths.socket)
+        self.assertEqual(stat.S_IMODE(supervisor.paths.socket.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(supervisor.paths.token.stat().st_mode), 0o600)
+        status = await send_control(self.state, "status")
+        self.assertEqual(status["result"]["mode"], "awaiting_approval")
+        self.assertFalse(serving.done(), "closing a client must not stop the supervisor")
+
+        reader, writer = await asyncio.open_unix_connection(str(supervisor.paths.socket))
+        writer.write((json.dumps({
+            "schema": "camol.control_request", "schema_version": 1,
+            "token": "wrong-token", "command": "status",
+        }) + "\n").encode())
+        await writer.drain()
+        denied = json.loads(await reader.readline())
+        writer.close()
+        await writer.wait_closed()
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["error"], "control authentication failed")
+
+        contender = LeaderLock(supervisor.paths.lock)
+        with self.assertRaisesRegex(SupervisorError, "another Camol supervisor"):
+            contender.acquire()
+
+        await send_control(self.state, "drain")
+        await send_control(self.state, "approve", requested_by="human-owner")
+        for _ in range(100):
+            current = await send_control(self.state, "status")
+            if current["result"]["mode"] == "drained":
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual(current["result"]["run"]["approved_by"], "human-owner")
+        self.assertEqual(current["result"]["mode"], "drained")
+        await send_control(self.state, "stop", requested_by="human-owner")
+        await asyncio.wait_for(serving, timeout=5)
+        self.assertFalse(supervisor.paths.socket.exists())
+        self.assertFalse(supervisor.paths.pid.exists())
+
+    async def test_control_client_never_creates_credentials_when_daemon_is_absent(self):
+        with self.assertRaisesRegex(SupervisorError, "control token"):
+            await send_control(self.state, "status")
+        self.assertFalse((self.state / "control/control.token").exists())
+
+    async def test_driver_exception_is_visible_and_control_remains_responsive(self):
+        supervisor = Supervisor(ROOT / "examples/three-agent-runbook.json", self.source, self.state)
+        serving = asyncio.create_task(supervisor.serve())
+        await self._wait_for(supervisor.paths.socket)
+        try:
+            supervisor.runner.run_until_terminal = AsyncMock(side_effect=RuntimeError("injected driver failure"))
+            await send_control(self.state, "approve", requested_by="human-owner")
+            for _ in range(100):
+                status = (await send_control(self.state, "status"))["result"]
+                if status["mode"] == "operator_attention":
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(status["mode"], "operator_attention")
+            self.assertIn("injected driver failure", status["last_error"])
+            self.assertTrue((await send_control(self.state, "ping"))["ok"])
+            await send_control(self.state, "resume")
+            for _ in range(100):
+                if supervisor.runner.run_until_terminal.await_count == 2:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(supervisor.runner.run_until_terminal.await_count, 2)
+        finally:
+            await send_control(self.state, "stop")
+            await asyncio.wait_for(serving, timeout=5)
+
+    async def test_long_state_path_uses_private_hashed_runtime_socket(self):
+        state = Path(self.temporary.name) / ("nested-" + "x" * 90) / "state"
+        paths = SupervisorPaths.under(state)
+        self.assertLess(len(os.fsencode(str(paths.socket))), 100)
+        self.assertNotEqual(paths.socket, paths.control_dir / "camol.sock")
+        self.assertIn("camol-{}-".format(os.getuid()), paths.socket.parent.name)
+
+    async def test_v2_plan_events_and_box_views_are_typed_and_reattachable(self):
+        supervisor = Supervisor(
+            ROOT / "examples/three-agent-runbook.json", self.source, self.state,
+        )
+        serving = asyncio.create_task(supervisor.serve())
+        await self._wait_for(supervisor.paths.socket)
+        try:
+            plan = await send_control_v2(self.state, "plan")
+            self.assertEqual(plan["result"]["schema"], "camol.control_plan")
+            self.assertEqual(plan["result"]["plan_digest"], "sha256:2850aa84a60f5177cd17f38ed1d6c3de9c921d2d2bdf4004c8ac29f77e3ee2ff")
+
+            first = await send_control_v2(
+                self.state, "events", params={"after_seq": 0, "limit": 5, "wait_ms": 0}
+            )
+            self.assertEqual(first["result"]["schema"], "camol.control_events")
+            self.assertTrue(first["result"]["events"])
+            resumed = await send_control_v2(
+                self.state,
+                "events",
+                params={"after_seq": first["result"]["next_seq"], "limit": 5, "wait_ms": 20},
+            )
+            self.assertEqual(resumed["result"]["events"], [])
+
+            box = await send_control_v2(
+                self.state, "box", params={"box_id": "builder", "after_seq": 0, "limit": 20}
+            )
+            self.assertEqual(box["result"]["schema"], "camol.control_box")
+            self.assertEqual(box["result"]["box_id"], "builder")
+            self.assertIn("inventory", box["result"]["eligible_task_ids"])
+        finally:
+            await send_control(self.state, "stop")
+            await asyncio.wait_for(serving, timeout=5)
+
+    async def test_v2_protocol_rejects_unknown_params_and_bad_cursors(self):
+        supervisor = Supervisor(
+            ROOT / "examples/three-agent-runbook.json", self.source, self.state,
+        )
+        serving = asyncio.create_task(supervisor.serve())
+        await self._wait_for(supervisor.paths.socket)
+        try:
+            with self.assertRaisesRegex(SupervisorError, "unknown fields"):
+                await send_control_v2(self.state, "events", params={"secret": "no"})
+            with self.assertRaisesRegex(SupervisorError, "non-negative"):
+                await send_control_v2(self.state, "events", params={"after_seq": -1})
+            with self.assertRaisesRegex(SupervisorError, "unknown box"):
+                await send_control_v2(self.state, "box", params={"box_id": "missing"})
+        finally:
+            await send_control(self.state, "stop")
+            await asyncio.wait_for(serving, timeout=5)
+
+    async def test_box_tail_filters_unassigned_tasks_and_keeps_latest_events(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        supervisor.run_id = "run"
+        supervisor.runbook = {
+            "agents": [{
+                "id": "builder", "role": "build", "capabilities": ["code"],
+                "adapter": {"kind": "process"},
+            }],
+            "tasks": [
+                {"id": "owned", "capabilities": ["code"]},
+                {"id": "other", "capabilities": ["code"]},
+            ],
+        }
+        state = {"tasks": {
+            "owned": {"agent_id": "builder"},
+            "other": {"agent_id": "another"},
+        }}
+        supervisor.orchestrator = Mock(state=Mock(return_value=state))
+        events = [
+            {"seq": index, "actor_id": "orchestrator", "payload": {
+                "task_id": "owned", "agent_id": "builder",
+            }}
+            for index in range(1, 121)
+        ] + [{
+            "seq": 121, "actor_id": "orchestrator", "payload": {
+                "task_id": "other", "agent_id": "another",
+            },
+        }]
+        supervisor.store = Mock(read=Mock(return_value=events))
+        supervisor._boxes = Mock(return_value={"boxes": []})
+        view = supervisor._box("builder", 0, 100, tail=True)
+        self.assertEqual(len(view["events"]), 100)
+        self.assertEqual(view["events"][0]["seq"], 21)
+        self.assertEqual(view["events"][-1]["seq"], 120)
+
+    async def test_box_cursor_uses_assignment_history_before_the_cursor(self):
+        supervisor = Supervisor.__new__(Supervisor)
+        supervisor.run_id = "run"
+        supervisor.runbook = {
+            "agents": [{
+                "id": "builder", "role": "build", "capabilities": ["code"],
+                "adapter": {"kind": "process"},
+            }],
+            "tasks": [
+                {"id": "owned", "capabilities": ["code"]},
+                {"id": "other", "capabilities": ["code"]},
+            ],
+        }
+        supervisor.orchestrator = Mock(state=Mock(return_value={"tasks": {
+            "owned": {"agent_id": None}, "other": {"agent_id": None},
+        }}))
+        supervisor.store = Mock(read=Mock(return_value=[
+            {"seq": 1, "actor_id": "orchestrator", "payload": {
+                "task_id": "owned", "agent_id": "builder",
+            }},
+            {"seq": 2, "actor_id": "orchestrator", "payload": {
+                "task_id": "owned", "kind": "retry",
+            }},
+            {"seq": 3, "actor_id": "orchestrator", "payload": {
+                "task_id": "other", "kind": "retry",
+            }},
+        ]))
+        supervisor._boxes = Mock(return_value={"boxes": []})
+        view = supervisor._box("builder", 1, 100)
+        self.assertEqual([event["seq"] for event in view["events"]], [2])
+
+    async def test_spawn_retries_past_stale_control_files(self):
+        paths = SupervisorPaths.under(self.state)
+        paths.control_dir.mkdir(parents=True)
+        paths.socket.write_text("stale", encoding="utf-8")
+        paths.token.write_text("a" * 64 + "\n", encoding="utf-8")
+        paths.token.chmod(0o600)
+        started = await asyncio.to_thread(
+            spawn_supervisor,
+            ROOT / "examples/three-agent-runbook.json",
+            self.source,
+            self.state,
+        )
+        try:
+            self.assertTrue(started["started"])
+            self.assertEqual((await send_control(self.state, "status"))["result"]["mode"], "awaiting_approval")
+        finally:
+            if paths.socket.exists():
+                await send_control(self.state, "stop", requested_by="test-owner")
+                await self._wait_for(paths.socket, exists=False)
+
+    async def test_database_and_control_symlink_must_stay_inside_state(self):
+        outside = Path(self.temporary.name) / "outside"
+        outside.mkdir()
+        self.state.mkdir()
+        (self.state / "control").symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(SupervisorError, "must not be a symlink"):
+            Supervisor(ROOT / "examples/three-agent-runbook.json", self.source, self.state)
+        (self.state / "control").unlink()
+        with self.assertRaisesRegex(SupervisorError, "database must stay"):
+            Supervisor(
+                ROOT / "examples/three-agent-runbook.json", self.source, self.state,
+                database=outside / "db.sqlite3",
+            )
+
+    async def test_live_orphan_blocks_resume_and_force_stop_until_external_reconciliation(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+        record = self.state / "packets/run/task/turn-001.invocation.json"
+        record.parent.mkdir(parents=True)
+        payload = {
+            "schema": "camol.process_invocation",
+            "schema_version": 1,
+            "state": "active",
+            "owner_pid": 999999,
+            "pid": process.pid,
+            "pgid": process.pid,
+            "process_started": process_start_fingerprint(process.pid),
+            "cwd": str(self.source),
+            "argv_digest": canonical_digest([sys.executable, "-c", "sleep"]),
+            "policy_digest": canonical_digest({"fixture": "policy"}),
+            "started_at": "2026-09-03T00:00:00+00:00",
+            "finished_at": None,
+            "exit_code": None,
+        }
+        record.write_text(json.dumps(payload), encoding="utf-8")
+        supervisor = Supervisor(ROOT / "examples/three-agent-runbook.json", self.source, self.state)
+        serving = asyncio.create_task(supervisor.serve())
+        try:
+            await self._wait_for(supervisor.paths.socket)
+            for _ in range(100):
+                status = await send_control(self.state, "status")
+                if status["result"]["mode"] == "orphaned":
+                    break
+                await asyncio.sleep(0.02)
+            self.assertEqual(status["result"]["mode"], "orphaned")
+            self.assertEqual(status["result"]["orphan_invocations"][0]["pid"], process.pid)
+            with self.assertRaisesRegex(SupervisorError, "external operator reconciliation"):
+                await send_control(self.state, "resume")
+            with self.assertRaisesRegex(SupervisorError, "cannot be proven"):
+                await send_control(self.state, "force-stop", requested_by="human-owner")
+            self.assertIsNone(process.poll())
+            self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["state"], "active")
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, 9)
+                process.wait()
+            if not serving.done():
+                serving.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await serving
+
+    async def test_cli_start_really_detaches_after_source_checkout_changes_cwd(self):
+        environment = {
+            name: os.environ[name]
+            for name in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+            if name in os.environ
+        }
+        command = [
+            sys.executable, "-m", "camol", "start", str(ROOT / "examples/three-agent-runbook.json"),
+            "--workspace", str(self.source), "--state-dir", str(self.state),
+        ]
+        started = subprocess.run(
+            command, cwd=str(ROOT), env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+        )
+        self.assertEqual(started.returncode, 0, started.stderr)
+        response = json.loads(started.stdout)
+        self.assertGreater(response["pid"], 1)
+        status = subprocess.run(
+            [sys.executable, "-m", "camol", "ctl", "status", "--state-dir", str(self.state)],
+            cwd=str(ROOT), env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+        )
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertEqual(json.loads(status.stdout)["mode"], "awaiting_approval")
+        stopped = subprocess.run(
+            [sys.executable, "-m", "camol", "ctl", "stop", "--state-dir", str(self.state)],
+            cwd=str(ROOT), env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+        )
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        await self._wait_for(self.state / "control/camol.sock", exists=False)
+
+
+if __name__ == "__main__":
+    unittest.main()

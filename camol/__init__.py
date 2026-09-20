@@ -1,15 +1,65 @@
 """Camol: a persistent, plan-driven multi-agent orchestration harness."""
 
+from ._version import __version__
+
 from .hillclimb import compare_vectors
 from .orchestrator import Orchestrator
-from .runbook import RunbookError, load_runbook, validate_runbook
+from .readiness import (
+    AuthorityPolicy,
+    BoxBinding,
+    CapabilityGrant,
+    CapacityReservation,
+    LeaseFence,
+    ProbePolicy,
+    ProbeRequirement,
+    ProbeResult,
+    ReadinessReceipt,
+    WaitingReason,
+    WorkspaceReceipt,
+    assess_ready_to_lease,
+)
+from .runbook import (
+    RunbookError,
+    load_runbook,
+    migrate_runbook_v1_to_v2,
+    migrate_runbook_v2_to_v3,
+    validate_runbook,
+)
+from .schema import SchemaError, canonical_digest, canonical_json_bytes
 from .store import SQLiteEventStore
+from .api import Harness
+from .debugger import Debugger, DebuggerError
+from .watchers import ObserverReceipt, Watcher, WatcherError, WatchSpec
 
 __all__ = [
+    "Harness",
+    "Debugger",
+    "DebuggerError",
+    "ObserverReceipt",
+    "Watcher",
+    "WatcherError",
+    "WatchSpec",
+    "AuthorityPolicy",
+    "BoxBinding",
+    "CapabilityGrant",
+    "CapacityReservation",
+    "LeaseFence",
     "Orchestrator",
+    "ProbePolicy",
+    "ProbeRequirement",
+    "ProbeResult",
+    "ReadinessReceipt",
     "RunbookError",
     "SQLiteEventStore",
+    "SchemaError",
+    "WaitingReason",
+    "WorkspaceReceipt",
+    "assess_ready_to_lease",
+    "canonical_digest",
+    "canonical_json_bytes",
     "compare_vectors",
     "load_runbook",
+    "migrate_runbook_v1_to_v2",
+    "migrate_runbook_v2_to_v3",
     "validate_runbook",
 ]

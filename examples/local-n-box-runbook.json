@@ -1,0 +1,202 @@
+{
+  "schema_version": 4,
+  "run": {
+    "id": "local-n-box-demo",
+    "objective": "Prove a local three-worker plan, build, independent-review, and integration loop with persistent evidence.",
+    "max_concurrency": 3,
+    "completion": [
+      "all_tasks_succeeded",
+      "all_required_evidence_present",
+      "all_verifications_green",
+      "no_open_blockers",
+      "no_open_debug_cases"
+    ],
+    "token_policy": {
+      "max_tokens_per_turn": 4000,
+      "checkpoint_reserve": 400,
+      "max_total_tokens": 30000,
+      "max_turns_per_task": 6
+    },
+    "readiness_policy": {
+      "receipt_ttl_seconds": 300
+    }
+  },
+  "rules": [
+    {
+      "id": "orchestrator-authority",
+      "text": "Only the orchestrator may assign work, advance task state, or accept completion.",
+      "enforcement": "hard"
+    },
+    {
+      "id": "bounded-context",
+      "text": "Use the current task packet, dependency receipts, and last checkpoint; do not depend on hidden chat history.",
+      "enforcement": "hard"
+    },
+    {
+      "id": "evidence-before-claim",
+      "text": "Return command, artifact, and claim evidence before asking for verification.",
+      "enforcement": "hard"
+    },
+    {
+      "id": "no-self-verification",
+      "text": "Agent claims do not advance completion; external verification commands decide the gate.",
+      "enforcement": "hard"
+    }
+  ],
+  "agents": [
+    {
+      "id": "strategist",
+      "role": "Plan and maintain the task contract",
+      "box": "camol-boxes/strategist",
+      "capabilities": ["plan", "docs"],
+      "adapter": {
+        "kind": "process",
+        "argv": ["python3", "{workspace}/examples/fake_agent.py", "{packet}", "{result}"],
+        "timeout_seconds": 60
+      },
+      "trust_tier": "developer_trusted"
+    },
+    {
+      "id": "builder",
+      "role": "Inspect and implement bounded changes",
+      "box": "camol-boxes/builder",
+      "capabilities": ["inspect", "code", "test"],
+      "adapter": {
+        "kind": "process",
+        "argv": ["python3", "{workspace}/examples/fake_agent.py", "{packet}", "{result}"],
+        "timeout_seconds": 60
+      },
+      "trust_tier": "developer_trusted"
+    },
+    {
+      "id": "verifier",
+      "role": "Challenge claims and run independent verification",
+      "box": "camol-boxes/verifier",
+      "capabilities": ["review", "test"],
+      "adapter": {
+        "kind": "process",
+        "argv": ["python3", "{workspace}/examples/fake_agent.py", "{packet}", "{result}"],
+        "timeout_seconds": 60
+      },
+      "trust_tier": "developer_trusted"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "frame",
+      "goal": "Turn the objective into a frozen and falsifiable work contract.",
+      "depends_on": [],
+      "capabilities": ["plan"],
+      "acceptance": ["The objective, exclusions, completion conditions, and evidence contract are explicit."],
+      "required_evidence": ["command", "artifact", "claim", "test_result"],
+      "max_attempts": 2,
+      "steps": [
+        {
+          "id": "write-contract",
+          "instruction": "Write the plan contract into the isolated task worktree without expanding scope.",
+          "commands": [
+            {
+              "purpose": "Create the contract artifact",
+              "argv": ["python3", "-c", "from pathlib import Path; Path('contract.txt').write_text('objective + exclusions + evidence + completion\\n')"]
+            }
+          ],
+          "completion": ["contract.txt exists and names all four contract dimensions"]
+        }
+      ],
+      "verification": [
+        {
+          "purpose": "Verify the contract artifact",
+          "argv": ["python3", "-c", "from pathlib import Path; p=Path('contract.txt'); assert p.exists() and 'completion' in p.read_text()"]
+        }
+      ],
+      "evaluator_assets": []
+    },
+    {
+      "id": "inventory",
+      "goal": "Inspect the execution surface and produce a bounded implementation inventory.",
+      "depends_on": [],
+      "capabilities": ["inspect"],
+      "acceptance": ["The inventory identifies state, command, evidence, and adapter boundaries."],
+      "required_evidence": ["command", "artifact", "claim", "test_result"],
+      "max_attempts": 2,
+      "steps": [
+        {
+          "id": "write-inventory",
+          "instruction": "Record the minimum implementation boundary for the requested change.",
+          "commands": [
+            {
+              "purpose": "Create the implementation inventory",
+              "argv": ["python3", "-c", "from pathlib import Path; Path('inventory.txt').write_text('state\\ncommands\\nevidence\\nadapters\\n')"]
+            }
+          ],
+          "completion": ["inventory.txt contains the four required boundaries"]
+        }
+      ],
+      "verification": [
+        {
+          "purpose": "Verify the implementation inventory",
+          "argv": ["python3", "-c", "from pathlib import Path; t=Path('inventory.txt').read_text(); assert all(x in t for x in ['state','commands','evidence','adapters'])"]
+        }
+      ],
+      "evaluator_assets": []
+    },
+    {
+      "id": "challenge",
+      "goal": "Identify failure modes that would create a false completion claim.",
+      "depends_on": [],
+      "capabilities": ["review"],
+      "acceptance": ["The review names restart, lease, evidence, and token-budget failure modes."],
+      "required_evidence": ["command", "artifact", "claim", "test_result"],
+      "max_attempts": 2,
+      "steps": [
+        {
+          "id": "write-risks",
+          "instruction": "Write the false-green risks and the gate that catches each one.",
+          "commands": [
+            {
+              "purpose": "Create the risk register",
+              "argv": ["python3", "-c", "from pathlib import Path; Path('risks.txt').write_text('restart\\nlease\\nevidence\\ntoken-budget\\n')"]
+            }
+          ],
+          "completion": ["risks.txt names all four required failure families"]
+        }
+      ],
+      "verification": [
+        {
+          "purpose": "Verify the risk register",
+          "argv": ["python3", "-c", "from pathlib import Path; t=Path('risks.txt').read_text(); assert all(x in t for x in ['restart','lease','evidence','token-budget'])"]
+        }
+      ],
+      "evaluator_assets": []
+    },
+    {
+      "id": "integrate",
+      "goal": "Integrate the plan, inventory, and independent challenge into a verified result.",
+      "depends_on": ["frame", "inventory", "challenge"],
+      "capabilities": ["code", "test"],
+      "acceptance": ["The integration consumes receipts from all three prerequisite tasks and emits a verified artifact."],
+      "required_evidence": ["command", "artifact", "claim", "test_result"],
+      "max_attempts": 2,
+      "steps": [
+        {
+          "id": "compose",
+          "instruction": "Use the three dependency receipts to create the integrated result.",
+          "commands": [
+            {
+              "purpose": "Create the integrated result",
+              "argv": ["python3", "-c", "from pathlib import Path; Path('integration.txt').write_text('frame + inventory + challenge = verified integration\\n')"]
+            }
+          ],
+          "completion": ["integration.txt explicitly names all three prerequisite contributions"]
+        }
+      ],
+      "verification": [
+        {
+          "purpose": "Verify the integrated result",
+          "argv": ["python3", "-c", "from pathlib import Path; t=Path('integration.txt').read_text(); assert all(x in t for x in ['frame','inventory','challenge'])"]
+        }
+      ],
+      "evaluator_assets": []
+    }
+  ]
+}

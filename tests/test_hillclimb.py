@@ -4,6 +4,18 @@ from camol.hillclimb import compare_vectors
 
 
 class HillClimbTests(unittest.TestCase):
+    def test_nonfinite_guardrail_cannot_disappear_behind_quality_improvement(self):
+        for value in (float("nan"), float("inf"), True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                compare_vectors({"quality": 1, "safety": 0}, {"quality": 2, "safety": value},
+                                [{"name": "quality", "direction": "maximize"}, {"name": "safety", "direction": "minimize"}])
+
+    def test_undeclared_dimensions_and_negative_tolerances_are_rejected(self):
+        with self.assertRaises(ValueError):
+            compare_vectors({"quality": 1, "safety": 0}, {"quality": 2, "safety": 10}, [{"name": "quality", "direction": "maximize"}])
+        with self.assertRaises(ValueError):
+            compare_vectors({"quality": 1}, {"quality": 2}, [{"name": "quality", "direction": "maximize", "regression_tolerance": -1}])
+
     def test_large_improvement_cannot_hide_a_guardrail_regression(self):
         verdict = compare_vectors(
             baseline={"verified_steps_per_1k_tokens": 1.0, "failure_rate": 0.1},

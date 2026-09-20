@@ -1,0 +1,23 @@
+{
+  "schema": "camol.model_profile",
+  "schema_version": 1,
+  "profile_id": "claude-fable-5-1-request",
+  "provider": "anthropic",
+  "adapter_kind": "claude_cli",
+  "runtime_binary": "claude",
+  "requested_model": "fable",
+  "allowed_resolved_models": ["claude-fable-5"],
+  "effort": "max",
+  "permission_mode": "dontAsk",
+  "allowed_tools": ["Read", "Edit", "Write", "Bash"],
+  "max_agent_turns": 24,
+  "max_turn_tokens": 32000,
+  "max_turn_usd_cents": 100,
+  "max_task_usd_cents": 500,
+  "max_run_usd_cents": 2000,
+  "capability_ttl_seconds": 300,
+  "network_destinations": ["*"],
+  "credential_refs": ["claude-existing-login"],
+  "credential_read_paths": ["{home}/.claude", "{home}/Library/Application Support/Claude"],
+  "maturity": "SPECULATIVE"
+}

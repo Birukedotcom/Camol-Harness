@@ -1,0 +1,43 @@
+{
+  "archive_manifest_sha256": "sha256:e9a93ae29182c0109586c64a5ebbc0cedd1396282dab29a242dfeee91ac8904c",
+  "archive_verified": true,
+  "candidate_count": 2,
+  "claim": "deterministic_local_kernel_dogfood",
+  "counterexample_count": 1,
+  "event_counts": {
+    "ADMISSION_RECORDED": 2,
+    "AGENT_TURN_RECORDED": 2,
+    "CANDIDATE_CAPTURED": 2,
+    "COUNTEREXAMPLE_RECORDED": 1,
+    "EVIDENCE_RECORDED": 23,
+    "INTEGRATION_ACCEPTED": 1,
+    "LEASE_HEARTBEAT": 2,
+    "PLAN_APPROVED": 1,
+    "READINESS_RECORDED": 2,
+    "RESERVATION_RELEASED": 2,
+    "RUN_COMPLETED": 1,
+    "RUN_CREATED": 1,
+    "RUN_STARTED": 1,
+    "TASK_LEASED": 2,
+    "TASK_RETRY_SCHEDULED": 1,
+    "TASK_STARTED": 2,
+    "TASK_SUBMITTED": 2,
+    "TASK_SUCCEEDED": 1,
+    "TASK_VERIFICATION_RECORDED": 2
+  },
+  "harness_commit": "50729464cfb170d1f9a9ae214927cef06332a8eb",
+  "hosted_model_proof": false,
+  "integration_count": 1,
+  "integration_head": "95ebf3455fe5cf928f7fc7f7647dec1d591ee894",
+  "limits": [
+    "The builder is a deterministic process fixture, not a hosted-model turn.",
+    "The archive contains controlled evaluator failure and refinement; daemon restart is covered separately.",
+    "This one run is evidence for the local kernel path only and carries no statistical claim."
+  ],
+  "plan_digest": "sha256:bdf61a1d4bde0082dfa02307ab89e522528304f9d2106d0a5aadc7d541d9d19c",
+  "run_id": "camol-v0-dogfood",
+  "schema": "camol.v0_proof",
+  "schema_version": 1,
+  "source_revision": "50729464cfb170d1f9a9ae214927cef06332a8eb",
+  "status": "completed"
+}

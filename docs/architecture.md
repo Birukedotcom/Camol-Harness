@@ -211,6 +211,12 @@ RUN_CREATED -> PLAN_APPROVED -> RUN_STARTED
   -> RUN_COMPLETED | RUN_BLOCKED
 ```
 
+M0 adds three events the scheduler does not emit yet: `READINESS_RECORDED`
+(payload: a validated `ReadinessReceipt`, projected into `readiness_receipts`),
+`TASK_WAITING` (payload: a typed `WaitingReason`; moves a pending task to `waiting`,
+where the scheduler will not offer it), and `TASK_WAIT_CLEARED` (returns it to
+`pending`). Ledgers without them replay exactly as before.
+
 Every event carries `event_id`, `run_id`, `actor_id`, `occurred_at`, `type`, `payload`,
 and optional `causation_id`/`correlation_id`. SQLite adds a monotonic per-run `seq`.
 Replaying events must deterministically reconstruct scheduler and audit state.

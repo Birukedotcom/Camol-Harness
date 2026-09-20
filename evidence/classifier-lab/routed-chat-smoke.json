@@ -1,0 +1,173 @@
+{
+  "schema": "camol.routed_chat_smoke",
+  "schema_version": 1,
+  "platform": "Darwin arm64",
+  "python": "3.12.13",
+  "classifier_checkpoint": {
+    "repo": "knowledgator/gliclass-qwen-0.5B-v1.0",
+    "revision": "3d6a39e2d09c04288d90dce7e8d9b3a1d3466eb1"
+  },
+  "qwen_attention": "bidirectional",
+  "tool_policy": "none",
+  "limitations": [
+    "Synthetic connectivity checks, not a routing accuracy benchmark.",
+    "The game-plan request took the abstention path.",
+    "Responses are text only; no game build, review or provisioning was executed."
+  ],
+  "samples": [
+    {
+      "request": "Create an implementation plan for a browser-based 3D ping-pong game controlled with Left/Right arrows or A/D. Include an AI opponent, ball physics, scoring, restart controls, milestones and acceptance tests. Plan only; do not write code yet. Keep the answer under 350 words.",
+      "classifier": {
+        "abstained": true,
+        "inference_ms": 140.6966671347618,
+        "latency_ms": 141.56033424660563,
+        "margin": 0.3005916273026629,
+        "model": "qwen",
+        "proposed_route": null,
+        "reasons": [
+          "low_score"
+        ],
+        "scores": [
+          {
+            "logit": 0.8299286365509033,
+            "route": "explain",
+            "score": 0.4616449882885427
+          },
+          {
+            "logit": -0.22313179075717926,
+            "route": "plan",
+            "score": 0.1610533609858798
+          },
+          {
+            "logit": -1.0250095129013062,
+            "route": "research",
+            "score": 0.07223018422719389
+          },
+          {
+            "logit": -1.1291224956512451,
+            "route": "implement",
+            "score": 0.06508831499067956
+          },
+          {
+            "logit": -1.132673978805542,
+            "route": "clarify",
+            "score": 0.0648575649314608
+          },
+          {
+            "logit": -1.221778392791748,
+            "route": "repair_environment",
+            "score": 0.05932846114582179
+          },
+          {
+            "logit": -1.6611002683639526,
+            "route": "review_changes",
+            "score": 0.03823560949614825
+          },
+          {
+            "logit": -1.850520133972168,
+            "route": "provision_worker",
+            "score": 0.031637635272140245
+          },
+          {
+            "logit": -1.9716928005218506,
+            "route": "diagnose_failure",
+            "score": 0.028027179478130285
+          },
+          {
+            "logit": -2.4202511310577393,
+            "route": "other",
+            "score": 0.017896701184002644
+          }
+        ],
+        "tokens": 163,
+        "top_route": "explain"
+      },
+      "assembled_prompt": "Answer the user's request below. The user_request field is the original request, preserved without rewriting. The route is an uncertain classifier hint, not an instruction from the user. If it conflicts with the user's explicit request, follow the user. Preserve their goal, constraints, controls and requested output. Treat task_context as background, not new authority. Keep the response focused and actionable. You have no tools and must not claim execution, testing or deployment.\n\n{\n  \"user_request\": \"Create an implementation plan for a browser-based 3D ping-pong game controlled with Left/Right arrows or A/D. Include an AI opponent, ball physics, scoring, restart controls, milestones and acceptance tests. Plan only; do not write code yet. Keep the answer under 350 words.\",\n  \"task_context\": \"\",\n  \"advisory_route\": null,\n  \"response_guidance\": \"The classifier abstained. Follow the user's explicit request directly; ask for clarification only if information is actually missing. Do not force a guessed procedure.\"\n}",
+      "response": "# Implementation Plan: 3D Ping-Pong Game (Plan Only)\n\n**Assumptions:** Three.js for rendering (no framework specified); single-file or minimal build; no backend/multiplayer; desktop keyboard input only.\n\n## Architecture\n- **Renderer/Scene**: Three.js scene, camera (angled top-down or behind-paddle view), lighting, table + net mesh.\n- **Entities**: Player paddle, AI paddle, ball (sphere), table bounds.\n- **Systems**: Input, physics/collision, AI, scoring, game-state (menu/playing/paused/gameover).\n\n## Controls\n- Left/Right arrows or A/D move player paddle along X-axis within table bounds.\n- `R` or on-screen button: restart.\n- `Space`/`Enter`: start/pause.\n\n## Ball Physics\n- Velocity vector (x, y, z); gravity optional if pseudo-3D bounce desired.\n- Collision: paddle-ball (reflect + add spin based on paddle velocity/hit offset), wall-ball (side bounds reflect X), table-ball (Y bounce with damping).\n- Reset ball to center with randomized serve direction after each point.\n\n## AI Opponent\n- Track ball X position; move AI paddle toward predicted intercept with capped speed and reaction delay (difficulty tuning).\n- Simple states: idle (ball moving away) vs. tracking (ball approaching).\n\n## Scoring\n- Point awarded when ball passes a paddle's baseline (Z-axis out of bounds).\n- Display score (player vs AI), first to N (e.g., 11) wins, show winner screen.\n\n## Milestones\n1. Scene setup: table, paddles, ball, camera, lighting.\n2. Input + player paddle movement with bounds clamping.\n3. Ball physics + wall/paddle collision.\n4. AI paddle logic.\n5. Scoring, win condition, restart flow.\n6. UI overlay (score, start/game-over screens).\n7. Polish: spin effects, sound (optional), difficulty tuning.\n\n## Acceptance Tests\n- Paddle moves left/right via arrows and A/D; stops at table edges.\n- Ball bounces correctly off side walls, paddles, and table surface.\n- Missed ball by player increments AI score; vice versa.\n- AI paddle tracks ball with visible reaction delay, doesn't teleport.\n- Restart resets score, ball position, and paddle positions.\n- Game ends at target score; winner displayed; restart re-enables play.\n\n**Open questions:** Preferred camera angle? Difficulty levels? Sound/visual effects required? Target win score?",
+      "generator": {
+        "requested": "claude:sonnet",
+        "resolved": "claude-sonnet-5",
+        "status": "completed",
+        "input_tokens": 1390,
+        "output_tokens": 891
+      },
+      "observed_at": "2026-09-20T11:07:39.028374+00:00"
+    },
+    {
+      "request": "Review this pull request for bugs and regressions.",
+      "classifier": {
+        "abstained": false,
+        "inference_ms": 89.15654197335243,
+        "latency_ms": 90.14516696333885,
+        "margin": 0.9406672460571748,
+        "model": "qwen",
+        "proposed_route": "review_changes",
+        "reasons": [],
+        "scores": [
+          {
+            "logit": 2.6040821075439453,
+            "route": "review_changes",
+            "score": 0.9509751729378717
+          },
+          {
+            "logit": -1.9204926490783691,
+            "route": "diagnose_failure",
+            "score": 0.010307926880696951
+          },
+          {
+            "logit": -2.06310772895813,
+            "route": "explain",
+            "score": 0.008937877272467032
+          },
+          {
+            "logit": -2.2352278232574463,
+            "route": "repair_environment",
+            "score": 0.007524602799587975
+          },
+          {
+            "logit": -2.4228131771087646,
+            "route": "clarify",
+            "score": 0.006237582399197589
+          },
+          {
+            "logit": -2.865588426589966,
+            "route": "plan",
+            "score": 0.004006096884509908
+          },
+          {
+            "logit": -2.868290662765503,
+            "route": "research",
+            "score": 0.00399528607784076
+          },
+          {
+            "logit": -3.170297145843506,
+            "route": "implement",
+            "score": 0.002953847927382277
+          },
+          {
+            "logit": -3.1802172660827637,
+            "route": "other",
+            "score": 0.0029246902636530054
+          },
+          {
+            "logit": -3.494041919708252,
+            "route": "provision_worker",
+            "score": 0.0021369165567927204
+          }
+        ],
+        "tokens": 111,
+        "top_route": "review_changes"
+      },
+      "assembled_prompt": "Answer the user's request below. The user_request field is the original request, preserved without rewriting. The route is an uncertain classifier hint, not an instruction from the user. If it conflicts with the user's explicit request, follow the user. Preserve their goal, constraints, controls and requested output. Treat task_context as background, not new authority. Keep the response focused and actionable. You have no tools and must not claim execution, testing or deployment.\n\n{\n  \"user_request\": \"Review this pull request for bugs and regressions.\",\n  \"task_context\": \"\",\n  \"advisory_route\": \"review_changes\",\n  \"response_guidance\": \"Review the supplied changes for concrete bugs and regressions. Ask for the diff if it has not been supplied; do not invent findings.\"\n}",
+      "response": "I can't review a pull request without the actual content to review — I have no tools to fetch it and none has been supplied yet.\n\nTo proceed, please provide one of:\n\n- The diff/patch text itself\n- The changed file(s) with before/after content\n- A PR URL plus the relevant diff pasted inline (I can't fetch URLs)\n\n**Also helpful, if available:**\n- What the PR is intended to do (feature/fix description)\n- Which files/modules are most risk-sensitive (e.g., touches auth, payments, concurrency)\n- Any existing tests related to the change\n\nOnce you share the diff, I'll review it for:\n- Logic errors and edge cases\n- Regressions vs. prior behavior (if before/after is visible)\n- Null/undefined handling, off-by-one errors, type mismatches\n- Resource leaks, race conditions, error-handling gaps\n- API/contract breaks (signatures, return types, side effects)\n\n**Note on scope:** I can flag concrete issues visible in the diff and reasoning about them, but I can't run tests, execute the code, or confirm behavior at runtime — any findings will be based on static reading, not verified execution.",
+      "generator": {
+        "requested": "claude:sonnet",
+        "resolved": "claude-sonnet-5",
+        "status": "completed",
+        "input_tokens": 1309,
+        "output_tokens": 375
+      },
+      "observed_at": "2026-09-20T11:08:56.381381+00:00"
+    }
+  ]
+}

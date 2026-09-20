@@ -1,0 +1,79 @@
+{
+  "schema_version": 3,
+  "run": {
+    "id": "claude-fable-smoke",
+    "objective": "Prove one readiness-gated, isolated Claude CLI turn without changing the source checkout.",
+    "max_concurrency": 1,
+    "completion": [
+      "all_tasks_succeeded",
+      "all_required_evidence_present",
+      "all_verifications_green",
+      "no_open_blockers",
+      "no_open_debug_cases"
+    ],
+    "token_policy": {
+      "max_tokens_per_turn": 32000,
+      "checkpoint_reserve": 1000,
+      "max_total_tokens": 32000,
+      "max_turns_per_task": 1
+    },
+    "readiness_policy": {
+      "receipt_ttl_seconds": 300
+    }
+  },
+  "rules": [
+    {
+      "id": "bounded-change",
+      "text": "Change only CAMOL_RESULT.md in the isolated task worktree.",
+      "enforcement": "hard"
+    },
+    {
+      "id": "evidence-before-claim",
+      "text": "Do not treat the worker's claim as verification; run the frozen evaluator.",
+      "enforcement": "hard"
+    }
+  ],
+  "agents": [
+    {
+      "id": "fable-builder",
+      "role": "Perform one bounded repository edit",
+      "box": ".camol/boxes/fable-builder",
+      "capabilities": ["code", "docs"],
+      "adapter": {
+        "kind": "claude_cli",
+        "profile": "profiles/models/claude-fable-5-1.yaml",
+        "timeout_seconds": 1800
+      },
+      "trust_tier": "developer_sandboxed"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "write-proof",
+      "goal": "Create CAMOL_RESULT.md containing the exact text camol provider adapter proof.",
+      "depends_on": [],
+      "capabilities": ["docs"],
+      "acceptance": ["CAMOL_RESULT.md exists and contains the exact required text."],
+      "required_evidence": ["command", "diff", "claim", "test_result"],
+      "max_attempts": 2,
+      "steps": [
+        {
+          "id": "write-result",
+          "instruction": "Write CAMOL_RESULT.md with one line: camol provider adapter proof",
+          "commands": [],
+          "completion": ["CAMOL_RESULT.md contains exactly the required line"]
+        }
+      ],
+      "verification": [
+        {
+          "purpose": "Verify the bounded output",
+          "argv": [
+            "python3",
+            "-c",
+            "from pathlib import Path; assert Path('CAMOL_RESULT.md').read_text() == 'camol provider adapter proof\\n'"
+          ]
+        }
+      ]
+    }
+  ]
+}
