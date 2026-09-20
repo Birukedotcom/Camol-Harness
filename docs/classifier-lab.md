@@ -1,6 +1,6 @@
 # Local classifier lab
 
-An observation-only CLI compares GLiClass-Small and GLiClass-Qwen-0.5B on the
+An observation-only Camol terminal preview compares GLiClass-Small and GLiClass-Qwen-0.5B on the
 same user request, task state and candidate procedures. It does not execute
 routes, provision workers, call a generative LLM, or change Camol's live router.
 This is the local test environment for the [routing proposal](jev-integration.md).
@@ -17,6 +17,12 @@ scripts/classifier-lab setup
 scripts/classifier-lab
 ```
 
+The default now opens Camol's native terminal interface: its boot artwork,
+green theme, transcript, multiline composer and keyboard controls, with a
+comparison panel for Small and Qwen. It reuses `CamolApp`, not a separate line
+prompt. This preview has its own in-memory controller and does not attach to
+your durable harness session or expose the live command engine.
+
 The environment lives in `.camol/classifier-lab/runtime`, independent of Camol's
 normal dependencies. Weights use the usual Hugging Face cache. The original
 float32 weight files total roughly 2.6 GB, plus dependencies and tokenizer files;
@@ -27,15 +33,29 @@ than the reported per-prompt timing. Linux/Windows runtime compatibility and
 accelerator performance have not been measured. The launcher is a POSIX shell
 script; on Windows use the Python entry point in an equivalent environment.
 
-Type prompts to see both models' proposed route, top three scores and latency.
+Type prompts to see both models' proposed route, alternative scores and latency.
+Enter compares; Shift+Enter adds a line. F2 tries a review example; Ctrl-L clears
+the view. A narrow terminal stacks the comparison below the transcript.
 Interactive commands:
 
 - `/state The current task is reviewing PR 5.` supplies context to both models.
-- `/clear` removes that context.
+- `/clear` removes context, the transcript and displayed results.
 - `/routes` displays the candidate procedure descriptions.
-- `/quit` exits. Ctrl-C also exits; Ctrl-D ends input.
+- `/example` compares a sample review request.
+- `/cancel` discards a pending comparison after its local computation returns.
+- `/quit` exits. Ctrl-C also exits.
 
-No interactive prompt history is written by the lab.
+No interactive prompt history is written by the lab. `/run`, `/approve`, `/login`
+and other live harness commands are unavailable in this preview. Classification
+does not generate an LLM answer or authorize a proposed action.
+
+The earlier line interface remains available explicitly:
+
+```sh
+scripts/classifier-lab interactive
+```
+
+In line mode, `/clear` only clears context and Ctrl-D also exits.
 
 ## Compare and evaluate
 
@@ -47,7 +67,8 @@ scripts/classifier-lab doctor
 ```
 
 Use `--json` for machine-readable stdout. Diagnostics go to stderr. `--models
-small` or `--models qwen` selects one model; both run by default. `--threads`
+small` or `--models qwen` selects one model in line/compare/benchmark modes;
+the native comparison view requires both. `--threads`
 changes the CPU thread count. Once setup completes, inference uses local files
 only and sets the Hugging Face/Transformers offline flags. It never downloads
 missing weights implicitly.
@@ -145,6 +166,7 @@ Ordinary tests do not download models or require ML dependencies:
 
 ```sh
 python3 -m unittest tests.test_classifier_lab
+python3 -m unittest tests.test_classifier_preview tests.test_classifier_tui
 CAMOL_CLASSIFIER_LIVE=1 .camol/classifier-lab/runtime/bin/python -m unittest tests.live.test_classifier_lab_models -v
 ```
 
@@ -153,3 +175,10 @@ sensitivity, label reversal, refusal to truncate, and full attention/padding
 behavior. Dependencies and model revisions are pinned. Regenerate the dependency
 lock intentionally with the command recorded at its top, then rerun these checks
 and the corpus; package upgrades can change this legacy model's behavior.
+
+The preview controller tests also cover blocked execution/login commands,
+context propagation, cancellation, secret rejection and error handling. Native
+UI tests exercise the real Camol composer/theme, both result cards, the narrowed
+layout and the preview-only command palette. They require the `tui` extra but
+not model weights. A real-weight headless UI check also confirmed that the same
+review request populated both cards successfully.

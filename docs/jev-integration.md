@@ -5,7 +5,8 @@ credential setup or live classifier validation has been performed. Runtime hooks
 below are proposed, not shipped features.
 
 A separate [local classifier lab](classifier-lab.md) now runs downloaded GLiClass
-Small and Qwen weights for interactive comparisons and labeled evaluation. This
+Small and Qwen weights for interactive comparisons in Camol's native terminal
+interface and labeled evaluation. This
 does not implement the live hooks below or validate Jev. The measured local
 baseline is insufficient for automatic routing; classifier proposals remain
 observations only.

@@ -370,6 +370,29 @@ def interactive(models, routes, args):
             print("Input rejected: {}".format(exc), file=sys.stderr)
 
 
+def tui(args, labels):
+    # Reuse Camol's renderer and composer. This controller has no live harness
+    # command engine, durable session, execution adapter or provider credentials.
+    sys.path.insert(0, str(ROOT))
+    from camol.classifier_preview import ClassifierPreviewController
+    from camol.classifier_tui import run_preview
+
+    models = []
+
+    def warm():
+        if not models:
+            loaded = [Classifier(name, args.threads, args.qwen_attention) for name in args.models]
+            models.extend(loaded)
+
+    def predict(text, state):
+        warm()
+        return compare(models, text, labels["routes"], state, args.threshold, args.margin)
+
+    controller = ClassifierPreviewController(predict, labels["routes"], warm=warm)
+    controller.state = args.state
+    return run_preview(controller, show_boot=not args.no_boot)
+
+
 def bounded_float(value):
     number = float(value)
     if not math.isfinite(number) or not 0 <= number <= 1:
@@ -386,7 +409,7 @@ def positive_int(value):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", nargs="?", choices=("interactive", "compare", "bench", "doctor", "download"), default="interactive")
+    parser.add_argument("mode", nargs="?", choices=("tui", "interactive", "compare", "bench", "doctor", "download"), default="tui")
     parser.add_argument("text", nargs="?", help="prompt for compare")
     parser.add_argument("--state", default="", help="observed task state supplied to both models")
     parser.add_argument("--models", nargs="+", choices=tuple(MODELS), default=list(MODELS))
@@ -400,6 +423,7 @@ def main(argv=None):
                         help="upstream reproduces the known legacy Qwen causal-mask defect")
     parser.add_argument("--output", type=Path, help="save JSON, including input text/state")
     parser.add_argument("--json", action="store_true", help="machine-readable stdout for compare/bench")
+    parser.add_argument("--no-boot", action="store_true", help="skip Camol boot art in the terminal preview")
     args = parser.parse_args(argv)
     if len(set(args.models)) != len(args.models):
         parser.error("models must be unique")
@@ -409,8 +433,12 @@ def main(argv=None):
         parser.error("a prompt argument is only supported by compare")
     if args.mode == "bench" and args.state:
         parser.error("put per-case state in the benchmark JSONL instead of --state")
-    if args.mode == "interactive" and (args.json or args.output):
+    if args.mode in {"interactive", "tui"} and (args.json or args.output):
         parser.error("--json and --output are supported by compare/bench/doctor")
+    if args.mode == "tui" and args.models != list(MODELS):
+        parser.error("the native comparison view requires both models; use compare/interactive for a single model")
+    if args.mode == "tui" and args.qwen_attention != "bidirectional":
+        parser.error("the native comparison view requires corrected Qwen attention; use doctor for the upstream control")
     try:
         if args.qwen_attention == "upstream" and "qwen" in args.models:
             print("WARNING: uncorrected Qwen control has a known causal-mask defect; diagnostic results only.", file=sys.stderr)
@@ -428,6 +456,8 @@ def main(argv=None):
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         labels = load_labels(args.labels)
         routes = labels["routes"]
+        if args.mode == "tui":
+            return tui(args, labels)
         cases = load_cases(args.cases, routes) if args.mode == "bench" else None
         if args.mode == "compare":
             input_text(args.text, args.state)
