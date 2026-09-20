@@ -67,8 +67,9 @@ allocated or existing Enrollment Hub environment changed for this assessment.
 
 ## Proposed prompt contract
 
-The owner's term “JEV” is unresolved. Do not pick a library, invent an expansion,
-or call an implementation JEV until its intended meaning is established.
+Jev is TypeSafe AI's structured decision model. The owner confirmed the classifier
+reference; see the researched [Jev integration plan](jev-integration.md) for its
+verified API, proposed Camol hooks and acceptance tests.
 
 The desired behavior can be specified independently:
 
@@ -112,6 +113,8 @@ semantic no-drift guarantee from schema validity or a classifier confidence scor
 
 1. Repair consolidated CI and run the full platform matrix and recovery soak.
 2. Qualify the factory adapter through the lifecycle acceptance above.
-3. Resolve JEV and implement the route contracts plus offline replay/evaluation.
+3. Implement the Jev route contracts plus offline replay/evaluation described in
+   [the integration plan](jev-integration.md); this work can proceed independently
+   of factory qualification.
 4. Connect routing to the terminal/embedding entry points with a small bounded
    live acceptance. Keep infrastructure effects behind existing owner approval.
