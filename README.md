@@ -640,6 +640,9 @@ real hosted-agent run.
 
 ## Documentation map
 
+- [Local classifier lab](docs/classifier-lab.md): run `scripts/classifier-lab setup`,
+  then `scripts/classifier-lab` to compare Small and Qwen routing interactively;
+  includes a repeatable labeled benchmark and measured limitations.
 - [Provisioning and prompt routing](docs/provisioning-and-prompt-routing.md):
   Buckeye Sandbox integration gaps, lifecycle acceptance, and proposed bounded
   prompt classification and response validation.

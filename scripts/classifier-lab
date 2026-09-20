@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+LAB_ENV="$ROOT/.camol/classifier-lab/runtime"
+if [ "${1:-}" = setup ]; then
+    if ! command -v uv >/dev/null 2>&1; then
+        echo 'Install uv, then rerun this command. See docs/classifier-lab.md.' >&2
+        exit 1
+    fi
+    if [ ! -x "$LAB_ENV/bin/python" ]; then
+        uv venv --python 3.12 "$LAB_ENV"
+    fi
+    uv pip sync --python "$LAB_ENV/bin/python" "$ROOT/scripts/classifier-lab-requirements.txt"
+    shift
+    "$LAB_ENV/bin/python" "$ROOT/scripts/classifier_lab.py" download "$@"
+    exec "$LAB_ENV/bin/python" "$ROOT/scripts/classifier_lab.py" doctor "$@"
+fi
+if [ ! -x "$LAB_ENV/bin/python" ]; then
+    echo 'Run scripts/classifier-lab setup first.' >&2
+    exit 1
+fi
+exec "$LAB_ENV/bin/python" "$ROOT/scripts/classifier_lab.py" "$@"

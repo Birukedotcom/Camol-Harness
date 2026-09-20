@@ -4,6 +4,12 @@ Status: researched implementation proposal, 2026-09-19. No Jev API request,
 credential setup or live classifier validation has been performed. Runtime hooks
 below are proposed, not shipped features.
 
+A separate [local classifier lab](classifier-lab.md) now runs downloaded GLiClass
+Small and Qwen weights for interactive comparisons and labeled evaluation. This
+does not implement the live hooks below or validate Jev. The measured local
+baseline is insufficient for automatic routing; classifier proposals remain
+observations only.
+
 ## What Jev provides
 
 Jev is TypeSafe AI's decision model. It returns closed-set choices, rubric scores

@@ -1,0 +1,15 @@
+{
+  "version": "camol-mechanisms-v1",
+  "routes": [
+    {"id": "explain", "description": "explain how existing code or a system works"},
+    {"id": "research", "description": "search documentation or compare options before making a decision"},
+    {"id": "plan", "description": "create or revise an implementation plan without executing changes"},
+    {"id": "implement", "description": "write or modify code to add a feature"},
+    {"id": "diagnose_failure", "description": "investigate a failure using logs and tests to find its cause"},
+    {"id": "repair_environment", "description": "fix missing dependencies or broken environment configuration"},
+    {"id": "review_changes", "description": "review code changes for bugs and correctness"},
+    {"id": "provision_worker", "description": "create and configure a new worker sandbox or virtual machine"},
+    {"id": "clarify", "description": "ask for clarification because the request lacks necessary information"},
+    {"id": "other", "description": "respond to casual conversation or a request unrelated to software work"}
+  ]
+}
