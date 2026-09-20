@@ -640,6 +640,9 @@ real hosted-agent run.
 
 ## Documentation map
 
+- [Provisioning and prompt routing](docs/provisioning-and-prompt-routing.md):
+  Buckeye Sandbox integration gaps, lifecycle acceptance, and proposed bounded
+  prompt classification and response validation.
 - [Product specification](SPEC.md): authoritative product decisions, state and
   invariant model, transparency, evaluation, security, and reference profiles.
 - [v0 build plan](docs/v0-build-plan.md): PR-sized implementation order and exit

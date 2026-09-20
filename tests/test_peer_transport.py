@@ -39,15 +39,26 @@ class PeerTransportTests(unittest.IsolatedAsyncioTestCase):
         return await asyncio.to_thread(request, endpoint.path, token or endpoint.token,
             operation, dict(offset=0, limit=2) if arguments is None else arguments, request_id=request_id)
 
-    async def raw(self, endpoint, content):
+    async def raw(self, endpoint, content, *, expect_rejection=False):
         reader, writer = await asyncio.open_unix_connection(str(endpoint.path))
         try:
-            writer.write(content)
-            await writer.drain()
-            return await asyncio.wait_for(reader.readline(), 2)
+            try:
+                writer.write(content)
+                await writer.drain()
+                return await asyncio.wait_for(reader.readline(), 2)
+            except ConnectionResetError:
+                # Rejecting a socket with unread input may reset it on Linux.
+                # Only the connection-limit test permits rejection without a reply.
+                if not expect_rejection:
+                    raise
+                return b""
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except ConnectionResetError:
+                if not expect_rejection:
+                    raise
 
     def state(self):
         return self.fixture.control.state(self.fixture.run)
@@ -160,7 +171,7 @@ class PeerTransportTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(peer_transport, "MAX_ACTIVE", 1), patch.object(peer_transport, "MAX_CONNECTIONS", 2):
             reader, writer = await asyncio.open_unix_connection(str(endpoint.path))
             await asyncio.sleep(.01)
-            self.assertEqual(await self.raw(endpoint, b"{}\n"), b"")
+            self.assertEqual(await self.raw(endpoint, b"{}\n", expect_rejection=True), b"")
             old_path, old_token = endpoint.path, endpoint.token
             await endpoint.close()
             self.assertEqual(await asyncio.wait_for(reader.read(), 1), b"")
