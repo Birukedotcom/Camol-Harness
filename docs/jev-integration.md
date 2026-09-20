@@ -24,7 +24,7 @@ These are vendor specifications, not measured Camol performance.
 
 `explicit commands -> existing command engine`
 
-`natural-language turn -> Jev observations -> deterministic route policy -> bounded context + response contract -> existing model adapter -> output checks -> response`
+`natural-language turn + observed task state -> intent and mechanism proposals -> deterministic eligibility checks -> bounded procedure + context + response contract -> executor -> independent evidence checks -> response`
 
 Keep `/cancel`, approvals and active grill answers on their current explicit
 paths. In `camol/app.py`, the free-text branch in `_handle` currently invokes
@@ -37,7 +37,8 @@ Proposed modules:
 | Module | Responsibility |
 | --- | --- |
 | `camol/jev.py` | Bounded HTTPS transport, strict response validation, model identity, cancellation and usage receipts |
-| `camol/prompt_routing.py` | Versioned questions, deterministic route selection, abstention and response contracts |
+| `camol/prompt_routing.py` | Hierarchical intent/mechanism questions, deterministic eligibility, abstention and response contracts |
+| `camol/mechanism_catalog.py` | Versioned procedures with distinguishing criteria, preconditions, allowed effects and required evidence |
 | `camol/context_selection.py` | Assemble allowed task state and evidence; optionally rerank retrieved candidates |
 | `camol/response_validation.py` | Mechanical checks first; optional Jev semantic observations; bounded repair |
 | `tests/test_prompt_routing.py` | Offline policy/transport fixtures plus opt-in labeled model evaluation |
@@ -64,6 +65,7 @@ Initial policy, to evaluate rather than assume correct:
 | Observation | Primitive | Camol interpretation |
 | --- | --- | --- |
 | Requested workflow | Choice: explain, research, plan, implement, debug, review, provision, mixed, unclear | Choose a proposed workflow; implementation/provisioning still enters reviewed planning |
+| Required mechanism | Choice among eligible, specifically described procedures plus insufficient_evidence and other | Propose a procedure whose preconditions are checked in code; do not infer authorization |
 | Relation to current task | Choice: continue, revise, new, unclear | Preserve or explicitly revise the task contract; never silently replace it |
 | Information sufficiency | Choice: enough, missing, unclear | Continue only with enough context; otherwise ask a targeted question |
 | Reasoning demand | Score with explicit mechanical/local/multistep levels | Select only among owner-configured available models within budget |
@@ -75,7 +77,7 @@ keys name outputs but are not sent to the underlying model, so names like
 `intent` or `needs_context` cannot substitute for real question instructions.
 [API reference](https://docs.typesafe.ai/api).
 
-Start with classification plus output contracts. Add retrieval filtering only
+Start with mechanism selection plus procedure and output contracts. Add retrieval filtering only
 after routing is measured: Jev can score retrieved candidates, but critical goals,
 constraints and referenced evidence must remain pinned regardless of its scores.
 The provider has a passage-classification cookbook that can inform this later
@@ -112,6 +114,98 @@ large irrelevant inputs, adversarial content and inconsistent related judgments.
 Keep arithmetic and structural invariants in code. No component here guarantees
 semantic zero drift. [Known limitations](https://docs.typesafe.ai/model-jaggedness/jev-1.13).
 
+## Paper-driven refinement: route the mechanism
+
+The owner supplied *Mechanism-level routing failure in LLMs over Lean-verified
+algebraic structures*, Cázares, Zhang and Ma, arXiv:2607.04534v1 (2026-07-05).
+The paper is an architectural reference, not a Jev evaluation. Its experiment
+classifies the certificate family behind already-verified mathematical statements;
+it does not generate proofs or show that adding a classifier solves routing.
+
+### Findings relevant to Camol
+
+Table 4 (p. 6) reports Set A mechanism accuracy rising from 80.3% to 90.9% for
+gpt-oss-120b, and 68.2% to 81.8% for Llama 3.3 70B, when the prompt receives
+mechanism-bearing Lean metadata. Llama's verdict accuracy remains 95.5% in both
+conditions: a correct verdict does not establish correct mechanism selection.
+
+The dominant error confuses a specific Chinese-remainder construction with the
+broader ring-equivalence type. Sections 6-7 (pp. 8-10) distinguish insufficient
+mechanism cues from persistent confusion between adjacent or differently granular
+labels. Some specific cases legitimately fit the broader label while missing the
+benchmark's required level. Table 5 also includes three correct-to-wrong Llama
+transitions: extra cues do not monotonically improve every case.
+
+Interpretation limits matter: Set A has 22 distinct items and Set B only six.
+The three temperature-zero/seed-zero repeats measure backend stability, not
+independent examples. The reported ceiling is protocol-specific. A2 cues often
+name the expected certificate family; the result demonstrates the usefulness of
+supplied mechanism metadata, not autonomous discovery of that metadata. Jev was
+not among the evaluated models. General software tasks may have several valid
+procedures, unlike a corpus with an assigned certificate-family label.
+
+### Proposed transfer to the harness
+
+The primary route should identify an operational procedure with explicit evidence
+obligations. Model size and answer length are downstream decisions. The broad
+intent `debug` is useful for finding candidates but is not a complete route.
+
+| Request or observed situation | Proposed specific mechanism | Distinguishing evidence and completion check |
+| --- | --- | --- |
+| CI cannot import an encrypted-recovery dependency | repair_test_environment | Dependency declaration, installed-package evidence and failed import; rerun the affected tests |
+| Restart soak interrupts workers before all outputs are durable | repair_verifier_boundary_fixture | Cancellation location plus process/result records; verifier-restart soak and independent no-duplicate-effects tests |
+| A worker launch timed out after dispatch | reconcile_uncertain_dispatch | Retained request/process identity and result receipts; no automatic replacement or replay without resolving the uncertainty |
+| A requested change alters frozen task scope | propose_plan_revision | Current plan digest and changed requirements; separately reviewed successor plan |
+
+These entries illustrate catalog design, not automatic diagnoses or live handlers.
+The classifier must be able to report that the distinguishing evidence is absent.
+A closed enum cannot manufacture information or make the selected mechanism true.
+
+Each catalog entry should contain a stable ID, parent intent, explicit required
+granularity, distinguishing conditions and counterexamples, input contract,
+machine-checkable preconditions, allowed effects, context sources, procedure
+steps, required output/evidence, evaluator, stop conditions and version digest.
+The application filters out unavailable/unauthorized effects before dispatch;
+Jev only proposes among candidates. Retain the original request alongside the
+proposal, evidence references and actual eligibility result.
+
+Bind each adopted procedure to the current task and state version. At meaningful
+boundaries, such as a new user constraint or contradictory tool result, reevaluate
+whether it still applies. This is not token-by-token steering. Changing procedures
+requires an explicit recorded transition; changes to approved authority continue
+to require existing plan approval. Never let previous classifier output stand in
+for newly observed evidence.
+
+Final checks have separate purposes: valid response structure, appropriate
+mechanism, permitted effects, and verified task outcome. A Jev relevance score
+cannot certify tool execution or replace the existing deterministic evaluator.
+Procedural invariants can reject invalid transitions even when fluent text sounds
+plausible; arbitrary semantic faithfulness still needs empirical evaluation.
+
+### Test the mechanism-routing hypothesis
+
+Use independently reviewed cases with a required label level, admissible mechanism
+set, evidence manifest, expected actions, and outcome checks. Do not derive the
+reference labels from Jev itself. Retain ambiguity where multiple mechanisms are
+valid, and label underspecified cases for clarification rather than forced choice.
+
+Compare on the same held-out cases:
+
+1. Current generative orchestrator with available context.
+2. Jev receiving only the user prompt and catalog.
+3. Jev receiving the prompt, catalog and actual task/tool observations.
+4. An explicitly oracle-assisted diagnostic condition with the correct mechanism
+   cue, kept separate from deployable performance estimates.
+
+Include missing, stale and misleading cues, hierarchy confusions, continuations,
+misspellings and ambiguous requests. Report per-mechanism confusion matrices,
+parent-versus-leaf errors, abstention, paired wrong-to-correct AND correct-to-wrong
+changes, downstream task success, policy violations, tokens and latency. Split and
+count by distinct task families, not repeated identical runs. Record whether an
+improvement comes from additional evidence, a better taxonomy, or the classifier.
+A larger reasoning model is not the automatic remedy for missing evidence or
+poorly defined labels.
+
 ## Transport and activation
 
 Call `POST https://api.typesafe.ai/v1/systemone` with bearer authentication and
@@ -141,10 +235,12 @@ arrangement, not a default local-only or zero-retention guarantee.
 
 ## Rollout and proof
 
-1. Implement offline request/response contracts and fixture tests first.
+1. Define the mechanism catalog and independently labeled cases, then implement
+   offline request/response contracts and fixture tests first.
 2. Run an opt-in shadow evaluation: record Jev's recommendation while retaining
    current routing. Establish a fixed token/cost cap before making hosted calls.
-3. Compare against current planning on owner-labeled prompts: route precision,
+3. Run the evidence/label-granularity experiments below. Compare against current
+   planning on owner-labeled prompts: route precision,
    follow-up continuity, abstention, constraint compliance, useful answer length,
    actual usage, latency, and task success. Cover typos, “yes/do it,” mixed goals,
    prompt injection, stale context, model outages and contradictory instructions.
