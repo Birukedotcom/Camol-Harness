@@ -85,10 +85,18 @@ async def trial(boxes, iteration, interrupt, timeout_seconds=120, progress_secon
             orchestrator.approve_plan(run_id, "fixture-owner", state["plan_digest"])
             if interrupt:
                 reached = asyncio.Event()
+                verifying = set()
 
                 class InterruptedRunner(HarnessRunner):
-                    async def _verify(self, *args, **kwargs):
-                        reached.set()
+                    async def _verify(self, run_id, assignment):
+                        # This trial tests verifier recovery, so every first-wave
+                        # worker must have published its result before interruption.
+                        # Cancelling when only the fastest worker reaches this point
+                        # can interrupt another worker's process effects, which must
+                        # remain EFFECT_UNKNOWN rather than automatically retrying.
+                        verifying.add(assignment["task_id"])
+                        if verifying == {"task-{}".format(index) for index in range(boxes)}:
+                            reached.set()
                         await asyncio.Event().wait()
 
                 runner = InterruptedRunner(orchestrator, source, state_dir=state_dir)
